@@ -29,7 +29,7 @@ Run from the HumanLayer checkout with Bun:
 bun apps/cli/src/index.ts local-delivery --config /absolute/private/local-delivery.json
 ```
 
-Add `--once` to reconcile one iteration. The normal command polls until interrupted. Its output contains task IDs, phase, pause reason, and merged PR URL. QA itself appears as a separate session under the task in HumanLayer.
+Add `--once` to reconcile one iteration. The normal command polls until interrupted. SIGINT or SIGTERM finishes the current reconciliation, wakes the polling wait, and removes its owned lock before exit. Its output contains task IDs, phase, pause reason, and merged PR URL. QA itself appears as a separate session under the task in HumanLayer. After merge, `delivery.md` appears among the task artifacts with the PR link, exact reviewed commit, QA summary, and unrelated bug criticality. Receipt upload failure keeps the merged outcome and retries the same named artifact on later polls; restarting also backfills receipts for earlier merged records without publishing or merging again.
 
 In the UI, create a task with a name starting with `[auto] `, select the configured host and exact isolated directory, choose Codex, and give the agent a bounded implementation request, relevant checks, and an instruction to commit on its feature branch. Turn off the stock implementation-to-PR automation: this coordinator owns QA and publication. Use one task and feature branch per checkout; use separate worktrees for parallel work. Neither historical tasks nor tasks without the prefix are adopted. Removing the prefix or archiving the task pauses automatic delivery at the next reconciliation. A renamed old task is still historical.
 

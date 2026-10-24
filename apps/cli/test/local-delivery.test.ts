@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+	deliveryReport,
 	initialState,
 	parseVerdict,
 	tick,
@@ -39,6 +40,7 @@ function fixture() {
 	let snapshot: Snapshot = { head, base, branch: 'feature', clean: true, changed: true }
 	let launches = 0,
 		publishes = 0,
+		reports = 0,
 		id = 0
 	let result = JSON.stringify({ verdict: 'pass', headSha: head, findings: [], summary: 'Checks pass' })
 	const adapter: Adapter = {
@@ -58,6 +60,9 @@ function fixture() {
 			})
 		},
 		qaResult: async () => result,
+		reportDelivery: async () => {
+			reports++
+		},
 		publish: async () => {
 			publishes++
 			return 'https://github.com/owner/repo/pull/1'
@@ -80,6 +85,9 @@ function fixture() {
 		},
 		get launches() {
 			return launches
+		},
+		get reports() {
+			return reports
 		},
 		get publishes() {
 			return publishes
@@ -127,6 +135,70 @@ describe('local delivery', () => {
 		f.restart()
 		await f.step()
 		expect(f.publishes).toBe(1)
+	})
+	it('retains merged outcome after receipt failure and retries without another publication', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		f.adapter.reportDelivery = async () => {
+			throw new Error('offline')
+		}
+		await f.step()
+		expect(f.state.records.task!.phase).toBe('merged')
+		expect(f.state.records.task!.reportReason).toContain('receipt pending')
+		expect(f.publishes).toBe(1)
+		f.restart()
+		let attempts = 0
+		f.adapter.reportDelivery = async () => {
+			attempts++
+		}
+		await f.step()
+		expect(attempts).toBe(1)
+		expect(f.state.records.task!.reportPublished).toBe(true)
+		expect(f.state.records.task!.reportReason).toBeUndefined()
+		expect(f.publishes).toBe(1)
+		f.restart()
+		await f.step()
+		expect(attempts).toBe(1)
+		expect(f.publishes).toBe(1)
+	})
+	it('does not mislabel a completed merge when saving receipt state fails', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		let failed = false
+		await tick(config, f.state, f.adapter, async () => {
+			if (f.state.records.task!.reportPublished && !failed) {
+				failed = true
+				throw new Error('disk temporarily unavailable')
+			}
+		})
+		expect(f.state.records.task!.phase).toBe('merged')
+		expect(f.state.records.task!.reportReason).toContain('receipt state could not be saved')
+		expect(f.publishes).toBe(1)
+	})
+	it('backfills an existing merged record without coder sessions', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		await f.step()
+		delete f.state.records.task!.reportPublished
+		f.sessions().length = 0
+		await f.step()
+		expect(f.reports).toBe(2)
+		expect(f.publishes).toBe(1)
+	})
+	it('puts the reviewed SHA, PR and unrelated bug criticality in the receipt', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		f.outOfScope()
+		await f.step()
+		const report = deliveryReport(f.state.records.task!)
+		expect(report).toContain(head)
+		expect(report).toContain('https://github.com/owner/repo/pull/1')
+		expect(report).toContain('high: Existing unrelated bug')
+		expect(report).toContain('Scoped checks pass')
 	})
 	it('blocks a coder that creates no new commit after activation', async () => {
 		const f = fixture()

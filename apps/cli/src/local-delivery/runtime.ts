@@ -13,7 +13,8 @@ import type { Command } from 'commander'
 import { z } from 'zod/v4'
 
 import type { ApiORPCClient } from '../orpc/client'
-import { binding, initialState, tick, type Adapter, type Config, type State } from './coordinator'
+import { binding, deliveryReport, initialState, tick, type Adapter, type Config, type State } from './coordinator'
+import { reconcileUntilStopped } from './lifecycle'
 const exec = promisify(execFile)
 const ConfigSchema = z
 	.object({
@@ -194,6 +195,10 @@ export function createAdapter(c: Config): Adapter {
 			if (!final) throw new Error('QA has no final assistant message')
 			return final
 		},
+		reportDelivery: async (r) => {
+			const api = await getClient()
+			await api.uploads.upsertText({ taskId: r.taskId, fileName: 'delivery.md', content: deliveryReport(r) })
+		},
 		publish: async (r) => {
 			const expected =
 				r.snapshot ??
@@ -345,6 +350,10 @@ export async function run(configPath: string, once = false) {
 	await mkdir(lock, { mode: 0o700 }).catch(() => {
 		throw new Error('Another coordinator holds the state lock; inspect it before removing a stale lock')
 	})
+	const shutdown = new AbortController()
+	const requestStop = () => shutdown.abort()
+	process.on('SIGINT', requestStop)
+	process.on('SIGTERM', requestStop)
 	try {
 		await writeFile(lock + '/owner.json', JSON.stringify({ pid: process.pid, startedAt: Date.now() }), {
 			mode: 0o600,
@@ -360,21 +369,29 @@ export async function run(configPath: string, once = false) {
 		const save = () => atomic(c.stateFile, state)
 		await save()
 		const adapter = createAdapter(c)
-		do {
-			await tick(c, state, adapter, save)
-			console.log(
-				JSON.stringify(
-					Object.values(state.records).map((r) => ({
-						taskId: r.taskId,
-						phase: r.phase,
-						reason: r.reason,
-						prUrl: r.prUrl,
-					})),
-				),
-			)
-			if (!once) await new Promise((resolve) => setTimeout(resolve, c.pollMs))
-		} while (!once)
+		await reconcileUntilStopped(
+			async () => {
+				await tick(c, state, adapter, save)
+				console.log(
+					JSON.stringify(
+						Object.values(state.records).map((r) => ({
+							taskId: r.taskId,
+							phase: r.phase,
+							reason: r.reason,
+							prUrl: r.prUrl,
+							reportPublished: r.reportPublished,
+							reportReason: r.reportReason,
+						})),
+					),
+				)
+			},
+			c.pollMs,
+			shutdown.signal,
+			once,
+		)
 	} finally {
+		process.removeListener('SIGINT', requestStop)
+		process.removeListener('SIGTERM', requestStop)
 		await rm(lock, { recursive: true, force: true })
 	}
 }

@@ -54,6 +54,8 @@ export interface RecordState {
 	verdict?: Verdict
 	reason?: string
 	prUrl?: string
+	reportPublished?: boolean
+	reportReason?: string
 }
 export interface State {
 	version: 1
@@ -68,6 +70,7 @@ export interface Adapter {
 	launchQA(record: RecordState): Promise<void>
 	qaResult(id: string): Promise<string>
 	publish(record: RecordState): Promise<string>
+	reportDelivery(record: RecordState): Promise<void>
 }
 const active = new Set([
 	'ready_for_launch',
@@ -122,10 +125,54 @@ export function parseVerdict(text: string): Verdict {
 function sameSnapshot(a: Snapshot, b: Snapshot) {
 	return b.clean && a.head === b.head && a.branch === b.branch && a.base === b.base
 }
+export function deliveryReport(record: RecordState): string {
+	if (record.phase !== 'merged' || !record.prUrl || !record.snapshot || !record.verdict)
+		throw new Error('Merged delivery lacks its PR or QA evidence')
+	const unrelated = record.verdict.findings.filter((f) => f.scope === 'out_of_scope')
+	const unrelatedLines = unrelated.map((f) => '- ' + f.criticality + ': ' + f.description)
+	if (!unrelatedLines.length) unrelatedLines.push('None reported.')
+	return [
+		'# Delivery merged',
+		'',
+		record.taskName,
+		'',
+		'Pull request: ' + record.prUrl,
+		'',
+		'Reviewed implementation commit: `' + record.snapshot.head + '`',
+		'',
+		'Independent QA: passed' + (record.qaId ? ' (session `' + record.qaId + '`)' : ''),
+		'',
+		record.verdict.summary,
+		'',
+		'## Unrelated bugs for backlog triage',
+		'',
+		...unrelatedLines,
+		'',
+	].join('\n')
+}
+async function reportMerged(state: State, a: Adapter, save: () => Promise<void>): Promise<void> {
+	for (const record of Object.values(state.records)) {
+		if (record.phase !== 'merged' || record.reportPublished) continue
+		try {
+			await a.reportDelivery(record)
+			record.reportPublished = true
+			record.reportReason = undefined
+		} catch (error) {
+			record.reportReason =
+				'Delivery merged; receipt pending: ' +
+				(error instanceof Error ? error.message : 'artifact upload failed')
+		}
+		// A reporting failure never changes the remote merge outcome or re-enters publication.
+		await save()
+	}
+}
+
 /** Every external mutation has a durable intent first. Errors pause the individual delivery. */
 export async function tick(c: Config, state: State, a: Adapter, save: () => Promise<void>): Promise<void> {
 	if (state.version !== 1 || state.binding !== binding(c))
 		throw new Error('Delivery configuration differs from durable state; use a new state file')
+	// Backfill receipts for already merged records even if no current coder session remains.
+	await reportMerged(state, a, save)
 	const [tasks, sessions] = await Promise.all([a.tasks(), a.sessions()])
 	const local = sessions.filter((s) => s.directory === c.directory && s.hostId === c.hostId)
 	const qaIds = new Set(Object.values(state.records).map((r) => r.qaId))
@@ -220,10 +267,17 @@ export async function tick(c: Config, state: State, a: Adapter, save: () => Prom
 				r.prUrl = await a.publish(r)
 				r.phase = 'merged'
 				await save()
+				await reportMerged(state, a, save)
 			}
 		} catch (error) {
-			r.phase = 'paused'
-			r.reason = error instanceof Error ? error.message : 'Delivery failed'
+			if (r.phase === 'merged') {
+				r.reportReason =
+					'Delivery merged; receipt state could not be saved: ' +
+					(error instanceof Error ? error.message : 'state write failed')
+			} else {
+				r.phase = 'paused'
+				r.reason = error instanceof Error ? error.message : 'Delivery failed'
+			}
 			await save()
 		}
 	}

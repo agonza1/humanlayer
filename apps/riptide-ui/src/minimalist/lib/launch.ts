@@ -182,15 +182,15 @@ type NewTask = {
  * the worktrees its workspace.json describes when it has a plan for them, and runs in place
  * otherwise. A guided workflow keeps the prompt as the task's content and starts its first phase
  * on it, as the standard launcher does. A small task starts on implementation and is asked to
- * offer the describe-pr skill as its next step, with or without auto-advance. Throws if the server refuses; title generation failing
- * keeps the working title.
+ * offer the describe-pr skill as its next step, unless its [auto] name opts into local delivery.
+ * Throws if the server refuses; title generation failing keeps the working title.
  */
 export async function startTask(api: RiptideApiClient, input: NewTask): Promise<void> {
 	const { ids, target, ticket, attachments } = input
 	const name = ticket?.name ?? draftTitle(input.draft)
 	const slug = ticket?.slug ?? slugify(name, ids.taskId.slice(-4))
 	const prompt = withTicket(withAttachments(input.draft, slug, attachments), slug, ticket)
-	const text = input.directImplementation ? withDescribePrNextStep(prompt) : prompt
+	const text = input.directImplementation && !name.startsWith('[auto] ') ? withDescribePrNextStep(prompt) : prompt
 	const directoryWorkspace = target.kind === 'directory' ? (target.worktree?.(slug) ?? null) : null
 	const worktreeTiming: WorktreeTiming = target.kind === 'project' || directoryWorkspace ? 'now' : 'never'
 	const flags = projectTaskAutoAdvanceFlags(input.workflow, worktreeTiming)

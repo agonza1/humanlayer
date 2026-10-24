@@ -222,6 +222,39 @@ describe('startTask', () => {
 		},
 	)
 
+	it('leaves a small local delivery task prompt for its coordinator, keeping implementation settings', async () => {
+		const { api, client } = fakeApi()
+		const draft = '[auto] Document frontend checks\nKeep native setup instructions'
+		await startTask(client, {
+			ids,
+			target: { kind: 'directory', path: '/code/app' },
+			hostId: 'h1',
+			draft,
+			ticket: null,
+			attachments: [],
+			settings: { ...settings, agent: 'codelayer', model: 'gpt-6-1-sol', permissionsMode: 'bypass' },
+			workflow: { workflowType: 'freeform', autoAdvance: true },
+			directImplementation: true,
+		})
+		const [launched] = api.tasks.launchDraft.mock.calls[0] as unknown as [Record<string, unknown>]
+		expect(launched).toMatchObject({
+			name: '[auto] Document frontend checks',
+			taskContent: draft,
+			firstSession: {
+				title: '[auto] Document frontend checks',
+				text: draft,
+				intent: 'implementation',
+				codingAgent: 'codelayer',
+				provider: 'codex',
+				model: 'gpt-6-1-sol',
+				effort: 'high',
+				fastMode: false,
+				permissionsMode: 'bypass',
+			},
+		})
+		expect(api.ai.generateTitle).not.toHaveBeenCalled()
+	})
+
 	it('runs a directory task in place, named after its issue', async () => {
 		const { api, client } = fakeApi()
 		await startTask(client, {
