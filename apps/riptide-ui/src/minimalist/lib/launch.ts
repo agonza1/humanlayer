@@ -206,7 +206,7 @@ export async function startTask(api: RiptideApiClient, input: NewTask): Promise<
 	const firstSession = {
 		id: ids.sessionId,
 		eventId: ids.eventId,
-		title: phase?.title ?? null,
+		title: phase?.title ?? name,
 		text: phase?.prompt ?? text,
 		hostId: input.hostId,
 		...launchFields(input.settings),
@@ -258,7 +258,7 @@ export async function startTask(api: RiptideApiClient, input: NewTask): Promise<
 			{ context: { silent: true } },
 		)
 	}
-	if (ticket) return
+	if (ticket || AGENT_PROVIDERS[input.settings.agent] === 'codex') return
 	void api.ai
 		.generateTitle({ text })
 		.then(({ title }) => (title.trim() ? api.tasks.update({ taskId: ids.taskId, name: title.trim() }) : null))
