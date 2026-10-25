@@ -82,6 +82,7 @@ describe('buildKanbanColumns', () => {
 			'planning',
 			'implementation',
 			'in-review',
+			'blocked',
 			'done',
 		])
 	})
@@ -496,5 +497,66 @@ describe('confirmed merged delivery projection', () => {
 				sessions,
 			),
 		).toBe('implementation')
+	})
+})
+
+describe('native Codex execution phase projection', () => {
+	const native_execution = {
+		mode: 'main-mediated' as const,
+		stage: 'implementation' as const,
+		repository: 'owner/repo',
+		directory: '/isolated',
+		coderThreadId: '11111111-1111-4111-8111-111111111111',
+	}
+	test('projects implementation, independent review and blocked without HumanLayer sessions', () => {
+		expect(assignColumn({ native_execution }, [])).toBe('implementation')
+		const review = {
+			...native_execution,
+			stage: 'in_review' as const,
+			qaThreadId: '22222222-2222-4222-8222-222222222222',
+			headSha: 'a'.repeat(40),
+		}
+		expect(assignColumn({ native_execution: review }, [session({ labels: [label('rpi:implementation')] })])).toBe(
+			'in-review',
+		)
+		const blocked = { ...review, stage: 'blocked' as const, reason: 'QA regression' }
+		const columns = buildKanbanColumns({
+			tasks: [
+				{
+					id: 'native',
+					name: 'Native task',
+					resource_owner_user_id: 'owner',
+					native_execution: blocked,
+					sessions: [],
+				},
+			],
+			resolveOwner,
+		})
+		expect(columns.find((column) => column.id === 'blocked')?.cards[0]?.workflowLabel.title).toBe('Blocked')
+		expect(columns.find((column) => column.id === 'done')?.cards).toEqual([])
+	})
+	test('confirmed delivery wins over any native stage and review is not Done', () => {
+		const blocked = { ...native_execution, stage: 'blocked' as const, reason: 'Old blocked snapshot' }
+		expect(
+			assignColumn(
+				{
+					native_execution: blocked,
+					delivery_result: {
+						status: 'merged',
+						pullRequestUrl: 'https://github.com/owner/repo/pull/1',
+						headSha: 'a'.repeat(40),
+					},
+				},
+				[],
+			),
+		).toBe('done')
+		expect(assignColumn({ native_execution }, [])).not.toBe('done')
+	})
+	test('invalid native metadata falls back to the normal workflow', () => {
+		expect(
+			assignColumn({ native_execution: { ...native_execution, coderThreadId: '' } }, [
+				session({ labels: [label('rpi:plan')] }),
+			]),
+		).toBe('planning')
 	})
 })

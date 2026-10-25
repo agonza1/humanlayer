@@ -1,4 +1,5 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
+import { TaskNativeExecutionSchema } from '@humanlayer/db/zodschemas/task-native-execution'
 import { Link } from '@tanstack/react-router'
 import {
 	Copy,
@@ -58,6 +59,7 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 		...documents.filter(isPromptArtifact),
 	]
 	if (!task) return null
+	const nativeExecution = TaskNativeExecutionSchema.safeParse(task.native_execution).success
 	return (
 		<aside className={`task-nav${taskSidebarOpen ? ' open' : ''}`} aria-label="Task navigation">
 			<header className="task-nav-head">
@@ -78,7 +80,7 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 					<div className="section">
 						Sessions
 						<span className="sp" />
-						{task.is_draft ? null : (
+						{task.is_draft || nativeExecution ? null : (
 							<Link
 								to="/"
 								search={{ task: taskId }}
@@ -99,7 +101,11 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 								selectedSessionId={sessionId}
 							/>
 						))}
-						{active.length === 0 ? <div className="empty">No sessions yet</div> : null}
+						{active.length === 0 ? (
+							<div className="empty">
+								{nativeExecution ? 'Work runs in the linked Codex chats' : 'No sessions yet'}
+							</div>
+						) : null}
 						{archived.length > 0 ? (
 							<button
 								type="button"

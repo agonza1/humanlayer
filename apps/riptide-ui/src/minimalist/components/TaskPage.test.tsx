@@ -255,3 +255,50 @@ describe('task destinations', () => {
 		expect(screen.getByTestId('target-research')).toHaveTextContent('first')
 	})
 })
+
+describe('sessionless native Codex tasks', () => {
+	const native_execution = {
+		mode: 'main-mediated',
+		stage: 'in_review',
+		repository: 'owner/repo',
+		directory: '/isolated',
+		coderThreadId: '11111111-1111-4111-8111-111111111111',
+		qaThreadId: '22222222-2222-4222-8222-222222222222',
+		headSha: 'a'.repeat(40),
+	}
+	it('shows native chats and artifacts without offering a HumanLayer session', () => {
+		data.task = { id: 'task', name: 'Native task', workspace_id: null, native_execution }
+		data.sessions = []
+		openPage()
+		expect(screen.getByRole('heading', { name: 'Follow this task in Codex' })).toBeVisible()
+		expect(screen.getByRole('link', { name: 'Coder chat' })).toHaveAttribute(
+			'href',
+			`codex://threads/${native_execution.coderThreadId}`,
+		)
+		expect(screen.getByRole('link', { name: 'QA chat' })).toBeVisible()
+		expect(screen.getByText('In review')).toBeVisible()
+		expect(screen.queryByText('No sessions yet')).toBeNull()
+		expect(screen.queryByRole('link', { name: 'New session' })).toBeNull()
+		expect(screen.getByRole('region', { name: 'Artifacts' })).toBeVisible()
+	})
+	it('opens a delivered PR panel and shows Done without native workspace metadata', () => {
+		data.task = {
+			id: 'task',
+			name: 'Delivered native task',
+			workspace_id: null,
+			native_execution,
+			delivery_result: {
+				status: 'merged',
+				pullRequestUrl: 'https://github.com/owner/repo/pull/1',
+				headSha: native_execution.headSha,
+			},
+		}
+		data.sessions = []
+		route.search = { pr: true }
+		openPage()
+		expect(screen.getByRole('complementary', { name: 'Pull requests' })).toBeVisible()
+		expect(screen.getByText('PR details')).toBeVisible()
+		expect(screen.getByText('Done')).toBeVisible()
+		expect(screen.queryByText('In review')).toBeNull()
+	})
+})

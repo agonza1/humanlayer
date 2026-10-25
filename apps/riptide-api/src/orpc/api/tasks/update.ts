@@ -22,6 +22,7 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 		const {
 			taskId,
 			deliveryResult,
+			nativeExecution,
 			name,
 			defaultWorkingDirectory,
 			setupStatus,
@@ -51,6 +52,7 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 		// disqualifies it. Reuses the JWT claim `requireAdmin` reads.
 		const isAdmin = context.auth.role === 'admin' || context.auth.roles?.includes('admin')
 		const onlyNameChanged =
+			nativeExecution === undefined &&
 			deliveryResult === undefined &&
 			name !== undefined &&
 			defaultWorkingDirectory === undefined &&
@@ -138,6 +140,7 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 					autoAdvanceImplementationToPr !== undefined
 
 				const hasTaskOnlyFields =
+					nativeExecution !== undefined ||
 					deliveryResult !== undefined ||
 					name !== undefined ||
 					slug !== undefined ||
@@ -239,6 +242,7 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 				// Build update object with only provided fields
 				// For non-owners, user-settings fields were already handled above
 				const updates: Partial<typeof tasks.$inferInsert> = {}
+				if (nativeExecution !== undefined) updates.native_execution = nativeExecution
 				if (deliveryResult !== undefined) updates.delivery_result = deliveryResult
 				if (name !== undefined) updates.name = name
 				if (setupStatus !== undefined) updates.setup_status = setupStatus

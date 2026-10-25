@@ -4889,3 +4889,11 @@
 .minimalist-ui .shared-settings [data-slot='switch-thumb'] {
 	background: var(--terminal-bg);
 }
+
+.minimalist-ui .native-chats {
+	padding: 8px 14px;
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+.minimalist-ui .native-chats a { color: var(--terminal-accent); }
+.minimalist-ui .native-chats code { font-size: 10px; }

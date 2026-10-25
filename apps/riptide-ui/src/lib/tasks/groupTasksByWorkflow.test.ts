@@ -20,6 +20,7 @@ describe('groupTasksByWorkflow', () => {
 
 		expect(groups.map((group) => group.id)).toEqual([
 			'done',
+			'blocked',
 			'in-review',
 			'implementation',
 			'planning',
@@ -28,6 +29,7 @@ describe('groupTasksByWorkflow', () => {
 		])
 		expect(groups.map((group) => group.title)).toEqual([
 			'Done',
+			'Blocked',
 			'In Review',
 			'Implementation',
 			'Planning',
@@ -39,8 +41,8 @@ describe('groupTasksByWorkflow', () => {
 	test('keeps empty groups so the header set does not change as tasks move', () => {
 		const groups = groupTasksByWorkflow([task('a', [session('rpi:review', 100)])])
 
-		expect(groups).toHaveLength(6)
-		expect(groups.filter((group) => group.taskIds.length === 0)).toHaveLength(5)
+		expect(groups).toHaveLength(7)
+		expect(groups.filter((group) => group.taskIds.length === 0)).toHaveLength(6)
 	})
 
 	test('places each task in the group matching its board column', () => {
@@ -106,4 +108,19 @@ test('grouped list uses the same merged outcome as both board variants', () => {
 	const groups = groupTasksByWorkflow([merged, task('not-merged', [session('rpi:implementation', 100)])])
 	expect(groups.find((g) => g.id === 'done')?.taskIds).toEqual(['merged'])
 	expect(groups.find((g) => g.id === 'implementation')?.taskIds).toEqual(['not-merged'])
+})
+
+test('grouped list projects native review from durable task metadata', () => {
+	const native_execution = {
+		mode: 'main-mediated' as const,
+		stage: 'in_review' as const,
+		repository: 'owner/repo',
+		directory: '/isolated',
+		coderThreadId: '11111111-1111-4111-8111-111111111111',
+		qaThreadId: '22222222-2222-4222-8222-222222222222',
+		headSha: 'a'.repeat(40),
+	}
+	const groups = groupTasksByWorkflow([{ ...task('native'), native_execution }])
+	expect(groups.find((group) => group.id === 'in-review')?.taskIds).toEqual(['native'])
+	expect(groups.find((group) => group.id === 'todo')?.taskIds).toEqual([])
 })

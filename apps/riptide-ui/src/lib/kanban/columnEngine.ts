@@ -1,4 +1,5 @@
 import { TaskDeliveryResultSchema, type TaskDeliveryResult } from '@humanlayer/db/zodschemas/task-delivery-result'
+import { TaskNativeExecutionSchema, type TaskNativeExecution } from '@humanlayer/db/zodschemas/task-native-execution'
 import type { KanbanCardModel as KanbanCard, KanbanColumns } from '@humanlayer/ui/components/kanban'
 import { RPI_LABELS, type SessionLabel } from '@humanlayer/ui/components/session-label-badge'
 import { Option, Schema } from 'effect'
@@ -7,7 +8,7 @@ import { activityMinute } from '@/lib/activitySorting'
 import { aggregateTaskStatus } from '@/lib/taskStatus'
 
 /** Fixed kanban column ids, left-to-right workflow order. */
-export type ColumnId = 'todo' | 'research-design' | 'planning' | 'implementation' | 'in-review' | 'done'
+export type ColumnId = 'todo' | 'research-design' | 'planning' | 'implementation' | 'in-review' | 'blocked' | 'done'
 
 /** Ordered column definitions (titles match the prototype). */
 export const KANBAN_COLUMN_DEFS: ReadonlyArray<{ id: ColumnId; title: string }> = [
@@ -16,6 +17,7 @@ export const KANBAN_COLUMN_DEFS: ReadonlyArray<{ id: ColumnId; title: string }> 
 	{ id: 'planning', title: 'Planning' },
 	{ id: 'implementation', title: 'Implementation' },
 	{ id: 'in-review', title: 'In Review' },
+	{ id: 'blocked', title: 'Blocked' },
 	{ id: 'done', title: 'Done' },
 ]
 
@@ -145,10 +147,16 @@ function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | nu
  * Otherwise, drafts or tasks with no labeled, non-archived session land in `todo`.
  */
 export function assignColumn(
-	task: { is_draft?: boolean; delivery_result?: TaskDeliveryResult | null },
+	task: {
+		is_draft?: boolean
+		delivery_result?: TaskDeliveryResult | null
+		native_execution?: TaskNativeExecution | null
+	},
 	sessions: KanbanSessionInput[],
 ): ColumnId {
 	if (TaskDeliveryResultSchema.safeParse(task.delivery_result).success) return 'done'
+	const native = TaskNativeExecutionSchema.safeParse(task.native_execution)
+	if (native.success) return native.data.stage === 'in_review' ? 'in-review' : native.data.stage
 	const result = assignColumnInternal(sessions)
 	return result?.columnId ?? 'todo'
 }
@@ -160,6 +168,7 @@ export interface KanbanTaskInput {
 	created_at?: bigint | null
 	is_draft?: boolean
 	delivery_result?: TaskDeliveryResult | null
+	native_execution?: TaskNativeExecution | null
 	resource_owner_user_id: string | null
 	sessions: KanbanSessionInput[]
 }
@@ -228,7 +237,12 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 		const workflowLabel: SessionLabel =
 			columnId === 'done'
 				? { name: 'delivery:merged', title: 'Done' }
-				: (assignment?.label ?? { name: 'rpi:todo', title: 'todo' })
+				: TaskNativeExecutionSchema.safeParse(task.native_execution).success
+					? {
+							name: `native:${columnId}`,
+							title: KANBAN_COLUMN_DEFS.find((column) => column.id === columnId)?.title ?? 'Task',
+						}
+					: (assignment?.label ?? { name: 'rpi:todo', title: 'todo' })
 		const activity = assignment?.activity ?? -1n
 		const ageTimestamp = assignment?.activity ?? task.created_at
 

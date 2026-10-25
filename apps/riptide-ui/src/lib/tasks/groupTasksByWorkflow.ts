@@ -1,4 +1,5 @@
 import type { TaskDeliveryResult } from '@humanlayer/db/zodschemas/task-delivery-result'
+import type { TaskNativeExecution } from '@humanlayer/db/zodschemas/task-native-execution'
 /**
  * Workflow grouping for the List layout.
  *
@@ -15,6 +16,7 @@ import { assignColumn, type ColumnId, KANBAN_COLUMN_DEFS, type KanbanSessionInpu
 export interface GroupableTask {
 	id: string
 	is_draft?: boolean | null
+	native_execution?: TaskNativeExecution | null
 	delivery_result?: TaskDeliveryResult | null
 	workflowSessions: KanbanSessionInput[]
 }
@@ -44,7 +46,11 @@ export function groupTasksByWorkflow(tasks: GroupableTask[]): TaskGroup[] {
 
 	for (const task of tasks) {
 		const columnId = assignColumn(
-			{ is_draft: task.is_draft ?? false, delivery_result: task.delivery_result },
+			{
+				is_draft: task.is_draft ?? false,
+				delivery_result: task.delivery_result,
+				native_execution: task.native_execution,
+			},
 			task.workflowSessions,
 		)
 		taskIdsByColumn.get(columnId)?.push(task.id)
