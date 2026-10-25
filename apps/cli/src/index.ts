@@ -12,8 +12,6 @@ import { daemonLaunchCommand } from './commands/daemon-launch'
 import { loginCommand } from './commands/login'
 import { logoutCommand } from './commands/logout'
 import { BUILD_VERSION, type EnvironmentName, resolveEnvironmentConfig } from './lib/macros'
-import { registerLocalDelivery } from './local-delivery/runtime'
-import { registerNativeBridge } from './native-bridge'
 
 const program = new Command()
 	.name('humanlayer')
@@ -91,8 +89,6 @@ automation
 	})
 
 registerApiCommand(program, getEnv)
-registerLocalDelivery(program)
-registerNativeBridge(program)
 
 const agents = program.command('agents').description('Manage AI agents and providers')
 registerAgentsAuthCommands(agents)

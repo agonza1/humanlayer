@@ -58,8 +58,6 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 					created_at: tasks.created_at,
 					archived: tasks.archived,
 					is_draft: tasks.is_draft,
-					delivery_result: tasks.delivery_result,
-					native_execution: tasks.native_execution,
 					resource_owner_user_id: tasks.resource_owner_user_id,
 				})),
 		[tasksCollection, mode, selectedUserIds],
@@ -134,8 +132,6 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 			name: task.name,
 			created_at: task.created_at,
 			is_draft: task.is_draft ?? false,
-			delivery_result: task.delivery_result,
-			native_execution: task.native_execution,
 			resource_owner_user_id: task.resource_owner_user_id,
 			sessions: (sessionsByTaskId.get(task.id) ?? []).map(
 				(s): KanbanSessionInput => ({

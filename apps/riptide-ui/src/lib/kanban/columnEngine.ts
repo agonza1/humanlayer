@@ -1,5 +1,3 @@
-import { TaskDeliveryResultSchema, type TaskDeliveryResult } from '@humanlayer/db/zodschemas/task-delivery-result'
-import { TaskNativeExecutionSchema, type TaskNativeExecution } from '@humanlayer/db/zodschemas/task-native-execution'
 import type { KanbanCardModel as KanbanCard, KanbanColumns } from '@humanlayer/ui/components/kanban'
 import { RPI_LABELS, type SessionLabel } from '@humanlayer/ui/components/session-label-badge'
 import { Option, Schema } from 'effect'
@@ -8,7 +6,7 @@ import { activityMinute } from '@/lib/activitySorting'
 import { aggregateTaskStatus } from '@/lib/taskStatus'
 
 /** Fixed kanban column ids, left-to-right workflow order. */
-export type ColumnId = 'todo' | 'research-design' | 'planning' | 'implementation' | 'in-review' | 'blocked' | 'done'
+export type ColumnId = 'todo' | 'research-design' | 'planning' | 'implementation' | 'in-review'
 
 /** Ordered column definitions (titles match the prototype). */
 export const KANBAN_COLUMN_DEFS: ReadonlyArray<{ id: ColumnId; title: string }> = [
@@ -17,8 +15,6 @@ export const KANBAN_COLUMN_DEFS: ReadonlyArray<{ id: ColumnId; title: string }> 
 	{ id: 'planning', title: 'Planning' },
 	{ id: 'implementation', title: 'Implementation' },
 	{ id: 'in-review', title: 'In Review' },
-	{ id: 'blocked', title: 'Blocked' },
-	{ id: 'done', title: 'Done' },
 ]
 
 /**
@@ -143,20 +139,10 @@ function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | nu
 /**
  * Public column-assignment helper.
  *
- * A confirmed task delivery always lands in `done`, ahead of session labels.
- * Otherwise, drafts or tasks with no labeled, non-archived session land in `todo`.
+ * Returns the column id for a task given its sessions. Draft tasks (or any task
+ * with no labeled, non-archived session) land in `todo`.
  */
-export function assignColumn(
-	task: {
-		is_draft?: boolean
-		delivery_result?: TaskDeliveryResult | null
-		native_execution?: TaskNativeExecution | null
-	},
-	sessions: KanbanSessionInput[],
-): ColumnId {
-	if (TaskDeliveryResultSchema.safeParse(task.delivery_result).success) return 'done'
-	const native = TaskNativeExecutionSchema.safeParse(task.native_execution)
-	if (native.success) return native.data.stage === 'in_review' ? 'in-review' : native.data.stage
+export function assignColumn(_task: { is_draft?: boolean }, sessions: KanbanSessionInput[]): ColumnId {
 	const result = assignColumnInternal(sessions)
 	return result?.columnId ?? 'todo'
 }
@@ -167,8 +153,6 @@ export interface KanbanTaskInput {
 	name: string
 	created_at?: bigint | null
 	is_draft?: boolean
-	delivery_result?: TaskDeliveryResult | null
-	native_execution?: TaskNativeExecution | null
 	resource_owner_user_id: string | null
 	sessions: KanbanSessionInput[]
 }
@@ -217,7 +201,7 @@ interface CardWithActivity {
 }
 
 /**
- * Build the ordered kanban columns from tasks + their sessions.
+ * Build the 5 ordered kanban columns from tasks + their sessions.
  *
  * Within each column, cards are sorted by the winning session's activity
  * minute, then task creation time, both descending.
@@ -231,18 +215,10 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 
 	for (const task of input.tasks) {
 		const assignment = assignColumnInternal(task.sessions)
-		const columnId = assignColumn(task, task.sessions)
+		const columnId: ColumnId = assignment?.columnId ?? 'todo'
 		const owner = input.resolveOwner(task.resource_owner_user_id)
 		const owners = getTaskOwnerIds(task).map((userId) => ({ id: userId, ...input.resolveOwner(userId) }))
-		const workflowLabel: SessionLabel =
-			columnId === 'done'
-				? { name: 'delivery:merged', title: 'Done' }
-				: TaskNativeExecutionSchema.safeParse(task.native_execution).success
-					? {
-							name: `native:${columnId}`,
-							title: KANBAN_COLUMN_DEFS.find((column) => column.id === columnId)?.title ?? 'Task',
-						}
-					: (assignment?.label ?? { name: 'rpi:todo', title: 'todo' })
+		const workflowLabel: SessionLabel = assignment?.label ?? { name: 'rpi:todo', title: 'todo' }
 		const activity = assignment?.activity ?? -1n
 		const ageTimestamp = assignment?.activity ?? task.created_at
 

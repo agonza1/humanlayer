@@ -15,7 +15,6 @@ import { useRiptideApi } from '@/orpc/client'
 
 import { Avatar } from './Avatar'
 import { Menu, MenuItem } from './Menu'
-import { NativeExecutionLinks } from './NativeExecutionLinks'
 
 /**
  * Where the task runs and who is on it: project, directory, branch, host, workflow, ticket, owner,
@@ -46,11 +45,6 @@ export function WiredTaskDetails({ taskId }: { taskId: string }) {
 			) : null}
 			{host ? <Detail term="Host">{host.name}</Detail> : null}
 			<WorkflowDetail taskId={taskId} />
-			{task.native_execution ? (
-				<Detail term="Codex chats">
-					<NativeExecutionLinks value={task.native_execution} deliveryResult={task.delivery_result} />
-				</Detail>
-			) : null}
 			{task.ticket_id ? <TicketDetail id={task.ticket_id} url={task.ticket_url} /> : null}
 			<Detail term="Owner">
 				<Person userId={owner} member={membersMap.get(owner)} />

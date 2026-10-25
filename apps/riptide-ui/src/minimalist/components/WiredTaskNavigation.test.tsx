@@ -14,31 +14,22 @@ type NavigationSession = Pick<Session, 'id' | 'task_id' | 'title' | 'summary' | 
 const { useSync, data, updateTask } = vi.hoisted(() => ({
 	useSync: vi.fn(),
 	updateTask: vi.fn(async () => ({})),
-	data: { sessions: [] as NavigationSession[], deliveryResult: undefined as unknown },
+	data: { sessions: [] as NavigationSession[] },
 }))
 vi.mock('./TaskDetails', () => ({ WiredTaskDetails: () => null }))
 vi.mock('@/orpc/client', () => ({ useRiptideApi: () => ({ client: { tasks: { update: updateTask } } }) }))
 vi.mock('@/minimalist/lib/auto-advance', () => ({
 	useTaskAutoAdvance: () => ({ available: false, on: false, handOffs: [], toggle: vi.fn() }),
 }))
-vi.mock('@/minimalist/lib/pull-requests', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('@/minimalist/lib/pull-requests')>()
-	return {
-		...actual,
-		useTaskPullRequest: () => ({
-			branch: null,
-			delivered: actual.deliveredPullRequest({ name: 'Task name', delivery_result: data.deliveryResult }),
-		}),
-	}
-})
+vi.mock('@/minimalist/lib/pull-requests', async (importOriginal) => ({
+	...(await importOriginal<typeof import('@/minimalist/lib/pull-requests')>()),
+	useTaskPullRequest: () => ({ branch: null }),
+}))
 vi.mock('./ReviewPanel', () => ({ useDiffTotals: () => null }))
 vi.mock('@/components/providers/SyncProvider', () => ({ useSync }))
 vi.mock('@/minimalist/lib/data', async (importOriginal) => ({
 	...(await importOriginal<typeof import('@/minimalist/lib/data')>()),
-	useTask: () => ({
-		task: { id: 'task', name: 'Task name', delivery_result: data.deliveryResult },
-		sessions: data.sessions,
-	}),
+	useTask: () => ({ task: { id: 'task', name: 'Task name' }, sessions: data.sessions }),
 	useTaskArtifacts: () => [],
 	canReview: () => false,
 }))
@@ -229,29 +220,4 @@ describe('task navigation list layout', () => {
 		// Changes and the pull request keep their full height in a short window.
 		expect(cssRule('.task-nav-views')).not.toContain('min-height')
 	})
-})
-
-it('shows the delivered PR number, title and merged badge without workspace metadata', () => {
-	data.sessions = []
-	data.deliveryResult = {
-		status: 'merged',
-		pullRequestUrl: 'https://github.com/owner/repo/pull/15',
-		headSha: 'a'.repeat(40),
-	}
-	useSync.mockReturnValue({
-		sessionsCollection: syncedSession({
-			id: 'none',
-			task_id: 'task',
-			title: null,
-			summary: null,
-			archived: false,
-			status: 'ready_for_input',
-			labels: [],
-		}).collection,
-	})
-	render(<WiredTaskNavigation taskId="task" />)
-	const row = screen.getByRole('button', { name: /Pull request #15,\s*Merged/ })
-	expect(row).toHaveAttribute('title', 'Task name · #15')
-	expect(screen.queryByRole('button', { name: /Changes/ })).toBeNull()
-	data.deliveryResult = undefined
 })
