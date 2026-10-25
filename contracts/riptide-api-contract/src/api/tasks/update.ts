@@ -1,3 +1,4 @@
+import { TaskDeliveryResultSchema } from '@humanlayer/db/zodschemas/task-delivery-result'
 import { RESOLVED_TASK_WORKFLOW_TYPES } from '@humanlayer/schemas/effect/taskconfiguration'
 import z from 'zod/v4'
 
@@ -6,6 +7,7 @@ import { TicketProviderSchema } from '../../lib/ticket-provider'
 
 export const UpdateTaskInputSchema = z.object({
 	taskId: z.uuidv7().describe('The task ID to update'),
+	deliveryResult: TaskDeliveryResultSchema.optional().describe('Confirmed merge outcome (owner-only)'),
 	name: z.string().min(1).optional().describe('New name for the task'),
 	slug: z.string().min(1).optional().describe('Task slug (immutable once set)'),
 	defaultWorkingDirectory: z.string().optional().describe('Default working directory for new sessions'),

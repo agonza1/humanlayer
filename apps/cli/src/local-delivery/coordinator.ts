@@ -54,6 +54,8 @@ export interface RecordState {
 	verdict?: Verdict
 	reason?: string
 	prUrl?: string
+	boardPublished?: boolean
+	boardReason?: string
 	reportPublished?: boolean
 	reportReason?: string
 }
@@ -70,6 +72,7 @@ export interface Adapter {
 	launchQA(record: RecordState): Promise<void>
 	qaResult(id: string): Promise<string>
 	publish(record: RecordState): Promise<string>
+	completeTask(record: RecordState): Promise<void>
 	reportDelivery(record: RecordState): Promise<void>
 }
 const active = new Set([
@@ -125,6 +128,21 @@ export function parseVerdict(text: string): Verdict {
 function sameSnapshot(a: Snapshot, b: Snapshot) {
 	return b.clean && a.head === b.head && a.branch === b.branch && a.base === b.base
 }
+export function deliveryResult(record: RecordState) {
+	if (
+		record.phase !== 'merged' ||
+		!record.prUrl ||
+		!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9]\d*$/.test(record.prUrl) ||
+		!record.snapshot ||
+		!/^[a-f0-9]{40}$/.test(record.snapshot.head) ||
+		record.verdict?.verdict !== 'pass' ||
+		record.verdict.headSha !== record.snapshot.head ||
+		record.verdict.findings.some((f) => f.scope === 'in_scope')
+	)
+		throw new Error('Merged delivery lacks its PR or exact-commit QA approval')
+	return { status: 'merged' as const, pullRequestUrl: record.prUrl, headSha: record.snapshot.head }
+}
+
 export function deliveryReport(record: RecordState): string {
 	if (record.phase !== 'merged' || !record.prUrl || !record.snapshot || !record.verdict)
 		throw new Error('Merged delivery lacks its PR or QA evidence')
@@ -152,7 +170,22 @@ export function deliveryReport(record: RecordState): string {
 }
 async function reportMerged(state: State, a: Adapter, save: () => Promise<void>): Promise<void> {
 	for (const record of Object.values(state.records)) {
-		if (record.phase !== 'merged' || record.reportPublished) continue
+		if (record.phase !== 'merged') continue
+		if (!record.boardPublished) {
+			try {
+				deliveryResult(record)
+				await a.completeTask(record)
+				record.boardPublished = true
+				record.boardReason = undefined
+			} catch (error) {
+				record.boardReason =
+					'Delivery merged; board update pending: ' +
+					(error instanceof Error ? error.message : 'task update failed')
+			}
+			// Idempotent task projection is independent of receipt publication.
+			await save()
+		}
+		if (record.reportPublished) continue
 		try {
 			await a.reportDelivery(record)
 			record.reportPublished = true

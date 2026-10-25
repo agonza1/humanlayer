@@ -8,6 +8,7 @@ import {
 	type KanbanSessionInput,
 	type KanbanTaskInput,
 	LABEL_TO_COLUMN,
+	KANBAN_COLUMN_DEFS,
 } from './columnEngine'
 
 function label(name: string): SessionLabel {
@@ -73,9 +74,16 @@ describe('assignColumn', () => {
 })
 
 describe('buildKanbanColumns', () => {
-	test('produces the 5 ordered columns', () => {
+	test('produces the ordered columns including Done', () => {
 		const columns = buildKanbanColumns({ tasks: [], resolveOwner })
-		expect(columns.map((c) => c.id)).toEqual(['todo', 'research-design', 'planning', 'implementation', 'in-review'])
+		expect(columns.map((c) => c.id)).toEqual([
+			'todo',
+			'research-design',
+			'planning',
+			'implementation',
+			'in-review',
+			'done',
+		])
 	})
 
 	test('places tasks into their assigned columns with workflow badge', () => {
@@ -455,5 +463,38 @@ describe('buildKanbanColumns', () => {
 		]
 		const todo = buildKanbanColumns({ tasks, resolveOwner }).find((c) => c.id === 'todo')
 		expect(todo?.cards[0]?.isDraft).toBe(false)
+	})
+})
+
+describe('confirmed merged delivery projection', () => {
+	const delivery_result = {
+		status: 'merged' as const,
+		pullRequestUrl: 'https://github.com/owner/repo/pull/1',
+		headSha: 'a'.repeat(40),
+	}
+	const sessions = [session({ labels: [label('rpi:implementation')], last_activity_at: 99n })]
+	test('confirmed delivery wins over implementation in shared assignment and standard board', () => {
+		expect(assignColumn({ delivery_result }, sessions)).toBe('done')
+		const columns = buildKanbanColumns({
+			tasks: [{ id: 'merged', name: 'Merged task', delivery_result, resource_owner_user_id: 'owner', sessions }],
+			resolveOwner,
+		})
+		expect(columns.find((c) => c.id === 'done')?.cards.map((c) => c.id)).toEqual(['merged'])
+		expect(columns.find((c) => c.id === 'implementation')?.cards).toEqual([])
+		expect(columns.find((c) => c.id === 'done')?.cards[0]?.workflowLabel.title).toBe('Done')
+		expect(KANBAN_COLUMN_DEFS.at(-1)).toEqual({ id: 'done', title: 'Done' })
+	})
+	test('ordinary finished sessions and missing delivery outcome stay in implementation', () => {
+		expect(assignColumn({}, sessions)).toBe('implementation')
+		expect(assignColumn({ delivery_result: null }, sessions)).toBe('implementation')
+	})
+	test('incomplete or invalid merge data cannot move a card to Done', () => {
+		expect(assignColumn({ delivery_result: { ...delivery_result, headSha: '' } }, sessions)).toBe('implementation')
+		expect(
+			assignColumn(
+				{ delivery_result: { ...delivery_result, pullRequestUrl: 'https://example.com/pull/1' } },
+				sessions,
+			),
+		).toBe('implementation')
 	})
 })

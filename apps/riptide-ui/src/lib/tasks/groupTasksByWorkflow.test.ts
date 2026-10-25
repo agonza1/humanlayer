@@ -15,10 +15,11 @@ function task(id: string, sessions: GroupableTask['workflowSessions'] = [], is_d
 }
 
 describe('groupTasksByWorkflow', () => {
-	test('returns the five workflow groups, latest phase first', () => {
+	test('returns the workflow groups, latest phase first', () => {
 		const groups = groupTasksByWorkflow([])
 
 		expect(groups.map((group) => group.id)).toEqual([
+			'done',
 			'in-review',
 			'implementation',
 			'planning',
@@ -26,6 +27,7 @@ describe('groupTasksByWorkflow', () => {
 			'todo',
 		])
 		expect(groups.map((group) => group.title)).toEqual([
+			'Done',
 			'In Review',
 			'Implementation',
 			'Planning',
@@ -37,8 +39,8 @@ describe('groupTasksByWorkflow', () => {
 	test('keeps empty groups so the header set does not change as tasks move', () => {
 		const groups = groupTasksByWorkflow([task('a', [session('rpi:review', 100)])])
 
-		expect(groups).toHaveLength(5)
-		expect(groups.filter((group) => group.taskIds.length === 0)).toHaveLength(4)
+		expect(groups).toHaveLength(6)
+		expect(groups.filter((group) => group.taskIds.length === 0)).toHaveLength(5)
 	})
 
 	test('places each task in the group matching its board column', () => {
@@ -90,4 +92,18 @@ describe('groupTasksByWorkflow', () => {
 		const research = groups.find((group) => group.id === 'research-design')
 		expect(research?.taskIds).toEqual(['a'])
 	})
+})
+
+test('grouped list uses the same merged outcome as both board variants', () => {
+	const merged = {
+		...task('merged', [session('rpi:implementation', 99)]),
+		delivery_result: {
+			status: 'merged' as const,
+			pullRequestUrl: 'https://github.com/owner/repo/pull/1',
+			headSha: 'a'.repeat(40),
+		},
+	}
+	const groups = groupTasksByWorkflow([merged, task('not-merged', [session('rpi:implementation', 100)])])
+	expect(groups.find((g) => g.id === 'done')?.taskIds).toEqual(['merged'])
+	expect(groups.find((g) => g.id === 'implementation')?.taskIds).toEqual(['not-merged'])
 })

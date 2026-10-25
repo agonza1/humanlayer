@@ -1,3 +1,4 @@
+import type { TaskDeliveryResult } from '@humanlayer/db/zodschemas/task-delivery-result'
 /**
  * Workflow grouping for the List layout.
  *
@@ -14,6 +15,7 @@ import { assignColumn, type ColumnId, KANBAN_COLUMN_DEFS, type KanbanSessionInpu
 export interface GroupableTask {
 	id: string
 	is_draft?: boolean | null
+	delivery_result?: TaskDeliveryResult | null
 	workflowSessions: KanbanSessionInput[]
 }
 
@@ -24,9 +26,9 @@ export interface TaskGroup {
 }
 
 /**
- * Group tasks into the five workflow groups, latest phase first.
+ * Group tasks into the workflow groups, latest phase first.
  *
- * The Board reads left-to-right from Todo to In Review; the List reverses that
+ * The Board reads left-to-right from Todo to Done; the List reverses that
  * so the most progressed work leads and Todo / Draft trails.
  *
  * Iterates `KANBAN_COLUMN_DEFS` rather than the groups actually present, so an
@@ -41,7 +43,10 @@ export function groupTasksByWorkflow(tasks: GroupableTask[]): TaskGroup[] {
 	}
 
 	for (const task of tasks) {
-		const columnId = assignColumn({ is_draft: task.is_draft ?? false }, task.workflowSessions)
+		const columnId = assignColumn(
+			{ is_draft: task.is_draft ?? false, delivery_result: task.delivery_result },
+			task.workflowSessions,
+		)
 		taskIdsByColumn.get(columnId)?.push(task.id)
 	}
 

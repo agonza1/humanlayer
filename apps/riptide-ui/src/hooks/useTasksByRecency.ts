@@ -1,3 +1,4 @@
+import type { TaskDeliveryResult } from '@humanlayer/db/zodschemas/task-delivery-result'
 import { eq, useLiveQuery } from '@tanstack/react-db'
 import { useMemo } from 'react'
 
@@ -12,6 +13,7 @@ export interface TaskWithActivity {
 	created_at: bigint | null
 	updated_at: bigint | null
 	archived: boolean
+	delivery_result?: TaskDeliveryResult | null
 	is_draft: boolean
 	team_id: string | null
 	project_id: string | null
@@ -99,6 +101,7 @@ export function useTasksByRecency(options: UseTasksByRecencyOptions = {}) {
 					updated_at: tasks.updated_at,
 					archived: tasks.archived,
 					is_draft: tasks.is_draft,
+					delivery_result: tasks.delivery_result,
 					team_id: tasks.team_id,
 					project_id: tasks.project_id,
 					organization_id: tasks.organization_id,
