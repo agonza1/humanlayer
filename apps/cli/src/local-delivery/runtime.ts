@@ -13,7 +13,16 @@ import type { Command } from 'commander'
 import { z } from 'zod/v4'
 
 import type { ApiORPCClient } from '../orpc/client'
-import { binding, deliveryReport, initialState, tick, type Adapter, type Config, type State } from './coordinator'
+import {
+	binding,
+	deliveryReport,
+	deliveryResult,
+	initialState,
+	tick,
+	type Adapter,
+	type Config,
+	type State,
+} from './coordinator'
 import { reconcileUntilStopped } from './lifecycle'
 const exec = promisify(execFile)
 const ConfigSchema = z
@@ -194,6 +203,10 @@ export function createAdapter(c: Config): Adapter {
 			const final = messages.at(-1)?.content
 			if (!final) throw new Error('QA has no final assistant message')
 			return final
+		},
+		completeTask: async (r) => {
+			const api = await getClient()
+			await api.tasks.update({ taskId: r.taskId, deliveryResult: deliveryResult(r) })
 		},
 		reportDelivery: async (r) => {
 			const api = await getClient()
@@ -379,6 +392,8 @@ export async function run(configPath: string, once = false) {
 							phase: r.phase,
 							reason: r.reason,
 							prUrl: r.prUrl,
+							boardPublished: r.boardPublished,
+							boardReason: r.boardReason,
 							reportPublished: r.reportPublished,
 							reportReason: r.reportReason,
 						})),

@@ -125,6 +125,68 @@ describe('Task/Session Access Control - Three-Actor Pattern', async () => {
 			expect(updatedTask?.name).not.toBe(originalName)
 		})
 
+		test('only the owner can publish an idempotent confirmed delivery result', async () => {
+			const [task] = await db
+				.insert(tasks)
+				.values({
+					organization_id: organizationId,
+					name: 'Delivery outcome',
+					resource_owner_user_id: ownerUserId,
+					created_by: ownerUserId,
+				})
+				.returning()
+			if (!task) throw new Error('Missing task')
+			await db.insert(taskUserAcl).values({
+				organization_id: organizationId,
+				subject_user_id: aclHolderUserId,
+				task_id: task.id,
+				resource_owner_user_id: ownerUserId,
+				permission_level: 'edit',
+				granted_by: ownerUserId,
+			})
+			const deliveryResult = {
+				status: 'merged' as const,
+				pullRequestUrl: 'https://github.com/owner/repo/pull/1',
+				headSha: 'a'.repeat(40),
+			}
+			for (const [userId, role] of [
+				[strangerUserId, 'member'],
+				[aclHolderUserId, 'member'],
+				[adminUserId, 'admin'],
+			] as const) {
+				await expect(
+					call(
+						updateTaskProcedure,
+						{ taskId: task.id, name: 'Cannot smuggle completion via admin rename', deliveryResult },
+						{
+							context: createMockApiContext({
+								auth: createMockApiAuth({ userId, organizationId, workosOrganizationId, role }),
+								services: { db, dbReadReplica: db },
+							}),
+						},
+					),
+				).rejects.toThrow()
+				const [unchanged] = await db.select().from(tasks).where(eq(tasks.id, task.id))
+				expect(unchanged?.delivery_result).toBeNull()
+				expect(unchanged?.name).toBe('Delivery outcome')
+			}
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const result = await call(
+					updateTaskProcedure,
+					{ taskId: task.id, deliveryResult },
+					{
+						context: createMockApiContext({
+							auth: createMockApiAuth({ userId: ownerUserId, organizationId, workosOrganizationId }),
+							services: { db, dbReadReplica: db },
+						}),
+					},
+				)
+				expect(result.success).toBe(true)
+			}
+			const [completed] = await db.select().from(tasks).where(eq(tasks.id, task.id))
+			expect(completed?.delivery_result).toEqual(deliveryResult)
+		})
+
 		test('ACL-holder with write permission can update user-settings-compatible fields and DB reflects changes in task_user_settings', async () => {
 			const originalWorkingDir = tmpdir()
 			const updatedWorkingDir = '/updated/working/dir'

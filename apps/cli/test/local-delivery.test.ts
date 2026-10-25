@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
 	deliveryReport,
+	deliveryResult,
 	initialState,
 	parseVerdict,
 	tick,
@@ -41,6 +42,7 @@ function fixture() {
 	let launches = 0,
 		publishes = 0,
 		reports = 0,
+		completions = 0,
 		id = 0
 	let result = JSON.stringify({ verdict: 'pass', headSha: head, findings: [], summary: 'Checks pass' })
 	const adapter: Adapter = {
@@ -60,6 +62,9 @@ function fixture() {
 			})
 		},
 		qaResult: async () => result,
+		completeTask: async () => {
+			completions++
+		},
 		reportDelivery: async () => {
 			reports++
 		},
@@ -85,6 +90,9 @@ function fixture() {
 		},
 		get launches() {
 			return launches
+		},
+		get completions() {
+			return completions
 		},
 		get reports() {
 			return reports
@@ -132,6 +140,8 @@ describe('local delivery', () => {
 		await f.step()
 		expect(f.publishes).toBe(1)
 		expect(f.state.records.task!.phase).toBe('merged')
+		expect(f.state.records.task!.boardPublished).toBe(true)
+		expect(f.completions).toBe(1)
 		f.restart()
 		await f.step()
 		expect(f.publishes).toBe(1)
@@ -146,6 +156,8 @@ describe('local delivery', () => {
 		await f.step()
 		expect(f.state.records.task!.phase).toBe('merged')
 		expect(f.state.records.task!.reportReason).toContain('receipt pending')
+		expect(f.state.records.task!.boardPublished).toBe(true)
+		expect(f.completions).toBe(1)
 		expect(f.publishes).toBe(1)
 		f.restart()
 		let attempts = 0
@@ -313,5 +325,86 @@ describe('local delivery', () => {
 	it('rejects malformed or stale QA output', () => {
 		expect(() => parseVerdict('looks good')).toThrow()
 		expect(() => parseVerdict('{"verdict":"pass","headSha":"x","findings":[],"summary":"ok"}')).toThrow()
+	})
+})
+
+describe('board completion reconciliation', () => {
+	it('retries a failed board update after restart even when receipt already published', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		f.adapter.completeTask = async () => {
+			throw new Error('API offline')
+		}
+		await f.step()
+		expect(f.state.records.task!.phase).toBe('merged')
+		expect(f.state.records.task!.boardPublished).toBeUndefined()
+		expect(f.state.records.task!.boardReason).toContain('board update pending')
+		expect(f.state.records.task!.reportPublished).toBe(true)
+		f.restart()
+		let updates = 0
+		f.adapter.completeTask = async () => {
+			updates++
+		}
+		await f.step()
+		expect(updates).toBe(1)
+		expect(f.state.records.task!.boardPublished).toBe(true)
+		expect(f.state.records.task!.boardReason).toBeUndefined()
+		f.restart()
+		await f.step()
+		expect(updates).toBe(1)
+		expect(f.publishes).toBe(1)
+	})
+	it('backfills legacy merged state with published receipt and no remaining sessions', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		await f.step()
+		delete f.state.records.task!.boardPublished
+		f.sessions().length = 0
+		await f.step()
+		expect(f.completions).toBe(2)
+		expect(f.reports).toBe(1)
+		expect(f.publishes).toBe(1)
+	})
+	it('never completes running or QA rejected tasks', async () => {
+		const f = fixture()
+		await f.step()
+		expect(f.completions).toBe(0)
+		f.fail()
+		f.finish()
+		await f.step()
+		expect(f.state.records.task!.phase).toBe('paused')
+		expect(f.completions).toBe(0)
+	})
+	it('rejects malformed legacy merged records lacking exact-commit QA evidence', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		await f.step()
+		delete f.state.records.task!.boardPublished
+		f.state.records.task!.verdict!.headSha = base
+		expect(() => deliveryResult(f.state.records.task!)).toThrow('exact-commit QA')
+		await f.step()
+		expect(f.completions).toBe(1)
+		expect(f.state.records.task!.boardPublished).toBeUndefined()
+		expect(f.state.records.task!.boardReason).toContain('exact-commit QA')
+	})
+	it('replays an API success if the acknowledgement was lost before durable save', async () => {
+		const f = fixture()
+		await f.step()
+		f.finish()
+		let first = true
+		f.adapter.completeTask = async () => {
+			if (first) {
+				first = false
+				throw new Error('response lost after successful task update')
+			}
+		}
+		await f.step()
+		f.restart()
+		await f.step()
+		expect(f.state.records.task!.boardPublished).toBe(true)
+		expect(f.publishes).toBe(1)
 	})
 })

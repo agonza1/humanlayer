@@ -42,3 +42,20 @@ State is written atomically with owner-only permissions. A lock prevents two coo
 A failed review, dirty or changed checkout, multiple tasks sharing a checkout, ambiguous launch, or rejected merge pauses that task with a reason. There is no automatic repair in this first slice. Inspect the task, QA, checkout, and PR before restarting a delivery; do not delete state to retry an uncertain action. For a known failed task, fix it in a new, separately named automatic task and feature worktree. For a crash, restart the same configuration/state. If the process was killed and left a `.lock` directory, verify the recorded PID in `.lock/owner.json` has exited before removing only that lock directory.
 
 This is local host automation, not an agent sandbox. QA's read-only role is requested in its prompt and checked by commit/status invariants; the model backend's OS permissions come from the daemon's own confinement. Keep worker provider credentials and host GitHub credentials separately scoped.
+
+### Board completion
+
+A confirmed merge is projected to the task's owner-only `deliveryResult` through
+`tasks.update`, with the PR URL and exact reviewed commit. Both board interfaces
+and the grouped list use this durable task result ahead of session workflow
+labels, placing merged tasks in **Done** without changing session history.
+The board update (`boardPublished`, with `boardReason` while pending) and
+`delivery.md` receipt have independent durable acknowledgements:
+a failure in either is retried on the next poll or restart and never repeats the
+GitHub merge. Existing merged state files are backfilled even when their receipt
+was already published or their sessions are no longer present. Only records with
+a matching passing QA verdict and PR evidence can publish completion.
+
+After upgrading, apply the generated database migration and restart the API and
+local-delivery service. Run the service once with the original configuration and
+state file to reconcile an older merged delivery; do not delete or reset its state.
