@@ -4,25 +4,17 @@ import { Link } from '@tanstack/react-router'
 import { ArrowUpRight, GitMerge, GitPullRequest, Search } from 'lucide-react'
 import { useState } from 'react'
 
-import { DeliveredPullRequestDetail, PullRequestDetail } from '@/minimalist/components/PullRequestPanel'
+import { PullRequestDetail } from '@/minimalist/components/PullRequestPanel'
 import { Segmented } from '@/minimalist/components/SettingsControls'
 import { type TaskRow, useTaskTree } from '@/minimalist/lib/data'
 import { formatAge, plural } from '@/minimalist/lib/format'
-import {
-	deliveredPullRequest,
-	type DeliveredPullRequest,
-	pullRequestBranchesQuery,
-	samePullRequestUrl,
-} from '@/minimalist/lib/pull-requests'
+import { pullRequestBranchesQuery } from '@/minimalist/lib/pull-requests'
 import { useRiptideApi } from '@/orpc/client'
 
 /** How many recent tasks the inbox asks about. Each is one cheap database read. */
 const RECENT_TASKS = 40
 
-type Entry = { row: TaskRow; repoFullName: string; branchName: string } & (
-	| { source: 'native'; branch: PullRequestBranch; pullRequest: NonNullable<PullRequestBranch['pullRequest']> }
-	| { source: 'delivery'; pullRequest: DeliveredPullRequest }
-)
+type Entry = { row: TaskRow; branch: PullRequestBranch; pullRequest: NonNullable<PullRequestBranch['pullRequest']> }
 
 const STATE_ORDER = { open: 0, merged: 1, closed: 2 } as const
 
@@ -46,57 +38,27 @@ export function PullRequestsPage() {
 	const results = useQueries({
 		queries: rows.map((row) => pullRequestBranchesQuery(orpc, row.task.id)),
 	})
-	const entries: Entry[] = rows.flatMap((row, index) => {
-		const delivered = deliveredPullRequest(row.task)
-		const native: Entry[] = (results[index]?.data?.branches ?? []).flatMap((branch) =>
-			branch.installed &&
-			branch.pullRequest &&
-			!(
-				delivered &&
-				samePullRequestUrl(branch.pullRequest.url, delivered.url) &&
-				branch.pullRequest.state !== 'merged'
-			)
-				? [
-						{
-							source: 'native' as const,
-							row,
-							branch,
-							repoFullName: branch.repoFullName,
-							branchName: branch.branch,
-							pullRequest: branch.pullRequest,
-						},
-					]
-				: [],
-		)
-		if (delivered && !native.some((entry) => samePullRequestUrl(entry.pullRequest.url, delivered.url)))
-			native.push({
-				source: 'delivery',
-				row,
-				repoFullName: delivered.repoFullName,
-				branchName: '',
-				pullRequest: delivered,
-			})
-		return native
-	})
-	const loading =
-		!isReady || results.some((result, index) => result.isLoading && !deliveredPullRequest(rows[index]?.task))
-	// A recorded delivery remains useful even if the optional GitHub integration cannot answer.
-	const failed = results.filter(
-		(result, index) => result.isError && !result.data && !deliveredPullRequest(rows[index]?.task),
-	)
+	const loading = !isReady || results.some((result) => result.isLoading)
+	// Tasks GitHub couldn't be asked about; their PRs are missing from the list, not absent.
+	const failed = results.filter((result) => result.isError && !result.data)
 	const allFailed = failed.length > 0 && failed.length === rows.length
 	const retrying = failed.some((result) => result.isFetching)
 	const retry = () => {
 		for (const result of failed) void result.refetch()
 	}
 
+	const entries: Entry[] = rows.flatMap((row, index) =>
+		(results[index]?.data?.branches ?? []).flatMap((branch) =>
+			branch.pullRequest ? [{ row, branch, pullRequest: branch.pullRequest }] : [],
+		),
+	)
 	const needle = filter.trim().toLowerCase()
 	const visible = entries
 		.filter((entry) => scope === 'all' || entry.pullRequest.state === 'open')
 		.filter(
 			(entry) =>
 				!needle ||
-				`${entry.pullRequest.title} ${entry.repoFullName} ${entry.branchName} ${entry.row.task.name}`
+				`${entry.pullRequest.title} ${entry.branch.repoFullName} ${entry.branch.branch} ${entry.row.task.name}`
 					.toLowerCase()
 					.includes(needle),
 		)
@@ -142,8 +104,7 @@ export function PullRequestsPage() {
 							<span className="t">
 								<b>{entry.pullRequest.title}</b>
 								<span className="muted">
-									{entry.repoFullName}
-									{entry.branchName ? ` · ${entry.branchName}` : ''} · {describe(entry.pullRequest)}
+									{entry.branch.repoFullName} · {entry.branch.branch} · {describe(entry.pullRequest)}
 								</span>
 							</span>
 							<span className="muted age">{formatAge(entry.row.lastActivity)}</span>
@@ -208,16 +169,12 @@ function SelectedPullRequest({ entry }: { entry: Entry }) {
 					GitHub <ArrowUpRight className="i sm" />
 				</a>
 			</div>
-			{entry.source === 'delivery' ? (
-				<DeliveredPullRequestDetail pullRequest={entry.pullRequest} />
-			) : (
-				<PullRequestDetail
-					taskId={entry.row.task.id}
-					branch={entry.branch}
-					pullRequest={entry.pullRequest}
-					sessionId={entry.row.latest?.id ?? null}
-				/>
-			)}
+			<PullRequestDetail
+				taskId={entry.row.task.id}
+				branch={entry.branch}
+				pullRequest={entry.pullRequest}
+				sessionId={entry.row.latest?.id ?? null}
+			/>
 		</div>
 	)
 }
@@ -236,10 +193,7 @@ function PullRequestIcon({ pullRequest }: { pullRequest: Entry['pullRequest'] })
 	)
 }
 
-function describe(
-	pullRequest: Pick<NonNullable<PullRequestBranch['pullRequest']>, 'state' | 'isDraft'> &
-		Partial<Pick<NonNullable<PullRequestBranch['pullRequest']>, 'reviewDecision' | 'merge'>>,
-): string {
+function describe(pullRequest: Entry['pullRequest']): string {
 	if (pullRequest.state === 'merged') return 'merged'
 	if (pullRequest.state === 'closed') return 'closed'
 	if (pullRequest.isDraft) return 'draft'

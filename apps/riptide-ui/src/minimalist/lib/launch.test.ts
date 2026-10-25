@@ -173,86 +173,9 @@ describe('startTask', () => {
 			projectId: 'p1',
 			defaultRepositoryIdentity: 'github.com/acme/app',
 			repositories: [{ repositoryIdentity: 'github.com/acme/app', branch: 'fix-the-login-bug-0001' }],
-			firstSession: { hostId: 'h1', title: 'Fix the login bug', model: 'opus', permissionsMode: 'auto' },
+			firstSession: { hostId: 'h1', model: 'opus', permissionsMode: 'auto' },
 		})
 		expect(api.ai.generateTitle).toHaveBeenCalledWith({ text: 'Fix the login bug' })
-	})
-
-	it.each(['project', 'directory'] as const)(
-		'launches Codex in a %s with its selected model and a working title without API title generation',
-		async (kind) => {
-			const { api, client } = fakeApi()
-			await startTask(client, {
-				ids,
-				target:
-					kind === 'project'
-						? { kind, project: { id: 'p1', repositories: [repository] } }
-						: { kind, path: '/code/app' },
-				hostId: 'h1',
-				draft: 'Document frontend checks\nKeep native setup instructions',
-				ticket: null,
-				attachments: [],
-				settings: {
-					agent: 'codelayer',
-					model: 'gpt-6-1-sol',
-					effort: 'high',
-					fastMode: false,
-					permissionsMode: 'bypass',
-				},
-				workflow: { workflowType: 'freeform', autoAdvance: true },
-				directImplementation: true,
-			})
-			const call = kind === 'project' ? api.tasks.v2.create.mock.calls[0] : api.tasks.launchDraft.mock.calls[0]
-			const [created] = call as unknown as [Record<string, unknown>]
-			expect(created).toMatchObject({
-				name: 'Document frontend checks',
-				firstSession: {
-					title: 'Document frontend checks',
-					codingAgent: 'codelayer',
-					provider: 'codex',
-					model: 'gpt-6-1-sol',
-					effort: 'high',
-					fastMode: false,
-					permissionsMode: 'bypass',
-					intent: 'implementation',
-				},
-			})
-			expect(api.ai.generateTitle).not.toHaveBeenCalled()
-			expect(api.tasks.update).not.toHaveBeenCalled()
-		},
-	)
-
-	it('leaves a small local delivery task prompt for its coordinator, keeping implementation settings', async () => {
-		const { api, client } = fakeApi()
-		const draft = '[auto] Document frontend checks\nKeep native setup instructions'
-		await startTask(client, {
-			ids,
-			target: { kind: 'directory', path: '/code/app' },
-			hostId: 'h1',
-			draft,
-			ticket: null,
-			attachments: [],
-			settings: { ...settings, agent: 'codelayer', model: 'gpt-6-1-sol', permissionsMode: 'bypass' },
-			workflow: { workflowType: 'freeform', autoAdvance: true },
-			directImplementation: true,
-		})
-		const [launched] = api.tasks.launchDraft.mock.calls[0] as unknown as [Record<string, unknown>]
-		expect(launched).toMatchObject({
-			name: '[auto] Document frontend checks',
-			taskContent: draft,
-			firstSession: {
-				title: '[auto] Document frontend checks',
-				text: draft,
-				intent: 'implementation',
-				codingAgent: 'codelayer',
-				provider: 'codex',
-				model: 'gpt-6-1-sol',
-				effort: 'high',
-				fastMode: false,
-				permissionsMode: 'bypass',
-			},
-		})
-		expect(api.ai.generateTitle).not.toHaveBeenCalled()
 	})
 
 	it('runs a directory task in place, named after its issue', async () => {

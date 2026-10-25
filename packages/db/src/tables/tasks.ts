@@ -17,8 +17,6 @@ import {
 	type CreatedWithExperimentFlags,
 	CreatedWithExperimentFlagsSchema,
 } from '../zodschemas/created-with-experiment-flags'
-import { TaskDeliveryResultSchema, type TaskDeliveryResult } from '../zodschemas/task-delivery-result'
-import { TaskNativeExecutionSchema, type TaskNativeExecution } from '../zodschemas/task-native-execution'
 import { organizations } from './organizations'
 import { projects } from './projects'
 import { teams } from './teams'
@@ -67,10 +65,6 @@ export const tasks = pgTable(
 		// Draft flag - true for saved but not launched tasks
 		is_draft: boolean('is_draft').default(false).notNull(),
 
-		// Confirmed delivery outcome; takes precedence over session workflow labels.
-		delivery_result: jsonb('delivery_result').$type<TaskDeliveryResult>(),
-		native_execution: jsonb('native_execution').$type<TaskNativeExecution>(),
-
 		// Setup state columns for deterministic task bootstrap
 		setup_status: text().$type<SetupStatus>(),
 		setup_details: text(), // Error message or status info
@@ -117,8 +111,6 @@ export const tasks = pgTable(
 )
 
 export const taskSelectSchema = createSelectSchema(tasks, {
-	delivery_result: jsonbParser(TaskDeliveryResultSchema.nullable()),
-	native_execution: jsonbParser(TaskNativeExecutionSchema.nullable()),
 	setup_status: z.enum(['pending', 'in_progress', 'completed', 'failed']).nullable(),
 	ticket_provider: z.enum(['linear', 'jira', 'github']).nullable(),
 	workflow_type: z.enum(TASK_WORKFLOW_TYPES),
@@ -129,15 +121,11 @@ export const taskSelectSchema = createSelectSchema(tasks, {
 	created_with_experiment_flags: jsonbParser(CreatedWithExperimentFlagsSchema.nullable()),
 })
 export const taskInsertSchema = createInsertSchema(tasks, {
-	delivery_result: TaskDeliveryResultSchema.nullish(),
-	native_execution: TaskNativeExecutionSchema.nullish(),
 	workspace_state: WorkspaceStateSchema.nullish(),
 	workspace_spec: WorkspaceSpecSchema.nullish(),
 	created_with_experiment_flags: CreatedWithExperimentFlagsSchema.nullish(),
 })
 export const taskUpdateSchema = createUpdateSchema(tasks, {
-	delivery_result: TaskDeliveryResultSchema.nullish(),
-	native_execution: TaskNativeExecutionSchema.nullish(),
 	workspace_state: WorkspaceStateSchema.nullish(),
 	workspace_spec: WorkspaceSpecSchema.nullish(),
 	created_with_experiment_flags: CreatedWithExperimentFlagsSchema.nullish(),

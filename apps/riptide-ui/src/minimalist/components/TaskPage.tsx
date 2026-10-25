@@ -1,5 +1,4 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
-import { TaskNativeExecutionSchema } from '@humanlayer/db/zodschemas/task-native-execution'
 import { Link } from '@tanstack/react-router'
 import { MessageSquare, PanelLeft, PanelRightClose } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
@@ -9,7 +8,6 @@ import { useMountEffect } from '@/hooks/useMountEffect'
 import { useSessionAccess } from '@/minimalist/lib/access'
 import { useTask, useTaskArtifacts } from '@/minimalist/lib/data'
 import { canReview } from '@/minimalist/lib/data'
-import { deliveredPullRequest } from '@/minimalist/lib/pull-requests'
 import {
 	chooseTaskSession,
 	rememberedSession,
@@ -21,7 +19,6 @@ import { linkRequest } from '@/minimalist/lib/thread-panel'
 import { useUi } from '@/minimalist/lib/ui-state'
 
 import { ArtifactView } from './ArtifactPanel'
-import { NativeExecutionLinks } from './NativeExecutionLinks'
 import { PullRequestPanel } from './PullRequestPanel'
 import { ResizeHandle } from './ResizeHandle'
 import { ReviewPanel } from './ReviewPanel'
@@ -53,7 +50,7 @@ export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sess
 	)
 	const artifactId = search.artifactId
 	const hasArtifact = Boolean(artifactId && !changes)
-	const pr = Boolean(search.pr && task && (canReview(task) || deliveredPullRequest(task)))
+	const pr = Boolean(search.pr && task && canReview(task))
 	const sessionVisible = !changes && (!hasArtifact || !pr)
 	const sessionRead = sessionVisible && (!hasArtifact || !compact || panelOpen)
 	const opener = useRef<HTMLElement | null>(null)
@@ -298,17 +295,6 @@ function NoSession({
 				</div>
 			</main>
 		)
-	if (TaskNativeExecutionSchema.safeParse(task.native_execution).success)
-		return (
-			<main className="main" aria-label="Native task">
-				<div className="hero">
-					<h1 className="status">Follow this task in Codex</h1>
-					<p>The Coder and QA chats are linked below. Requests and results are in the task artifacts.</p>
-					<NativeExecutionLinks value={task.native_execution} deliveryResult={task.delivery_result} />
-				</div>
-			</main>
-		)
-
 	return (
 		<main className="main">
 			<div className="hero">

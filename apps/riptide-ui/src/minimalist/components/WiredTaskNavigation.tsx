@@ -1,5 +1,4 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
-import { TaskNativeExecutionSchema } from '@humanlayer/db/zodschemas/task-native-execution'
 import { Link } from '@tanstack/react-router'
 import {
 	Copy,
@@ -28,7 +27,7 @@ import { artifactName, isImageArtifact, isListedArtifact, isPromptArtifact } fro
 import { useTaskAutoAdvance } from '@/minimalist/lib/auto-advance'
 import { canReview, useSession, useTask, useTaskArtifacts } from '@/minimalist/lib/data'
 import { phaseOf } from '@/minimalist/lib/phases'
-import { deliveredPullRequest, pullRequestBadge, useTaskPullRequest } from '@/minimalist/lib/pull-requests'
+import { pullRequestBadge, useTaskPullRequest } from '@/minimalist/lib/pull-requests'
 import { sessionName } from '@/minimalist/lib/session-name'
 import { shortcutHint } from '@/minimalist/lib/shortcuts'
 import { isBusy, statusAnnouncement } from '@/minimalist/lib/status'
@@ -59,7 +58,6 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 		...documents.filter(isPromptArtifact),
 	]
 	if (!task) return null
-	const nativeExecution = TaskNativeExecutionSchema.safeParse(task.native_execution).success
 	return (
 		<aside className={`task-nav${taskSidebarOpen ? ' open' : ''}`} aria-label="Task navigation">
 			<header className="task-nav-head">
@@ -80,7 +78,7 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 					<div className="section">
 						Sessions
 						<span className="sp" />
-						{task.is_draft || nativeExecution ? null : (
+						{task.is_draft ? null : (
 							<Link
 								to="/"
 								search={{ task: taskId }}
@@ -101,11 +99,7 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 								selectedSessionId={sessionId}
 							/>
 						))}
-						{active.length === 0 ? (
-							<div className="empty">
-								{nativeExecution ? 'Work runs in the linked Codex chats' : 'No sessions yet'}
-							</div>
-						) : null}
+						{active.length === 0 ? <div className="empty">No sessions yet</div> : null}
 						{archived.length > 0 ? (
 							<button
 								type="button"
@@ -146,23 +140,21 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 						{ordered.length === 0 ? <div className="empty">No artifacts yet</div> : null}
 					</div>
 				</section>
-				{canReview(task) || deliveredPullRequest(task) ? (
+				{canReview(task) ? (
 					<section className="task-nav-group task-nav-views" aria-label="Task views">
-						{canReview(task) ? (
-							<button
-								type="button"
-								className={`row${navigation.search.view === 'changes' || navigation.search.diffFileId || navigation.search.diffCommentId ? ' sel' : ''}`}
-								aria-current={navigation.search.view === 'changes' ? 'page' : undefined}
-								onClick={() => {
-									navigation.open('review')
-									closeTaskSidebarOnNarrow()
-								}}
-							>
-								<FileDiff className="i" strokeWidth={1.6} />
-								<span className="t">Changes</span>
-								<WiredDiffTotals task={task} />
-							</button>
-						) : null}
+						<button
+							type="button"
+							className={`row${navigation.search.view === 'changes' || navigation.search.diffFileId || navigation.search.diffCommentId ? ' sel' : ''}`}
+							aria-current={navigation.search.view === 'changes' ? 'page' : undefined}
+							onClick={() => {
+								navigation.open('review')
+								closeTaskSidebarOnNarrow()
+							}}
+						>
+							<FileDiff className="i" strokeWidth={1.6} />
+							<span className="t">Changes</span>
+							<WiredDiffTotals task={task} />
+						</button>
 						<WiredPullRequestRow taskId={taskId} sessionId={sessionId} />
 					</section>
 				) : null}
@@ -352,9 +344,9 @@ function TaskTitleEditor({ taskId, name, onDone }: { taskId: string; name: strin
 /** Opens the PR panel. Shows the PR's number and its most urgent state once the task has a PR. */
 function WiredPullRequestRow({ taskId, sessionId }: { taskId: string; sessionId?: string }) {
 	const navigation = useTaskNavigation(taskId, sessionId)
-	const { branch, delivered } = useTaskPullRequest(taskId)
+	const { branch } = useTaskPullRequest(taskId)
 	const { panelOpen, togglePanel, closeTaskSidebarOnNarrow } = useUi()
-	const pr = delivered ?? branch?.pullRequest
+	const pr = branch?.pullRequest
 	return (
 		<button
 			type="button"
@@ -369,13 +361,7 @@ function WiredPullRequestRow({ taskId, sessionId }: { taskId: string; sessionId?
 		>
 			<GitPullRequest className="i" strokeWidth={1.6} />
 			<span className="t">{pr ? `Pull request #${pr.number}` : 'Pull requests'}</span>
-			{delivered ? (
-				<span className="meta muted">
-					<span className="sr-only">, </span>Merged
-				</span>
-			) : branch && pr ? (
-				<WiredPullRequestBadge taskId={taskId} branch={branch} />
-			) : null}
+			{branch && pr ? <WiredPullRequestBadge taskId={taskId} branch={branch} /> : null}
 		</button>
 	)
 }
