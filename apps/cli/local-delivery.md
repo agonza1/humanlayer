@@ -59,3 +59,9 @@ a matching passing QA verdict and PR evidence can publish completion.
 After upgrading, apply the generated database migration and restart the API and
 local-delivery service. Run the service once with the original configuration and
 state file to reconcile an older merged delivery; do not delete or reset its state.
+
+
+Recorded merged deliveries also appear in the task's pull-request panel and in the
+pull-request inbox under **All**, even without a GitHub App installation. Their
+read-only summary links to GitHub and shows the reviewed commit; checks, reviews,
+and branch controls are available only through the native GitHub integration.

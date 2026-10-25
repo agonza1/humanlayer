@@ -39,8 +39,8 @@ export function SidePanel({
 	artifacts: TaskArtifact[]
 	onClose: () => void
 }) {
-	const { branch } = useTaskPullRequest(task.id)
-	const pr = branch?.pullRequest ?? null
+	const { branch, delivered } = useTaskPullRequest(task.id)
+	const pr = delivered ?? branch?.pullRequest ?? null
 	const [chosen, setChosen] = useState<PanelTab | null>(requested?.tab ?? null)
 	const [lastRequested, setLastRequested] = useState(requested)
 	if (requested !== lastRequested) {
@@ -51,9 +51,11 @@ export function SidePanel({
 	const artifacts = [...documents.filter((entry) => !isPromptArtifact(entry)), ...documents.filter(isPromptArtifact)]
 	const git = canReview(task)
 	const shows = (candidate: PanelTab | null): candidate is PanelTab =>
-		candidate === 'review' || candidate === 'pr'
-			? git
-			: artifacts.some((artifact) => `artifact:${artifact.id}` === candidate)
+		candidate === 'pr'
+			? git || Boolean(pr)
+			: candidate === 'review'
+				? git
+				: artifacts.some((artifact) => `artifact:${artifact.id}` === candidate)
 	// Open on the first document, unless it is only the prompt and there are changes to show.
 	const first = artifacts[0]
 	const opening: PanelTab | null =
@@ -91,7 +93,7 @@ export function SidePanel({
 							{artifactName(entry.file_name)}
 						</Tab>
 					))}
-					{git ? (
+					{git || pr ? (
 						<Tab selected={tab === 'pr'} onSelect={() => setChosen('pr')}>
 							<GitPullRequest className="i sm" strokeWidth={1.6} />
 							{pr ? `PR #${pr.number}` : 'PR'}

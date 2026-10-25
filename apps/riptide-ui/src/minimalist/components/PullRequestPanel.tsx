@@ -9,7 +9,7 @@ import { groupChecks } from '@/components/github/check-groups'
 import { usePrStatusStream } from '@/hooks/session-detail/usePrStatusStream'
 import { readGitPrefs } from '@/minimalist/lib/git-prefs'
 import { pullRequestPrompt } from '@/minimalist/lib/git-prompts'
-import { useTaskPullRequest } from '@/minimalist/lib/pull-requests'
+import { type DeliveredPullRequest, useTaskPullRequest } from '@/minimalist/lib/pull-requests'
 import { askToast, useAskAgent } from '@/minimalist/lib/send'
 import { useAction } from '@/minimalist/lib/use-action'
 import { useRiptideApi } from '@/orpc/client'
@@ -42,7 +42,8 @@ function prStateLabel(state: string, draft: boolean): string {
 }
 
 export function PullRequestPanel({ taskId, sessionId }: { taskId: string; sessionId: string | null }) {
-	const { branch, isLoading, failed, retrying, retry } = useTaskPullRequest(taskId)
+	const { branch, delivered, isLoading, failed, retrying, retry } = useTaskPullRequest(taskId)
+	if (delivered) return <DeliveredPullRequestDetail pullRequest={delivered} />
 	if (isLoading) return <div className="boot-mark" />
 	if (failed)
 		return (
@@ -59,6 +60,32 @@ export function PullRequestPanel({ taskId, sessionId }: { taskId: string; sessio
 		)
 	if (!branch?.pullRequest) return <NoPullRequest branch={branch} sessionId={sessionId} />
 	return <PullRequestDetail taskId={taskId} sessionId={sessionId} branch={branch} pullRequest={branch.pullRequest} />
+}
+
+/** Confirmed delivery details only; no GitHub integration, streams, or mutation controls. */
+export function DeliveredPullRequestDetail({ pullRequest: pr }: { pullRequest: DeliveredPullRequest }) {
+	return (
+		<div className="pr">
+			<div className="pr-top">
+				<span className="pr-state merged">
+					<GitMerge className="i sm" />
+					Merged
+				</span>
+				<a className="muted" href={pr.url} target="_blank" rel="noreferrer">
+					{pr.repoFullName} #{pr.number}
+					<ArrowUpRight className="i sm" />
+				</a>
+			</div>
+			<h2 className="pr-title">{pr.title}</h2>
+			<div className="pr-sec">
+				<div className="pr-k">Reviewed commit</div>
+				<code>{pr.headSha}</code>
+			</div>
+			<div className="pr-sec muted">
+				This delivery is merged. Open the pull request on GitHub for checks and reviews.
+			</div>
+		</div>
+	)
 }
 
 function NoPullRequest({ branch, sessionId }: { branch: PullRequestBranch | null; sessionId: string | null }) {
