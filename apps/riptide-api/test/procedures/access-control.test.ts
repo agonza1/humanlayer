@@ -187,6 +187,72 @@ describe('Task/Session Access Control - Three-Actor Pattern', async () => {
 			expect(completed?.delivery_result).toEqual(deliveryResult)
 		})
 
+		test('native execution metadata is owner-only, idempotent and explicitly clearable', async () => {
+			const [task] = await db
+				.insert(tasks)
+				.values({
+					organization_id: organizationId,
+					name: 'Native handoff',
+					resource_owner_user_id: ownerUserId,
+					created_by: ownerUserId,
+				})
+				.returning()
+			if (!task) throw new Error('Missing task')
+			await db.insert(taskUserAcl).values({
+				organization_id: organizationId,
+				subject_user_id: aclHolderUserId,
+				task_id: task.id,
+				resource_owner_user_id: ownerUserId,
+				permission_level: 'edit',
+				granted_by: ownerUserId,
+			})
+			const nativeExecution = {
+				mode: 'main-mediated' as const,
+				stage: 'implementation' as const,
+				repository: 'owner/repo',
+				directory: '/isolated',
+				coderThreadId: '11111111-1111-4111-8111-111111111111',
+			}
+			for (const [userId, role] of [
+				[strangerUserId, 'member'],
+				[aclHolderUserId, 'member'],
+				[adminUserId, 'admin'],
+			] as const) {
+				for (const value of [nativeExecution, null]) {
+					await expect(
+						call(
+							updateTaskProcedure,
+							{ taskId: task.id, name: 'Disallowed rename', nativeExecution: value },
+							{
+								context: createMockApiContext({
+									auth: createMockApiAuth({ userId, organizationId, workosOrganizationId, role }),
+									services: { db, dbReadReplica: db },
+								}),
+							},
+						),
+					).rejects.toThrow()
+					const [unchanged] = await db.select().from(tasks).where(eq(tasks.id, task.id))
+					expect(unchanged?.native_execution).toBeNull()
+					expect(unchanged?.name).toBe('Native handoff')
+				}
+			}
+			for (const value of [nativeExecution, nativeExecution, null]) {
+				const result = await call(
+					updateTaskProcedure,
+					{ taskId: task.id, nativeExecution: value },
+					{
+						context: createMockApiContext({
+							auth: createMockApiAuth({ userId: ownerUserId, organizationId, workosOrganizationId }),
+							services: { db, dbReadReplica: db },
+						}),
+					},
+				)
+				expect(result.success).toBe(true)
+				const [updated] = await db.select().from(tasks).where(eq(tasks.id, task.id))
+				expect(updated?.native_execution).toEqual(value)
+			}
+		})
+
 		test('ACL-holder with write permission can update user-settings-compatible fields and DB reflects changes in task_user_settings', async () => {
 			const originalWorkingDir = tmpdir()
 			const updatedWorkingDir = '/updated/working/dir'

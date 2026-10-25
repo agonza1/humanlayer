@@ -65,7 +65,7 @@ function rpc(origin: string, token?: string): ApiORPCClient {
 		}),
 	) as ApiORPCClient
 }
-async function client(c: Config) {
+export async function localApiClient(c: Pick<Config, 'apiOrigin' | 'sessionFile'>) {
 	let s = JSON.parse(await readFile(c.sessionFile, 'utf8')) as Credentials
 	if (!s.access_token || !s.refresh_token) throw new Error('Log into the configured local WorkOS session first')
 	if (Date.now() >= s.expires_at - 60000) {
@@ -99,7 +99,7 @@ export function createAdapter(c: Config): Adapter {
 	let pendingClient: Promise<ApiORPCClient> | undefined
 	async function getClient(): Promise<ApiORPCClient> {
 		if (pendingClient) return pendingClient
-		const pending = client(c)
+		const pending = localApiClient(c)
 		pendingClient = pending
 		try {
 			return await pending

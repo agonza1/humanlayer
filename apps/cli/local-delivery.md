@@ -65,3 +65,6 @@ Recorded merged deliveries also appear in the task's pull-request panel and in t
 pull-request inbox under **All**, even without a GitHub App installation. Their
 read-only summary links to GitHub and shows the reviewed commit; checks, reviews,
 and branch controls are available only through the native GitHub integration.
+
+For execution in native Codex chats instead of HumanLayer sessions, use the
+[Main-mediated native bridge pilot](native-bridge.md).
