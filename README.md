@@ -34,6 +34,7 @@ bun run test
 ```
 
 `bun --bun run devstack help` explains how to run the whole stack locally. [CONTRIBUTING.md](CONTRIBUTING.md) lists every check a pull request must pass.
+For faster local UI loading without Vite HMR, build with the existing API/sync/auth settings (`cd apps/riptide-ui && bun --bun --env-file=../../.env run build:local`), then replace only the UI dev server with `bun --bun --env-file=../../.env run serve --host 127.0.0.1 --port "$UI_PORT" --strictPort`, setting `UI_PORT` to its existing port to preserve the browser origin.
 
 A build from source sends nothing to us: Sentry, PostHog, and the WorkOS client ID come from env, and stay off when unset. `.env.example` lists them.
 
