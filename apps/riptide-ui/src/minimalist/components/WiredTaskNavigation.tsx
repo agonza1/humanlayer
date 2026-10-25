@@ -27,7 +27,7 @@ import { artifactName, isImageArtifact, isListedArtifact, isPromptArtifact } fro
 import { useTaskAutoAdvance } from '@/minimalist/lib/auto-advance'
 import { canReview, useSession, useTask, useTaskArtifacts } from '@/minimalist/lib/data'
 import { phaseOf } from '@/minimalist/lib/phases'
-import { pullRequestBadge, useTaskPullRequest } from '@/minimalist/lib/pull-requests'
+import { deliveredPullRequest, pullRequestBadge, useTaskPullRequest } from '@/minimalist/lib/pull-requests'
 import { sessionName } from '@/minimalist/lib/session-name'
 import { shortcutHint } from '@/minimalist/lib/shortcuts'
 import { isBusy, statusAnnouncement } from '@/minimalist/lib/status'
@@ -140,21 +140,23 @@ export function WiredTaskNavigation({ taskId, sessionId }: { taskId: string; ses
 						{ordered.length === 0 ? <div className="empty">No artifacts yet</div> : null}
 					</div>
 				</section>
-				{canReview(task) ? (
+				{canReview(task) || deliveredPullRequest(task) ? (
 					<section className="task-nav-group task-nav-views" aria-label="Task views">
-						<button
-							type="button"
-							className={`row${navigation.search.view === 'changes' || navigation.search.diffFileId || navigation.search.diffCommentId ? ' sel' : ''}`}
-							aria-current={navigation.search.view === 'changes' ? 'page' : undefined}
-							onClick={() => {
-								navigation.open('review')
-								closeTaskSidebarOnNarrow()
-							}}
-						>
-							<FileDiff className="i" strokeWidth={1.6} />
-							<span className="t">Changes</span>
-							<WiredDiffTotals task={task} />
-						</button>
+						{canReview(task) ? (
+							<button
+								type="button"
+								className={`row${navigation.search.view === 'changes' || navigation.search.diffFileId || navigation.search.diffCommentId ? ' sel' : ''}`}
+								aria-current={navigation.search.view === 'changes' ? 'page' : undefined}
+								onClick={() => {
+									navigation.open('review')
+									closeTaskSidebarOnNarrow()
+								}}
+							>
+								<FileDiff className="i" strokeWidth={1.6} />
+								<span className="t">Changes</span>
+								<WiredDiffTotals task={task} />
+							</button>
+						) : null}
 						<WiredPullRequestRow taskId={taskId} sessionId={sessionId} />
 					</section>
 				) : null}
@@ -344,9 +346,9 @@ function TaskTitleEditor({ taskId, name, onDone }: { taskId: string; name: strin
 /** Opens the PR panel. Shows the PR's number and its most urgent state once the task has a PR. */
 function WiredPullRequestRow({ taskId, sessionId }: { taskId: string; sessionId?: string }) {
 	const navigation = useTaskNavigation(taskId, sessionId)
-	const { branch } = useTaskPullRequest(taskId)
+	const { branch, delivered } = useTaskPullRequest(taskId)
 	const { panelOpen, togglePanel, closeTaskSidebarOnNarrow } = useUi()
-	const pr = branch?.pullRequest
+	const pr = delivered ?? branch?.pullRequest
 	return (
 		<button
 			type="button"
@@ -361,7 +363,13 @@ function WiredPullRequestRow({ taskId, sessionId }: { taskId: string; sessionId?
 		>
 			<GitPullRequest className="i" strokeWidth={1.6} />
 			<span className="t">{pr ? `Pull request #${pr.number}` : 'Pull requests'}</span>
-			{branch && pr ? <WiredPullRequestBadge taskId={taskId} branch={branch} /> : null}
+			{delivered ? (
+				<span className="meta muted">
+					<span className="sr-only">, </span>Merged
+				</span>
+			) : branch && pr ? (
+				<WiredPullRequestBadge taskId={taskId} branch={branch} />
+			) : null}
 		</button>
 	)
 }
