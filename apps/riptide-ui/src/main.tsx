@@ -37,7 +37,6 @@ import { routeTree } from './routeTree.gen'
 
 const devstackId = import.meta.env.VITE_PUBLIC_DEVSTACK_ID
 if (devstackId) {
-	document.title = devstackId
 	const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
 	const devstackColor = `#${import.meta.env.VITE_PUBLIC_DEVSTACK_COLOR}`
 	if (favicon && /^#[\da-f]{6}$/i.test(devstackColor)) {
