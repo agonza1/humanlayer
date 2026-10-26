@@ -5,7 +5,7 @@ import { useSync } from '@/components/providers/SyncProvider'
 import { useArtifactContent } from '@/hooks/live-queries/useArtifactContent'
 import { useArtifactViewerStore } from '@/hooks/stores/artifactViewerStore'
 
-import { formatDocumentTitle, PRODUCT_NAME } from './documentTitle'
+import { formatDocumentTitle } from './documentTitle'
 
 export function DynamicDocumentTitle() {
 	const location = useLocation()
@@ -42,7 +42,6 @@ export function DynamicDocumentTitle() {
 			: null
 	const isArtifactFullscreen =
 		(isTaskDetail || isSessionDetail) && !!selectedArtifactId && (isFullscreen || isFullscreenModalOpen)
-	const defaultTitle = import.meta.env.VITE_PUBLIC_DEVSTACK_ID || PRODUCT_NAME
 
 	return (
 		<title>
@@ -50,7 +49,6 @@ export function DynamicDocumentTitle() {
 				resourceName,
 				artifactFilename: selectedArtifact?.file_name,
 				isArtifactFullscreen,
-				defaultTitle,
 			})}
 		</title>
 	)
