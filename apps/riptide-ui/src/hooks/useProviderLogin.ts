@@ -1,5 +1,6 @@
 import type { ProviderLoginProvider } from '@humanlayer/db/tables/provider-login-requests'
 import { eq, useLiveQuery } from '@tanstack/react-db'
+import { useAuth } from '@workos-inc/authkit-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
@@ -24,15 +25,17 @@ function hostReadiness(
 /** Sign-in requests for one host, keyed by provider, plus the actions that drive them. */
 export function useProviderLogin(hostId: string | null) {
 	const { client } = useRiptideApi()
+	const { user } = useAuth()
 	const { providerLoginRequestsCollection, onlineHostsCollection } = useSync()
 	const { confirmTx } = useSyncInternal()
 
 	const hosts = useLiveQuery(
 		(q) => {
-			if (!hostId) return undefined
+			if (!hostId || !user?.id) return undefined
 			return q
 				.from({ hosts: onlineHostsCollection })
 				.where(({ hosts }) => eq(hosts.host_id, hostId))
+				.where(({ hosts }) => eq(hosts.user_id, user.id))
 				.select(({ hosts }) => ({
 					status: hosts.status,
 					daemon_version: hosts.daemon_version,
@@ -40,18 +43,19 @@ export function useProviderLogin(hostId: string | null) {
 					capabilities: hosts.capabilities,
 				}))
 		},
-		[hostId, onlineHostsCollection],
+		[hostId, user?.id, onlineHostsCollection],
 	)
 	const host = hostReadiness(hosts.data?.[0])
 
 	const rows = useLiveQuery(
 		(q) => {
-			if (!hostId) return undefined
+			if (!hostId || !user?.id) return undefined
 			return q
 				.from({ requests: providerLoginRequestsCollection })
 				.where(({ requests }) => eq(requests.host_id, hostId))
+				.where(({ requests }) => eq(requests.user_id, user.id))
 		},
-		[hostId, providerLoginRequestsCollection],
+		[hostId, user?.id, providerLoginRequestsCollection],
 	)
 	const latest = latestProviderLogins(rows.data ?? [], hostId)
 	const [isStarting, setIsStarting] = useState(false)
