@@ -130,7 +130,9 @@ function assignStatusColumn(sessions: KanbanSessionInput[]): AssignResult | null
  *
  * Explicit labels take precedence. Of the non-archived labeled sessions, the
  * one with the most recent `last_activity_at` wins, and the card is placed
- * by that winning session's highest-ranked label. Without a known skill label,
+ * by that winning session's highest-ranked label. An idle implementation after
+ * PR/review returns to review only when all non-archived sessions are idle or drafts.
+ * Without a known skill label,
  * session lifecycle state places started work; only drafts / not-yet-started fall to `todo`.
  */
 function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | null {
@@ -151,6 +153,25 @@ function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | nu
 
 	const topLabel = highestRankedLabel(winner.labels)
 	if (topLabel === null) return assignStatusColumn(sessions)
+	// A repair reuses the implementation skill after PR creation. Its label records
+	// the work performed; once idle, the task needs review again, not another PR.
+	if (topLabel.name === 'rpi:implementation' && winner.status === 'ready_for_input') {
+		const previouslyInReview = sessions.some(
+			(session) =>
+				!session.archived &&
+				session.status !== 'draft' &&
+				(session.last_activity_at ?? 0n) < winnerActivity &&
+				session.labels?.some((label) => label.name === 'rpi:describe-pr' || label.name === 'rpi:review'),
+		)
+		const allIdle = sessions.every(
+			(session) => session.archived || session.status === 'ready_for_input' || session.status === 'draft',
+		)
+		const reviewLabel = RPI_LABELS.find((label) => label.name === 'rpi:review')
+		if (previouslyInReview && allIdle && reviewLabel) {
+			return { columnId: 'in-review', activity: winnerActivity, label: reviewLabel }
+		}
+	}
+
 	const columnLabelName = Option.getOrUndefined(Schema.decodeUnknownOption(ColumnLabelName)(topLabel.name))
 
 	return {

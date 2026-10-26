@@ -15,6 +15,17 @@ function task(id: string, sessions: GroupableTask['workflowSessions'] = [], is_d
 }
 
 describe('groupTasksByWorkflow', () => {
+	test('groups completed repairs in review while running repairs stay in implementation', () => {
+		const priorReview = { ...session('rpi:describe-pr', 100), status: 'ready_for_input' }
+		const repair = { ...session('rpi:implementation', 200), status: 'ready_for_input' }
+		const groups = groupTasksByWorkflow([
+			task('finished-repair', [priorReview, repair]),
+			task('running-repair', [priorReview, { ...repair, status: 'running' }]),
+		])
+		expect(groups.find((group) => group.id === 'in-review')?.taskIds).toEqual(['finished-repair'])
+		expect(groups.find((group) => group.id === 'implementation')?.taskIds).toEqual(['running-repair'])
+	})
+
 	test('keeps unlabeled lifecycle groups consistent with the board', () => {
 		const groups = groupTasksByWorkflow([
 			task('running', [{ archived: false, labels: null, last_activity_at: 1n, status: 'running' }]),
