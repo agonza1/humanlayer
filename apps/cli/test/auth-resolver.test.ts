@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { refreshWorkOSToken, resolveWorkOSTokenWithDeps } from '../src/auth'
-import type { WorkOSSession } from '../src/auth/storage'
+import { isSessionExpired, type WorkOSSession } from '../src/auth/storage'
 
 const envConfig = { apiOrigin: 'http://api.test', syncOrigin: 'http://sync.test', workosClientId: 'client_test' }
 
@@ -16,7 +16,47 @@ function session(overrides: Partial<WorkOSSession> = {}): WorkOSSession {
 	}
 }
 
+function token(payload: unknown) {
+	return `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`
+}
+
 describe('resolveWorkOSToken', () => {
+	it('refreshes a JWT that expired before the saved one-hour metadata', async () => {
+		const stored = session({ access_token: token({ exp: Math.floor(Date.now() / 1000) - 10 }) })
+		let refreshed = false
+		const resolved = await resolveWorkOSTokenWithDeps('local', envConfig, {
+			load: async () => stored,
+			save: async () => undefined,
+			refresh: async () => {
+				refreshed = true
+				return { accessToken: 'renewed-access', refreshToken: 'renewed-refresh' }
+			},
+		})
+		expect(refreshed).toBe(true)
+		expect(resolved.access_token).toBe('renewed-access')
+	})
+
+	it('keeps a fresh five-minute JWT usable until its short refresh buffer', () => {
+		expect(isSessionExpired(session({ access_token: token({ exp: Date.now() / 1000 + 300 }) }))).toBe(false)
+		expect(isSessionExpired(session({ access_token: token({ exp: Date.now() / 1000 + 15 }) }))).toBe(true)
+	})
+
+	it('never extends the saved metadata expiry based on JWT claims', () => {
+		expect(
+			isSessionExpired(
+				session({ access_token: token({ exp: Date.now() / 1000 + 3600 }), expires_at: Date.now() - 1000 }),
+			),
+		).toBe(true)
+	})
+
+	it.each(['opaque-token', 'not.a.jwt', token({}), token({ exp: '1' }), token(null), token({ exp: null })])(
+		'retains metadata expiry for malformed or opaque token %s',
+		(access_token) => {
+			expect(isSessionExpired(session({ access_token }))).toBe(false)
+			expect(isSessionExpired(session({ access_token, expires_at: Date.now() - 1000 }))).toBe(true)
+		},
+	)
+
 	it('returns a non-expired stored token', async () => {
 		let saved: WorkOSSession | undefined
 		const stored = session()

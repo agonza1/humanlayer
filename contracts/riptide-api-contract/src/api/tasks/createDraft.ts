@@ -1,4 +1,5 @@
 import { taskSelectSchema } from '@humanlayer/db/tables/tasks'
+import { StatusCodes } from 'http-status-codes'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
@@ -7,6 +8,7 @@ import { TicketProviderSchema } from '../../lib/ticket-provider'
 export const CreateTaskDraftInputSchema = z
 	.object({
 		id: z.uuidv7().optional().describe('Client-generated task ID for optimistic inserts'),
+		projectId: z.uuid().optional().describe('Readable project for this planning-only draft'),
 		name: z.string().optional().describe('The name/title of the task (optional for drafts)'),
 		slug: z.string().optional().describe('URL-friendly slug for the task'),
 		defaultWorkingDirectory: z.string().optional().describe('Default working directory for sessions in this task'),
@@ -57,3 +59,6 @@ export const CreateTaskDraftOutputSchema = z.object({
 export const createTaskDraftContract = contractBuilder
 	.input(CreateTaskDraftInputSchema)
 	.output(CreateTaskDraftOutputSchema)
+	.errors({
+		TASK_DRAFT_IDENTITY_CONFLICT: { status: StatusCodes.CONFLICT },
+	})

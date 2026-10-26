@@ -1,8 +1,11 @@
+import { projects } from '@humanlayer/db/tables/projects'
 import { taskOrganizationAcl } from '@humanlayer/db/tables/task-organization-acl'
 import { tasks } from '@humanlayer/db/tables/tasks'
+import { and, eq, isNull } from 'drizzle-orm'
 import { Effect } from 'effect'
 
 import { DEFAULT_TASK_SHARE_LEVEL, resolveOrgDefaultTaskShareLevel } from '../../../db/organization-settings'
+import { projectReadableByActor } from '../../../effects/project-workspace/project-authorization'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
 import { getTransactionId } from '../../../effects/services/postgres/helpers'
 import { PostgresDb } from '../../../effects/services/postgres/postgres-db.service'
@@ -17,6 +20,7 @@ export const createTaskDraftEffectProcedure = effectOrpcBaseOrganizationRequired
 	const postgres = yield* PostgresDb
 	const {
 		id,
+		projectId,
 		name,
 		slug,
 		defaultWorkingDirectory,
@@ -32,7 +36,31 @@ export const createTaskDraftEffectProcedure = effectOrpcBaseOrganizationRequired
 	const result = yield* postgres
 		.transaction((tx) =>
 			Effect.gen(function* () {
+				if (projectId) {
+					const [project] = yield* tx.query(
+						tx.client
+							.select({ id: projects.id })
+							.from(projects)
+							.where(
+								and(
+									eq(projects.id, projectId),
+									eq(projects.archived, false),
+									projectReadableByActor({ organizationId, userId }),
+								),
+							)
+							.limit(1)
+							.for('share'),
+					)
+					if (!project) {
+						return yield* Effect.fail(
+							errors.NOT_FOUND({
+								data: { message: 'Could not create draft. Choose an available project.' },
+							}),
+						)
+					}
+				}
 				const draftValues: typeof tasks.$inferInsert = {
+					project_id: projectId ?? null,
 					name: name || 'Untitled Draft',
 					slug: slug || null,
 					default_working_directory: defaultWorkingDirectory || null,
@@ -49,9 +77,32 @@ export const createTaskDraftEffectProcedure = effectOrpcBaseOrganizationRequired
 				}
 				if (id) draftValues.id = id
 
-				const [insertedTask] = yield* tx.query(tx.client.insert(tasks).values(draftValues).returning())
+				const [insertedTask] = yield* tx.query(
+					tx.client.insert(tasks).values(draftValues).onConflictDoNothing({ target: tasks.id }).returning(),
+				)
 
 				if (!insertedTask) {
+					if (id) {
+						const [existingDraft] = yield* tx.query(
+							tx.client
+								.select()
+								.from(tasks)
+								.where(
+									and(
+										eq(tasks.id, id),
+										eq(tasks.organization_id, organizationId),
+										eq(tasks.resource_owner_user_id, userId),
+										eq(tasks.is_draft, true),
+										eq(tasks.archived, false),
+										projectId ? eq(tasks.project_id, projectId) : isNull(tasks.project_id),
+									),
+								)
+								.limit(1)
+								.for('share'),
+						)
+						if (existingDraft) return { task: existingDraft, txid: yield* getTransactionId(tx) }
+						return yield* Effect.fail(errors.TASK_DRAFT_IDENTITY_CONFLICT())
+					}
 					return yield* Effect.fail(
 						errors.INTERNAL_SERVER_ERROR({ data: { message: 'Unable to insert task draft' } }),
 					)
