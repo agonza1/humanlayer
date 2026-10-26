@@ -15,6 +15,15 @@ function task(id: string, sessions: GroupableTask['workflowSessions'] = [], is_d
 }
 
 describe('groupTasksByWorkflow', () => {
+	test('keeps unlabeled lifecycle groups consistent with the board', () => {
+		const groups = groupTasksByWorkflow([
+			task('running', [{ archived: false, labels: null, last_activity_at: 1n, status: 'running' }]),
+			task('result', [{ archived: false, labels: null, last_activity_at: 2n, status: 'ready_for_input' }]),
+		])
+		expect(groups.find((group) => group.id === 'implementation')?.taskIds).toEqual(['running'])
+		expect(groups.find((group) => group.id === 'in-review')?.taskIds).toEqual(['result'])
+	})
+
 	test('returns the five workflow groups, latest phase first', () => {
 		const groups = groupTasksByWorkflow([])
 

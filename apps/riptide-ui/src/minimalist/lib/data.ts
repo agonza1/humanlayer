@@ -387,7 +387,8 @@ export function useHosts(): { hosts: HostView[]; isReady: boolean } {
 				return {
 					host,
 					name: host.host_name || host.host_id.slice(0, 8),
-					online: host.status === 'online' && !stale,
+					// Heartbeat lag is diagnostic, not an authoritative offline transition.
+					online: host.status === 'online',
 					stale,
 					lastSeen,
 					local: host.host_id === localHostId,
@@ -422,7 +423,7 @@ export function useHost(
 		host: {
 			host,
 			name: host.host_name || host.host_id.slice(0, 8),
-			online: host.status === 'online' && !stale,
+			online: host.status === 'online',
 			stale,
 			lastSeen,
 			local: host.host_id === localHostId,

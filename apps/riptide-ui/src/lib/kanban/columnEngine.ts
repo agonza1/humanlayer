@@ -101,13 +101,37 @@ interface AssignResult {
 	label: SessionLabel
 }
 
+/** Free-form and Oneshot sessions have lifecycle state without RPI skill labels. */
+function assignStatusColumn(sessions: KanbanSessionInput[]): AssignResult | null {
+	let latest: KanbanSessionInput | null = null
+	for (const session of sessions) {
+		if (session.archived || !session.status || session.status === 'draft') continue
+		if (latest === null || (session.last_activity_at ?? 0n) > (latest.last_activity_at ?? 0n)) latest = session
+	}
+	if (latest === null) return null
+	// A stopped turn needs review; it does not prove the task is complete or merged.
+	const liveStatus = aggregateTaskStatus(
+		sessions
+			.filter((session) => !session.archived)
+			.map((session) => ({
+				status: session.status ?? null,
+				lastActivityAt: session.last_activity_at,
+			})),
+	)
+	const review = latest.status === 'ready_for_input' && liveStatus === undefined
+	const label = RPI_LABELS.find((entry) => entry.name === (review ? 'rpi:review' : 'rpi:implementation'))
+	return label
+		? { columnId: review ? 'in-review' : 'implementation', activity: latest.last_activity_at ?? 0n, label }
+		: null
+}
+
 /**
  * Decide a task's column from its sessions.
  *
- * Only non-archived sessions that *have labels* contribute. Of those, the
- * session with the most recent `last_activity_at` wins, and the card is placed
- * by that winning session's highest-ranked label. Tasks with no labeled session
- * (e.g. drafts / not-yet-started) fall to `todo`.
+ * Explicit labels take precedence. Of the non-archived labeled sessions, the
+ * one with the most recent `last_activity_at` wins, and the card is placed
+ * by that winning session's highest-ranked label. Without a known skill label,
+ * session lifecycle state places started work; only drafts / not-yet-started fall to `todo`.
  */
 function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | null {
 	let winner: KanbanSessionInput | null = null
@@ -123,10 +147,10 @@ function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | nu
 		}
 	}
 
-	if (winner === null || !nonEmptyLabels(winner.labels)) return null
+	if (winner === null || !nonEmptyLabels(winner.labels)) return assignStatusColumn(sessions)
 
 	const topLabel = highestRankedLabel(winner.labels)
-	if (topLabel === null) return null
+	if (topLabel === null) return assignStatusColumn(sessions)
 	const columnLabelName = Option.getOrUndefined(Schema.decodeUnknownOption(ColumnLabelName)(topLabel.name))
 
 	return {
@@ -139,8 +163,8 @@ function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | nu
 /**
  * Public column-assignment helper.
  *
- * Returns the column id for a task given its sessions. Draft tasks (or any task
- * with no labeled, non-archived session) land in `todo`.
+ * Returns the skill-label column, or lifecycle fallback for unlabeled work.
+ * Drafts and session-less tasks land in `todo`.
  */
 export function assignColumn(_task: { is_draft?: boolean }, sessions: KanbanSessionInput[]): ColumnId {
 	const result = assignColumnInternal(sessions)

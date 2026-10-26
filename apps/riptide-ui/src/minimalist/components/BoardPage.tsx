@@ -25,6 +25,7 @@ export function BoardPage() {
 		const id = assignColumn(
 			row.task,
 			row.sessions.map((session) => ({
+				status: session.status,
 				archived: session.archived,
 				labels: session.labels,
 				last_activity_at: session.last_activity_at,

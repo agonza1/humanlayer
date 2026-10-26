@@ -26,6 +26,56 @@ function session(overrides: Partial<KanbanSessionInput> = {}): KanbanSessionInpu
 const resolveOwner = () => ({ initials: 'DW', avatarUrl: undefined })
 
 describe('assignColumn', () => {
+	test.each([
+		'ready_for_launch',
+		'waiting_for_workspace',
+		'launching',
+		'running',
+		'needs_approval',
+		'failed',
+		'lost',
+		'resuming',
+		'interrupted',
+		'interrupt_requested',
+		'waiting_for_usage_limit',
+	])('places unlabeled %s work in implementation', (status) =>
+		expect(assignColumn({}, [session({ status })])).toBe('implementation'),
+	)
+
+	test('places a finished unlabeled session in review, not done', () => {
+		expect(assignColumn({}, [session({ status: 'ready_for_input' })])).toBe('in-review')
+	})
+
+	test('does not move parallel work to review while another session still runs', () => {
+		const sessions = [
+			session({ status: 'running', last_activity_at: 10n }),
+			session({ status: 'ready_for_input', last_activity_at: 20n }),
+		]
+		expect(assignColumn({}, sessions)).toBe('implementation')
+		sessions[0].status = 'ready_for_input'
+		expect(assignColumn({}, sessions)).toBe('in-review')
+	})
+
+	test('uses the latest non-draft, non-archived status when no skill labels exist', () => {
+		const sessions = [
+			session({ status: 'ready_for_input', last_activity_at: 10n }),
+			session({ status: 'running', last_activity_at: 20n }),
+			session({ status: 'draft', last_activity_at: 30n }),
+			session({ status: 'ready_for_input', archived: true, last_activity_at: 40n }),
+		]
+		expect(assignColumn({}, sessions)).toBe('implementation')
+		expect(assignColumn({}, [session({ status: 'draft' })])).toBe('todo')
+	})
+
+	test('explicit workflow labels remain authoritative over an unlabeled result', () => {
+		expect(
+			assignColumn({}, [
+				session({ labels: [label('rpi:plan')], last_activity_at: 10n }),
+				session({ status: 'ready_for_input', last_activity_at: 20n }),
+			]),
+		).toBe('planning')
+	})
+
 	test('maps every RPI_LABELS entry to its column per LABEL_TO_COLUMN', () => {
 		for (const rpiLabel of RPI_LABELS) {
 			// Every known RPI label must have an explicit column mapping in source.
@@ -73,6 +123,20 @@ describe('assignColumn', () => {
 })
 
 describe('buildKanbanColumns', () => {
+	test('uses unlabeled session activity and review badge without mutating labels', () => {
+		const input = session({ status: 'ready_for_input', last_activity_at: 60_000n })
+		const columns = buildKanbanColumns({
+			tasks: [{ id: 'oneshot', name: 'Oneshot', resource_owner_user_id: 'u1', sessions: [input] }],
+			resolveOwner,
+		})
+		expect(columns.find((column) => column.id === 'in-review')?.cards[0]).toMatchObject({
+			id: 'oneshot',
+			ageTimestampMs: 60_000,
+			workflowLabel: { name: 'rpi:review' },
+		})
+		expect(input.labels).toBeNull()
+	})
+
 	test('produces the 5 ordered columns', () => {
 		const columns = buildKanbanColumns({ tasks: [], resolveOwner })
 		expect(columns.map((c) => c.id)).toEqual(['todo', 'research-design', 'planning', 'implementation', 'in-review'])
