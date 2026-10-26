@@ -85,17 +85,37 @@ function normalizeSkillType(value: string | undefined): SkillType {
 	return VALID_SKILL_TYPES.includes(normalized as SkillType) ? (normalized as SkillType) : 'other'
 }
 
+// Small-task launchers request this exact final section. Recognizing it does not need a
+// second model or API credential; other, freeform suggestions still use AI extraction.
+const SMALL_TASK_PR_NEXT_STEP =
+	'### Next steps\n\n' +
+	'To create a PR, use the button below, or create a new session with the following command:\n\n' +
+	'```\n/rpi:describe-pr\n```'
+
 export async function extractNextStep(
 	messageContent: string,
-	{ model = resolveModel('haiku') }: { model?: LanguageModelV3 } = {},
+	{ model }: { model?: LanguageModelV3 } = {},
 ): Promise<NextStepSuggestion> {
 	const parsedAt = Date.now()
+	const normalized = messageContent.replace(/\r\n/g, '\n').trimEnd()
+	if (normalized === SMALL_TASK_PR_NEXT_STEP || normalized.endsWith(`\n${SMALL_TASK_PR_NEXT_STEP}`)) {
+		return {
+			parsedAt,
+			extraction: {
+				type: 'next_step_found',
+				nextStepPrompt: '/rpi:describe-pr',
+				nextStepSummary: 'describe-pr',
+				nextStepType: 'describe-pr',
+				taskReference: '',
+			},
+		}
+	}
 
 	try {
 		const prompt = EXTRACTION_PROMPT.replace('{messageContent}', messageContent)
 
 		const { output } = await generateText({
-			model,
+			model: model ?? resolveModel('haiku'),
 			maxRetries: 0,
 			prompt,
 			output: Output.object({
