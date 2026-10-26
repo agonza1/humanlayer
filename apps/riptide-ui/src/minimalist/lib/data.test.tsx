@@ -450,6 +450,84 @@ describe('session host lookup', () => {
 describe('project/task/session membership', () => {
 	beforeEach(() => useBrowserAuth.mockReturnValue({ user: { id: 'me' } }))
 
+	it.each([
+		{ archived: false, scope: 'mine' as const, expected: ['existing-task', 'plan-a', 'plan-b'] },
+		{
+			archived: false,
+			scope: 'everyone' as const,
+			expected: ['existing-task', 'plan-a', 'plan-b', 'teammate-plan'],
+		},
+		{ archived: true, scope: 'mine' as const, expected: ['archived-composer', 'archived-plan'] },
+		{
+			archived: true,
+			scope: 'everyone' as const,
+			expected: ['archived-composer', 'archived-plan', 'archived-teammate'],
+		},
+	])(
+		'shows project planning drafts while preserving archive and $scope scope (archived: $archived)',
+		async ({ archived, scope, expected }) => {
+			const task = (id: string, projectId: string | null, owner = 'me', isArchived = false, isDraft = true) => ({
+				id,
+				name: id,
+				workspace_id: null,
+				project_id: projectId,
+				archived: isArchived,
+				is_draft: isDraft,
+				resource_owner_user_id: owner,
+				updated_at: 1,
+			})
+			const tasks = trackedCollection([
+				task('plan-a', 'project-a'),
+				task('plan-b', 'project-b'),
+				task('teammate-plan', 'project-a', 'teammate'),
+				task('composer', null),
+				task('teammate-composer', null, 'teammate'),
+				task('existing-task', null, 'me', false, false),
+				task('archived-plan', 'project-a', 'me', true),
+				task('archived-composer', null, 'me', true),
+				task('archived-teammate', 'project-a', 'teammate', true),
+			])
+			const sessions = trackedCollection<{ id: string }>([])
+			useSync.mockReturnValue({ tasksCollection: tasks.collection, sessionsCollection: sessions.collection })
+			projectsList.mockImplementation(async (isArchived) => ({
+				projects: isArchived
+					? []
+					: [
+							{
+								id: 'project-a',
+								name: 'Project A',
+								description: null,
+								repositories: [],
+								resourceOwnerUserId: 'me',
+							},
+							{
+								id: 'project-b',
+								name: 'Project B',
+								description: null,
+								repositories: [],
+								resourceOwnerUserId: 'me',
+							},
+						],
+			}))
+			const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+			const { result } = renderHook(() => useTaskTree(archived, scope), {
+				wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+			})
+			await waitFor(() => expect(result.current.isReady).toBe(true))
+			expect(result.current.recent.map((row) => row.task.id).sort()).toEqual(expected)
+			expect(result.current.recent.every((row) => row.sessions.length === 0 && row.latest === null)).toBe(true)
+			if (!archived) {
+				expect(
+					result.current.groups.find((group) => group.key === 'project-a')?.tasks.map((row) => row.task.id),
+				).toEqual(scope === 'mine' ? ['plan-a'] : ['plan-a', 'teammate-plan'])
+				expect(
+					result.current.groups.find((group) => group.key === 'project-b')?.tasks.map((row) => row.task.id),
+				).toEqual(['plan-b'])
+			}
+			expect(workspaceStatus).not.toHaveBeenCalled()
+		},
+	)
+
 	it('keeps tasks reachable when a workspace relationship read fails, without calling it loading', async () => {
 		const tasks = trackedCollection([
 			{
