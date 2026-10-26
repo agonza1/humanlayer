@@ -1,6 +1,6 @@
 import { createCollection, type SyncConfig } from '@tanstack/db'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, renderHook, waitFor } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -335,13 +335,14 @@ describe('session host lookup', () => {
 			stale: false,
 		})
 		expect(result.current.launch.hosts.map((host) => host.host.user_id)).toEqual(['me'])
-		expect(result.current.launch.hosts[0]?.online).toBe(false)
+		expect(result.current.launch.hosts[0]).toMatchObject({ online: true, stale: true })
 	})
 
 	it.each([
-		{ status: 'offline', age: 0, stale: false },
-		{ status: 'online', age: 60_000, stale: true },
-	])('keeps offline and stale session hosts readable: %j', async ({ status, age, stale }) => {
+		{ status: 'offline', age: 0, stale: false, online: false },
+		{ status: 'offline', age: 60_000, stale: true, online: false },
+		{ status: 'online', age: 60_000, stale: true, online: true },
+	])('keeps recorded host presence separate from heartbeat freshness: %j', async ({ status, age, stale, online }) => {
 		const lastSeen = Date.now() - age
 		const hosts = trackedCollection([
 			{ id: hostId, host_id: hostId, user_id: 'teammate', host_name: null, status, last_seen: BigInt(lastSeen) },
@@ -353,7 +354,7 @@ describe('session host lookup', () => {
 		expect(result.current.host).toMatchObject({
 			host: { host_id: hostId },
 			name: hostId.slice(0, 8),
-			online: false,
+			online,
 			stale,
 			lastSeen,
 		})
@@ -383,6 +384,28 @@ describe('session host lookup', () => {
 		expect(result.current.host).toBeNull()
 		rerender({ id: null })
 		expect(result.current.host).toBeNull()
+	})
+
+	it('updates an online session host to offline when the server explicitly disconnects it', async () => {
+		const row = {
+			id: hostId,
+			host_id: hostId,
+			user_id: 'teammate',
+			host_name: 'Host',
+			status: 'online',
+			last_seen: BigInt(Date.now() - 60_000),
+		}
+		const hosts = trackedCollection([row])
+		useSync.mockReturnValue({ onlineHostsCollection: hosts.collection })
+		const { result } = renderHook(() => useHost(hostId, 'teammate'))
+		await waitFor(() => expect(result.current.host?.online).toBe(true))
+		const { begin, write, commit } = hosts.sync.mock.calls[0][0]
+		act(() => {
+			begin()
+			write({ type: 'update', value: { ...row, status: 'offline' } })
+			commit()
+		})
+		await waitFor(() => expect(result.current.host?.online).toBe(false))
 	})
 
 	it('matches the daemon user even when another registration is newer, and updates when only the user changes', async () => {

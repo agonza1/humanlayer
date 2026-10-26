@@ -29,8 +29,8 @@ export interface TaskWithActivity {
 	workflowSessions: WorkflowSessionInput[]
 }
 
-/** The three fields `assignColumn` reads. Structurally a `KanbanSessionInput`. */
-type WorkflowSessionInput = Pick<KanbanSessionInput, 'archived' | 'labels' | 'last_activity_at'>
+/** The fields `assignColumn` reads. Shared by Grouped List and Board. */
+type WorkflowSessionInput = Pick<KanbanSessionInput, 'archived' | 'labels' | 'last_activity_at' | 'status'>
 
 interface UseTasksByRecencyOptions {
 	/** Maximum number of tasks to return. If undefined, returns all tasks. */
@@ -113,13 +113,14 @@ export function useTasksByRecency(options: UseTasksByRecencyOptions = {}) {
 		(q) => {
 			if (isDisabled) return undefined
 			// Minimal projection: the scope predicate needs `created_by`, and
-			// `assignColumn` needs archived/labels/last_activity_at. Nothing else.
+			// `assignColumn` needs archived/labels/last_activity_at/status. Nothing else.
 			return q.from({ sessions: sessionsCollection }).select(({ sessions }) => ({
 				task_id: sessions.task_id,
 				created_by: sessions.created_by,
 				last_activity_at: sessions.last_activity_at,
 				archived: sessions.archived,
 				labels: sessions.labels,
+				status: sessions.status,
 			}))
 		},
 		[sessionsCollection, isDisabled],
@@ -135,6 +136,7 @@ export function useTasksByRecency(options: UseTasksByRecencyOptions = {}) {
 				last_activity_at: session.last_activity_at,
 				archived: session.archived,
 				labels: session.labels,
+				status: session.status,
 			}
 			if (bucket) bucket.push(entry)
 			else map.set(session.task_id, [entry])
