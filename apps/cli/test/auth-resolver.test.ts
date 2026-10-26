@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshWorkOSToken, resolveWorkOSTokenWithDeps } from '../src/auth'
 import { isSessionExpired, type WorkOSSession } from '../src/auth/storage'
 
 const envConfig = { apiOrigin: 'http://api.test', syncOrigin: 'http://sync.test', workosClientId: 'client_test' }
+
+afterEach(() => vi.restoreAllMocks())
 
 function session(overrides: Partial<WorkOSSession> = {}): WorkOSSession {
 	return {
@@ -80,8 +82,9 @@ describe('resolveWorkOSToken', () => {
 			save: async (_env, value) => {
 				saved = value
 			},
-			refresh: async (_apiOrigin, refreshToken) => {
+			refresh: async (_apiOrigin, refreshToken, organizationId) => {
 				expect(refreshToken).toBe('refresh-old')
+				expect(organizationId).toBe(stored.organization_id)
 				return { accessToken: 'access-new', refreshToken: 'refresh-new' }
 			},
 		})
@@ -89,6 +92,7 @@ describe('resolveWorkOSToken', () => {
 		expect(resolved.access_token).toBe('access-new')
 		expect(resolved.refresh_token).toBe('refresh-new')
 		expect(saved?.access_token).toBe('access-new')
+		expect(saved?.organization_id).toBe(stored.organization_id)
 	})
 
 	it('re-reads disk after a refresh race', async () => {
@@ -115,4 +119,25 @@ describe('resolveWorkOSToken', () => {
 			}),
 		).rejects.toThrow('Run `humanlayer login` first')
 	})
+})
+
+describe('refreshWorkOSToken', () => {
+	it.each(['org-selected', undefined])(
+		'preserves selected organization %s in the unauthenticated refresh request',
+		async (organizationId) => {
+			const fetch = vi
+				.spyOn(globalThis, 'fetch')
+				.mockResolvedValue(Response.json({ accessToken: 'access-new', refreshToken: 'refresh-new' }))
+			const result = await refreshWorkOSToken(envConfig.apiOrigin, 'refresh-old', organizationId)
+			expect(result).toEqual({ accessToken: 'access-new', refreshToken: 'refresh-new' })
+			expect(fetch).toHaveBeenCalledTimes(1)
+			const [input, init] = fetch.mock.calls[0]!
+			const request = new Request(input, init)
+			expect(request.url).toBe('http://api.test/rpc/api/v1/auth/token/refresh')
+			expect(request.headers.has('authorization')).toBe(false)
+			expect(await request.json()).toEqual(
+				organizationId ? { refreshToken: 'refresh-old', organizationId } : { refreshToken: 'refresh-old' },
+			)
+		},
+	)
 })

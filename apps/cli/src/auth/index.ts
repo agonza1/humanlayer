@@ -39,7 +39,7 @@ export async function resolveWorkOSTokenWithDeps(
 	// 2. If stored but expired, attempt refresh
 	if (stored?.refresh_token) {
 		try {
-			const refreshed = await deps.refresh(envConfig.apiOrigin, stored.refresh_token)
+			const refreshed = await deps.refresh(envConfig.apiOrigin, stored.refresh_token, stored.organization_id)
 			const session: WorkOSSession = {
 				access_token: refreshed.accessToken,
 				refresh_token: refreshed.refreshToken,
@@ -58,9 +58,9 @@ export async function resolveWorkOSTokenWithDeps(
 	throw new Error('Not logged in. Run `humanlayer login` first, or pass --token.')
 }
 
-export async function refreshWorkOSToken(apiOrigin: string, refreshToken: string) {
+export async function refreshWorkOSToken(apiOrigin: string, refreshToken: string, organizationId?: string) {
 	const apiClient = createUnauthenticatedApiORPCClient(apiOrigin)
-	return apiClient.auth.token.refresh({ refreshToken })
+	return apiClient.auth.token.refresh({ refreshToken, organizationId })
 }
 
 /**
