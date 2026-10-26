@@ -54,5 +54,16 @@ export async function clearSession(env: EnvironmentName): Promise<void> {
 
 export function isSessionExpired(session: WorkOSSession): boolean {
 	const bufferMs = 5 * 60 * 1000 // 5 minute buffer
-	return Date.now() >= session.expires_at - bufferMs
+	const now = Date.now()
+	if (now >= session.expires_at - bufferMs) return true
+	// Decoding only brings refresh forward; it never authenticates claims or extends the session.
+	try {
+		const parts = session.access_token.split('.')
+		const payloadPart = parts[1]
+		if (parts.length !== 3 || !parts[0] || !payloadPart || !parts[2]) return false
+		const payload = JSON.parse(Buffer.from(payloadPart, 'base64url').toString()) as { exp?: unknown }
+		return typeof payload.exp === 'number' && Number.isFinite(payload.exp) && now >= payload.exp * 1000 - 30_000
+	} catch {
+		return false
+	}
 }

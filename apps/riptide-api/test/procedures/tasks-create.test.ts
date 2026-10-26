@@ -6,10 +6,12 @@ import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
+import { projects } from '@humanlayer/db/tables/projects'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskOrganizationAcl } from '@humanlayer/db/tables/task-organization-acl'
 import { taskWorkspaceSetupForHost } from '@humanlayer/db/tables/task-workspace-setup-for-host'
 import { tasks } from '@humanlayer/db/tables/tasks'
+import { workspaces } from '@humanlayer/db/tables/workspaces'
 import type { WorkspaceSetupState, WorkspaceSpec } from '@humanlayer/schemas/effect/workspace'
 import { call } from '@orpc/server'
 import { and, eq } from 'drizzle-orm'
@@ -211,6 +213,31 @@ describe('api/tasks/create', async () => {
 			.limit(1)
 
 		return acl
+	}
+
+	async function createDraftProject(overrides: Partial<typeof projects.$inferInsert> = {}) {
+		const [project] = await db
+			.insert(projects)
+			.values({
+				name: 'Planning draft project',
+				organization_id: organizationId,
+				created_by: userId,
+				resource_owner_user_id: userId,
+				repositories: [
+					{
+						remoteUrl: 'https://github.com/acme/planning.git',
+						repositoryIdentity: 'github.com/acme/planning',
+						defaultBranch: 'main',
+						default: true,
+						autoPushBranch: false,
+						copyGlobs: [],
+					},
+				],
+				...overrides,
+			})
+			.returning()
+		if (!project) throw new Error('Unable to create draft project fixture')
+		return project
 	}
 
 	function firstSessionInput() {
@@ -1570,6 +1597,137 @@ describe('api/tasks/create', async () => {
 
 		expect(await db.select().from(tasks).where(eq(tasks.id, taskId))).toHaveLength(0)
 	})
+
+	test('creates a visible project-bound planning draft without sessions or workspace setup', async () => {
+		const project = await createDraftProject({ private: true })
+		const taskId = uuidv7()
+		const previousWorkspaces = await db.select({ id: workspaces.id }).from(workspaces)
+		const result = await call(
+			createTaskDraftProcedure,
+			{ id: taskId, projectId: project.id, name: 'Approved scope', ticketDescription: 'Acceptance criteria' },
+			{ context: makeContext() },
+		)
+		expect(result.task).toMatchObject({
+			id: taskId,
+			project_id: project.id,
+			workspace_id: null,
+			is_draft: true,
+			name: 'Approved scope',
+			ticket_description: 'Acceptance criteria',
+		})
+		expect(await db.select().from(sessions).where(eq(sessions.task_id, taskId))).toHaveLength(0)
+		expect(await db.select({ id: workspaces.id }).from(workspaces)).toEqual(previousWorkspaces)
+		expect(
+			await db.select().from(taskWorkspaceSetupForHost).where(eq(taskWorkspaceSetupForHost.task_id, taskId)),
+		).toHaveLength(0)
+		expect(await getTaskOrgAcl(taskId, organizationId)).toBeDefined()
+	})
+
+	test('permits a readable shared project owned by another organization member', async () => {
+		const project = await createDraftProject({ resource_owner_user_id: 'another-project-owner', private: false })
+		const result = await call(
+			createTaskDraftProcedure,
+			{ projectId: project.id, name: 'Shared planning' },
+			{ context: makeContext() },
+		)
+		expect(result.task.project_id).toBe(project.id)
+		expect(result.task.resource_owner_user_id).toBe(userId)
+	})
+
+	test.each([true, false])(
+		'reuses the same owned draft without overwriting human edits (project: %s)',
+		async (withProject) => {
+			const projectId = withProject ? (await createDraftProject()).id : undefined
+			const id = uuidv7()
+			const input = { id, projectId, name: 'Original request', ticketDescription: 'Original criteria' }
+			await call(createTaskDraftProcedure, input, { context: makeContext() })
+			await db
+				.update(tasks)
+				.set({ name: 'Human-edited title', ticket_description: 'Human-edited criteria' })
+				.where(eq(tasks.id, id))
+			const [before] = await db.select().from(tasks).where(eq(tasks.id, id))
+			const retried = await call(createTaskDraftProcedure, input, { context: makeContext() })
+			expect(retried.task).toEqual(before)
+			expect(await db.select().from(taskOrganizationAcl).where(eq(taskOrganizationAcl.task_id, id))).toHaveLength(
+				1,
+			)
+			expect(await db.select().from(sessions).where(eq(sessions.task_id, id))).toHaveLength(0)
+		},
+	)
+
+	test('concurrent publication retries create one draft and one ACL', async () => {
+		const project = await createDraftProject()
+		const id = uuidv7()
+		const results = await Promise.all(
+			Array.from({ length: 4 }, (_, index) =>
+				call(
+					createTaskDraftProcedure,
+					{ id, projectId: project.id, name: `Concurrent ${index}` },
+					{ context: makeContext() },
+				),
+			),
+		)
+		expect(new Set(results.map((result) => result.task.id))).toEqual(new Set([id]))
+		expect(new Set(results.map((result) => result.task.name)).size).toBe(1)
+		expect(await db.select().from(tasks).where(eq(tasks.id, id))).toHaveLength(1)
+		expect(await db.select().from(taskOrganizationAcl).where(eq(taskOrganizationAcl.task_id, id))).toHaveLength(1)
+		expect(await db.select().from(sessions).where(eq(sessions.task_id, id))).toHaveLength(0)
+	})
+
+	test.each(['private', 'archived', 'foreign organization', 'missing'] as const)(
+		'rejects an unavailable %s project before creating a draft',
+		async (kind) => {
+			let projectId = uuidv7()
+			if (kind !== 'missing') {
+				projectId = (
+					await createDraftProject({
+						...(kind === 'private' ? { private: true, resource_owner_user_id: 'private-owner' } : {}),
+						...(kind === 'archived' ? { archived: true } : {}),
+						...(kind === 'foreign organization' ? { organization_id: (await createOrg()).orgId } : {}),
+					})
+				).id
+			}
+			const id = uuidv7()
+			await expect(
+				call(createTaskDraftProcedure, { id, projectId, name: 'Unavailable' }, { context: makeContext() }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' })
+			expect(await db.select().from(tasks).where(eq(tasks.id, id))).toHaveLength(0)
+			expect(await db.select().from(taskOrganizationAcl).where(eq(taskOrganizationAcl.task_id, id))).toHaveLength(
+				0,
+			)
+		},
+	)
+
+	test.each(['owner', 'organization', 'project', 'launched', 'archived', 'omitted project'] as const)(
+		'rejects a draft identity with a different %s without exposing or modifying it',
+		async (kind) => {
+			const project = await createDraftProject()
+			const id = uuidv7()
+			await db.insert(tasks).values({
+				id,
+				name: 'Existing private work',
+				organization_id: kind === 'organization' ? (await createOrg()).orgId : organizationId,
+				project_id: kind === 'project' ? (await createDraftProject()).id : project.id,
+				created_by: userId,
+				resource_owner_user_id: kind === 'owner' ? 'other-task-owner' : userId,
+				is_draft: kind !== 'launched',
+				archived: kind === 'archived',
+			})
+			const [before] = await db.select().from(tasks).where(eq(tasks.id, id))
+			await expect(
+				call(
+					createTaskDraftProcedure,
+					{ id, projectId: kind === 'omitted project' ? undefined : project.id, name: 'Replacement' },
+					{ context: makeContext() },
+				),
+			).rejects.toMatchObject({ code: 'TASK_DRAFT_IDENTITY_CONFLICT', data: undefined })
+			expect(await db.select().from(tasks).where(eq(tasks.id, id))).toEqual([before])
+			expect(await db.select().from(taskOrganizationAcl).where(eq(taskOrganizationAcl.task_id, id))).toHaveLength(
+				0,
+			)
+			expect(await db.select().from(sessions).where(eq(sessions.task_id, id))).toHaveLength(0)
+		},
+	)
 
 	test('creates draft task organization ACL with configured org default', async () => {
 		const org = await createOrg()
