@@ -64,14 +64,9 @@ export function useTaskTree(archived = false, scope: TaskTreeScope = 'mine') {
 	const { tasksCollection: tasks, sessionsCollection: sessions } = useSync()
 	const { user } = useAuth()
 	const projects = useProjects()
-	// Drafts wait in the standard launcher, as they do in its sidebar; archived ones still list.
+	// Load this archive state; unbound composer drafts are hidden when assembling active rows.
 	const tasksQuery = useLiveQuery(
-		(q) =>
-			q
-				.from({ tasks })
-				.where(({ tasks }) =>
-					archived ? eq(tasks.archived, true) : and(eq(tasks.archived, false), eq(tasks.is_draft, false)),
-				),
+		(q) => q.from({ tasks }).where(({ tasks }) => eq(tasks.archived, archived)),
 		[tasks, archived],
 	)
 	const sessionsQuery = useLiveQuery((q) => q.from({ sessions }), [sessions])
@@ -133,6 +128,7 @@ export function useTaskTree(archived = false, scope: TaskTreeScope = 'mine') {
 	}
 	const groups = new Map<string, ProjectGroup>()
 	for (const task of tasksQuery.data ?? []) {
+		if (!archived && task.is_draft && !task.project_id) continue
 		const history = byTask.get(task.id) ?? []
 		if (
 			!matchesTaskScope(
