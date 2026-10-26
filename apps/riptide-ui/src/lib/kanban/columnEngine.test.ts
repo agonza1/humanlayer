@@ -116,6 +116,105 @@ describe('assignColumn', () => {
 		expect(assignColumn({}, sessions)).toBe('planning')
 	})
 
+	test.each(['rpi:describe-pr', 'rpi:review'])('returns an idle repair after %s to review', (reviewLabel) => {
+		const sessions = [
+			session({ labels: [label(reviewLabel)], status: 'ready_for_input', last_activity_at: 10n }),
+			session({ labels: [label('rpi:implementation')], status: 'ready_for_input', last_activity_at: 20n }),
+		]
+		expect(assignColumn({}, sessions)).toBe('in-review')
+		expect(sessions[1].labels).toEqual([label('rpi:implementation')])
+	})
+
+	test.each([
+		'running',
+		'ready_for_launch',
+		'waiting_for_workspace',
+		'launching',
+		'resuming',
+		'needs_approval',
+		'waiting_for_usage_limit',
+		'interrupt_requested',
+		'interrupted',
+		'failed',
+		'lost',
+		null,
+		undefined,
+	])('keeps a %s repair in implementation', (status) => {
+		expect(
+			assignColumn({}, [
+				session({ labels: [label('rpi:describe-pr')], status: 'ready_for_input', last_activity_at: 10n }),
+				session({ labels: [label('rpi:implementation')], status, last_activity_at: 20n }),
+			]),
+		).toBe('implementation')
+	})
+
+	test.each([
+		'running',
+		'ready_for_launch',
+		'waiting_for_workspace',
+		'launching',
+		'resuming',
+		'needs_approval',
+		'waiting_for_usage_limit',
+		'interrupt_requested',
+		'interrupted',
+		'failed',
+		'lost',
+		null,
+		undefined,
+	])('does not return an idle repair to review with a %s sibling', (status) => {
+		expect(
+			assignColumn({}, [
+				session({ labels: [label('rpi:describe-pr')], status: 'ready_for_input', last_activity_at: 10n }),
+				session({ status, last_activity_at: 15n }),
+				session({ labels: [label('rpi:implementation')], status: 'ready_for_input', last_activity_at: 20n }),
+			]),
+		).toBe('implementation')
+	})
+
+	test('ignores archived writers and unstarted drafts when returning a repair to review', () => {
+		expect(
+			assignColumn({}, [
+				session({ labels: [label('rpi:describe-pr')], status: 'ready_for_input', last_activity_at: 10n }),
+				session({ status: 'running', archived: true, last_activity_at: 30n }),
+				session({ status: 'draft', last_activity_at: 40n }),
+				session({ labels: [label('rpi:implementation')], status: 'ready_for_input', last_activity_at: 20n }),
+			]),
+		).toBe('in-review')
+	})
+
+	test.each(['rpi:implementation', 'rpi:worktree-setup', 'rpi:plan', 'rpi:research'])(
+		'preserves idle %s placement without prior review',
+		(name) => {
+			expect(
+				assignColumn({}, [
+					session({ labels: [label(name)], status: 'ready_for_input', last_activity_at: 20n }),
+				]),
+			).toBe(LABEL_TO_COLUMN[name])
+		},
+	)
+
+	test.each([{ archived: true }, { status: 'draft' }])(
+		'does not infer prior review from an unavailable review session: %j',
+		(overrides) => {
+			expect(
+				assignColumn({}, [
+					session({
+						labels: [label('rpi:review')],
+						status: 'ready_for_input',
+						last_activity_at: 10n,
+						...overrides,
+					}),
+					session({
+						labels: [label('rpi:implementation')],
+						status: 'ready_for_input',
+						last_activity_at: 20n,
+					}),
+				]),
+			).toBe('implementation')
+		},
+	)
+
 	test('uses the highest-ranked label within the winning session', () => {
 		const sessions = [session({ labels: [label('rpi:research'), label('rpi:plan')], last_activity_at: 10n })]
 		expect(assignColumn({}, sessions)).toBe('planning')
@@ -123,6 +222,39 @@ describe('assignColumn', () => {
 })
 
 describe('buildKanbanColumns', () => {
+	test('returns a completed repair card with its latest activity and review badge', () => {
+		const repair = session({
+			labels: [label('rpi:implementation')],
+			status: 'ready_for_input',
+			last_activity_at: 120_000n,
+		})
+		const columns = buildKanbanColumns({
+			tasks: [
+				{
+					id: 'repair',
+					name: 'Repair',
+					resource_owner_user_id: 'u1',
+					sessions: [
+						session({
+							labels: [label('rpi:describe-pr')],
+							status: 'ready_for_input',
+							last_activity_at: 60_000n,
+						}),
+						repair,
+					],
+				},
+			],
+			resolveOwner,
+		})
+		expect(columns.find((column) => column.id === 'implementation')?.cards).toEqual([])
+		expect(columns.find((column) => column.id === 'in-review')?.cards[0]).toMatchObject({
+			id: 'repair',
+			ageTimestampMs: 120_000,
+			workflowLabel: { name: 'rpi:review' },
+		})
+		expect(repair.labels).toEqual([label('rpi:implementation')])
+	})
+
 	test('uses unlabeled session activity and review badge without mutating labels', () => {
 		const input = session({ status: 'ready_for_input', last_activity_at: 60_000n })
 		const columns = buildKanbanColumns({
