@@ -125,6 +125,94 @@ async function waitForFileContent(filePath: string, expected: string): Promise<s
 }
 
 describe('SyncService', () => {
+	test('failed writes reject a flush and a later admission retries through the same subscription', async () => {
+		await withSyncServiceTest(async ({ service, testDir, mockCollection, mockTasksCollection }) => {
+			const { hash } = await import('ohash')
+			const slug = 'retry-accepted',
+				content = 'Accepted task',
+				contentHash = hash(content)
+			mockTasksCollection.toArray = [{ id: 'task-1', name: 'Accepted', slug }]
+			const context = await service.ensureTaskSync('task-1', testDir)
+			const setup = vi
+				.spyOn(service as any, 'setupArtifactPaths')
+				.mockRejectedValueOnce(new Error('fixture_setup_unavailable'))
+			mockCollection.toArray = [
+				{
+					id: 'accepted',
+					task_slug: slug,
+					file_name: 'task.md',
+					storage_type: 'postgres',
+					s3_key: null,
+					content,
+					content_hash: contentHash,
+					is_deleted: false,
+				},
+			]
+			try {
+				await expect(context.flushArtifactWrites!([{ fileName: 'task.md', contentHash }])).rejects.toThrow(
+					'artifact_sync_write_failed',
+				)
+				await context.flushArtifactWrites!([{ fileName: 'task.md', contentHash }])
+				expect(await readFile(join(testDir, '.humanlayer', 'tasks', slug, 'task.md'), 'utf8')).toBe(content)
+				expect(mockCollection.subscribeChanges).toHaveBeenCalledOnce()
+				await service.shutdown()
+				await expect(context.flushArtifactWrites!([{ fileName: 'task.md', contentHash }])).rejects.toThrow(
+					'artifact_sync_stopped',
+				)
+			} finally {
+				setup.mockRestore()
+			}
+		})
+	})
+	test('does not cache a degraded context permanently after initial setup failure', async () => {
+		await withSyncServiceTest(async ({ service, testDir, mockCollection, mockTasksCollection }) => {
+			mockTasksCollection.toArray = [{ id: 'task-1', name: 'Accepted', slug: 'restored-context' }]
+			mockCollection.toArrayWhenReady.mockRejectedValueOnce(new Error('fixture_unavailable'))
+			const first = await service.ensureTaskSync('task-1', testDir)
+			await expect(first.flushArtifactWrites!([])).rejects.toThrow('artifact_sync_unavailable')
+			const restored = await service.ensureTaskSync('task-1', testDir)
+			expect(restored).not.toBe(first)
+			await restored.flushArtifactWrites!([])
+			expect(restored.getCollection()).toBe(mockCollection)
+		})
+	})
+	test('flushes a delayed accepted artifact through the existing writer and cancels absent evidence on shutdown', async () => {
+		await withSyncServiceTest(async ({ service, testDir, mockCollection, mockTasksCollection }) => {
+			const { hash } = await import('ohash')
+			const slug = 'accepted-delivery',
+				content = 'Accepted task',
+				contentHash = hash(content)
+			mockTasksCollection.toArray = [{ id: 'task-1', name: 'Accepted', slug }]
+			const context = await service.ensureTaskSync('task-1', testDir)
+			let resolved = false
+			const flush = context.flushArtifactWrites!([{ fileName: 'task.md', contentHash }]).then(() => {
+				resolved = true
+			})
+			await Promise.resolve()
+			expect(resolved).toBe(false)
+			const artifact = {
+				id: 'accepted-task',
+				task_id: 'task-1',
+				task_slug: slug,
+				file_name: 'task.md',
+				storage_type: 'postgres',
+				content,
+				content_hash: contentHash,
+				is_deleted: false,
+			}
+			mockCollection.toArray = [artifact]
+			const callback = mockCollection.subscribeChanges.mock.calls[0]![0] as (changes: unknown[]) => void
+			callback([{ type: 'insert', value: artifact }])
+			await flush
+			expect(await readFile(join(testDir, '.humanlayer', 'tasks', slug, 'task.md'), 'utf8')).toBe(content)
+			expect(mockCollection.subscribeChanges).toHaveBeenCalledOnce()
+			const absent = expect(
+				context.flushArtifactWrites!([{ fileName: 'missing.json', contentHash: 'missing' }]),
+			).rejects.toThrow('artifact_sync_stopped')
+			await service.shutdown()
+			await absent
+		})
+	})
 	test('returns a TaskSyncContext', async () => {
 		await withSyncServiceTest(async ({ testDir, service }) => {
 			const taskSync = await service.ensureTaskSync('task-1', testDir)

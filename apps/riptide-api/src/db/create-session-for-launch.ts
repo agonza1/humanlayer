@@ -1,10 +1,17 @@
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
+import type { WorkEntry } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import type { CodingAgent } from '@humanlayer/schemas/coding-agent'
+import { eq } from 'drizzle-orm'
 import type { PgDatabase } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 
-interface CreateSessionForLaunchParams {
+import { assertReviewInsertion, reviewWorkEntry, type ReviewWriterAdmission } from './review-progression'
+
+interface CreateSessionForLaunchParams extends WorkEntry {
+	reviewAdmission?: ReviewWriterAdmission
+	workflowType?: string
 	id?: string
 	eventId?: string
 	taskId: string | null
@@ -36,7 +43,15 @@ export async function createSessionForLaunch(
 	tx: PgDatabase<PostgresJsQueryResultHKT>,
 	params: CreateSessionForLaunchParams,
 ) {
+	if (params.taskId) {
+		const [row] = await tx
+			.select({ id: reviewProgression.task_id })
+			.from(reviewProgression)
+			.where(eq(reviewProgression.task_id, params.taskId))
+		if (row) assertReviewInsertion(tx, params.taskId, params.reviewAdmission)
+	}
 	const sessionValues: typeof sessions.$inferInsert = {
+		...reviewWorkEntry(params, params.workflowType ?? 'freeform'),
 		task_id: params.taskId,
 		forked_from_session_id: params.forkedFromSessionId ?? null,
 		handoff_source_session_id: params.handoffSourceSessionId ?? null,
@@ -58,7 +73,7 @@ export async function createSessionForLaunch(
 		num_events: 1,
 	}
 	if (params.id) sessionValues.id = params.id
-	if (params.labels) sessionValues.labels = params.labels
+	if (params.labels && params.executionPhase !== null) sessionValues.labels = params.labels
 	const [session] = await tx.insert(sessions).values(sessionValues).returning()
 
 	if (!session) {

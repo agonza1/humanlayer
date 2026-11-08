@@ -5,10 +5,12 @@ import type { TaskUserSettingsCollection } from '@/collections/electric/task-use
 import type { TasksCollection } from '@/collections/electric/tasks'
 import type { QueryTaskUserSettingsCollection } from '@/collections/query/task-user-settings'
 import type { QueryTasksCollection } from '@/collections/query/tasks'
-import { useSyncInternal } from '@/components/providers/SyncProvider'
+import { useSync, useSyncInternal } from '@/components/providers/SyncProvider'
+import { isReviewEnrolledTask, workflowUpdateRequest } from '@/lib/review-progression'
 import type { RiptideApiClient } from '@/orpc/client'
 
 interface TaskLike {
+	workflow_revision?: bigint
 	id: string
 	organization_id: string
 	resource_owner_user_id?: string | null
@@ -26,6 +28,15 @@ interface UseTaskSettingsOptions {
 	taskUserSettingsCollection: TaskUserSettingsCollection | QueryTaskUserSettingsCollection
 	tasksCollection: TasksCollection | QueryTasksCollection
 	api: Pick<RiptideApiClient, 'tasks'>
+}
+
+export function useTaskReviewEnrollment(taskId: string | null | undefined) {
+	const { tasksCollection } = useSync()
+	const { data } = useLiveQuery(
+		(q) => (taskId ? q.from({ tasks: tasksCollection }).where(({ tasks }) => eq(tasks.id, taskId)) : undefined),
+		[tasksCollection, taskId],
+	)
+	return isReviewEnrolledTask(data?.[0])
 }
 
 export function useTaskSettings({
@@ -63,13 +74,13 @@ export function useTaskSettings({
 				slackNotificationsMuted: false,
 			}
 		}
-		if (isOwner) {
+		if (isOwner || isReviewEnrolledTask(task)) {
 			return {
 				autoAdvanceQuestionsToResearch: task.auto_advance_questions_to_research,
 				autoAdvanceResearchToDesign: task.auto_advance_research_to_design,
 				autoAdvancePlanToWorktree: task.auto_advance_plan_to_worktree,
 				autoAdvanceWorktreeToImplementation: task.auto_advance_worktree_to_implementation,
-				autoAdvanceImplementationToPr: task.auto_advance_implementation_to_pr,
+				autoAdvanceImplementationToPr: !isReviewEnrolledTask(task) && task.auto_advance_implementation_to_pr,
 				slackNotificationsMuted: task.slack_notifications_muted,
 			}
 		}
@@ -164,6 +175,8 @@ export function useTaskSettings({
 				autoAdvanceWorktreeToImplementation,
 				autoAdvanceImplementationToPr,
 			}) => {
+				if (isReviewEnrolledTask(task) && !isOwner)
+					throw new Error('Only the task owner can change enrolled execution controls.')
 				if (isOwner) {
 					// Owner: patch tasksCollection
 					if (autoAdvanceQuestionsToResearch !== undefined) {
@@ -253,7 +266,7 @@ export function useTaskSettings({
 				autoAdvanceWorktreeToImplementation,
 				autoAdvanceImplementationToPr,
 			}) => {
-				const response = await api.tasks.update({
+				const request = await workflowUpdateRequest(tasksCollection.state.get(taskId) ?? { id: taskId }, {
 					taskId,
 					autoAdvanceQuestionsToResearch,
 					autoAdvanceResearchToDesign,
@@ -261,6 +274,7 @@ export function useTaskSettings({
 					autoAdvanceWorktreeToImplementation,
 					autoAdvanceImplementationToPr,
 				})
+				const response = await api.tasks.update(request)
 				// Await sync on the appropriate collection
 				if (isOwner) {
 					// Use the dual-path confirmTx for tasks

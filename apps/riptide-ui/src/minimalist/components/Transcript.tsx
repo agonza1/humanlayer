@@ -42,6 +42,21 @@ export function Transcript({
 	return (
 		<>
 			{turns.map((turn, index) => {
+				if (turn.kind === 'review_progression')
+					return (
+						<aside key={turn.id} className="compact-divider" aria-label="Review update">
+							<strong>{reviewProgressionLabels[turn.note.status]}</strong>
+							<p>
+								{turn.note.repository}
+								{turn.note.pr === null ? '' : ` #${turn.note.pr}`}
+								{turn.note.headSha ? ` at ${turn.note.headSha.slice(0, 12)}` : ''}
+							</p>
+							<p>
+								Open <code>{turn.note.reportArtifact}</code> for evidence and delivery limitations.
+							</p>
+							<p>This update does not start the agent or approve a merge or deployment.</p>
+						</aside>
+					)
 				if (turn.kind === 'user')
 					return (
 						<UserTurn
@@ -356,3 +371,4 @@ function TodoCard({ todos }: { todos: TodoItem[] }) {
 		</div>
 	)
 }
+import { reviewProgressionLabels } from '@humanlayer/ui/lib/review-progression'

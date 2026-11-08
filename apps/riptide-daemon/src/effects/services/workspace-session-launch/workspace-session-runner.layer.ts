@@ -31,7 +31,7 @@ export const WorkspaceSessionRunnerLive = Layer.effect(
 			if (rawSession === undefined) {
 				return WorkspaceSessionLaunchHandoff.Deferred({ reason: 'session_not_synced' })
 			}
-			const session = parseSessionLaunchCandidate(rawSession)
+			const session = parseSessionLaunchCandidate(structuredClone({ ...rawSession }))
 			if (session === undefined) {
 				yield* Effect.logWarning('Skipped malformed V2 session launch candidate').pipe(
 					Effect.annotateLogs({ session_id: input.sessionId }),
@@ -43,6 +43,9 @@ export const WorkspaceSessionRunnerLive = Layer.effect(
 			}
 			if (!shouldLaunchSession({ type: 'update', value: session })) {
 				return WorkspaceSessionLaunchHandoff.Skipped({ reason: `local_status_${session.status}` })
+			}
+			if (!(yield* executor.admitSessionLaunch({ session }))) {
+				return WorkspaceSessionLaunchHandoff.Deferred({ reason: 'review_setup_unverified' })
 			}
 			const forked = yield* registry
 				.forkExclusiveSessionRun({

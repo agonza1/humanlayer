@@ -5,6 +5,7 @@ import { Clock, Effect } from 'effect'
 import { uuidv7 } from 'uuidv7'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { lockReviewSession } from '../../../db/review-progression'
 import { ACTIVE_SESSION_STATUSES } from '../../../db/session-statuses'
 import { canWriteTaskForSession } from '../../../db/task-auth'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
@@ -38,6 +39,7 @@ export const createQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 		const result = yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					const locked = yield* tx.run(() => lockReviewSession(tx.client, organizationId, input.sessionId))
 					const [session] = yield* tx.query(
 						tx.client
 							.select({
@@ -69,6 +71,11 @@ export const createQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 					if (!hasTaskWriteAccess) {
 						return yield* new ORPCForbiddenError()
 					}
+					if (locked.boundary?.row)
+						return yield* new ORPCBadRequestError({
+							message:
+								'Could not queue this message. Use the session composer with retained message and event IDs for enrolled work.',
+						})
 
 					if (!QUEUE_ALLOWED_STATUSES.includes(session.status as (typeof QUEUE_ALLOWED_STATUSES)[number])) {
 						return yield* new ORPCBadRequestError({
@@ -143,6 +150,7 @@ export const deleteQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 		const result = yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					const locked = yield* tx.run(() => lockReviewSession(tx.client, organizationId, input.sessionId))
 					const [session] = yield* tx.query(
 						tx.client
 							.select({
@@ -176,6 +184,11 @@ export const deleteQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 					if (!hasRequiredSessionAccess(accessLevel, SessionAccessControl.prompt)) {
 						return yield* new ORPCForbiddenError()
 					}
+					if (locked.boundary?.row)
+						return yield* new ORPCBadRequestError({
+							message:
+								'Could not delete this message. Enrolled input is retained for replay. Ask the task owner to reconcile queued work before continuing.',
+						})
 
 					const [deleted] = yield* tx.query(
 						tx.client
@@ -210,6 +223,8 @@ export const deleteQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 						Effect.fail(
 							errors.NOT_FOUND({ data: { message: 'Queued message not found or already delivered' } }),
 						),
+					ORPCBadRequestError: (error) =>
+						Effect.fail(errors.BAD_REQUEST({ data: { message: error.message } })),
 					ORPCForbiddenError: () =>
 						Effect.fail(
 							errors.FORBIDDEN({ data: { message: 'You do not have write access to this session' } }),

@@ -4,10 +4,12 @@ import { artifacts } from '@humanlayer/db/tables/artifacts'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizations } from '@humanlayer/db/tables/organizations'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskLaunches } from '@humanlayer/db/tables/task-launches'
 import { taskWorkspaceSetupForHost } from '@humanlayer/db/tables/task-workspace-setup-for-host'
 import { tasks } from '@humanlayer/db/tables/tasks'
+import type { LaunchTaskDraftInput } from '@humanlayer/riptide-api-contract/api/tasks/launch-draft'
 import { call } from '@orpc/server'
 import { and, eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
@@ -129,6 +131,96 @@ describe('api/tasks/launchDraft', async () => {
 			: []
 		return { taskRows, sessionRows, eventRows, launchRows, setupRows }
 	}
+
+	test.each([false, true])(
+		'retains real legacy placement and atomic replay for spec-backed=%s delivery',
+		async (specBacked) => {
+			const ordinary = input()
+			const text =
+				'Implement accepted criteria and publish in this same session with DeliveryReportV1. Independent review is separate; no merge authority.'
+			const request: LaunchTaskDraftInput = {
+				...ordinary,
+				taskContent: text,
+				ticketDescription: text,
+				firstSession: { ...ordinary.firstSession, text, intent: 'implementation' },
+				reviewProgressionEnrollment: { enrollmentId: 'personal', returnRouteRef: 'origin_1' },
+			}
+			if (specBacked) {
+				request.worktreeTiming = 'now'
+				request.workspaceSpec = {
+					specVersion: 1,
+					directory: '/repo',
+					workspaceBaseDirectory: '/worktrees',
+					setupBlocksFirstSession: true,
+					repos: [
+						{
+							localPath: 'syncopate',
+							targetPath: '/repo/syncopate',
+							branch: 'codex/delivery',
+							sourceRef: 'main',
+							copyGlobs: [],
+							primary: true,
+						},
+					],
+				}
+			}
+			expect((await call(launchTaskDraftProcedure, request, { context: context() })).outcome).toBe('created')
+			const [row] = await db
+				.select()
+				.from(reviewProgression)
+				.where(eq(reviewProgression.task_id, request.draftId))
+			const rows = await countLaunchRows(request.draftId)
+			expect(rows.taskRows[0]).toMatchObject({ project_id: null, workspace_id: null })
+			expect(row).toMatchObject({
+				source_session_id: request.firstSession.id,
+				verified_binding: null,
+				binding_digest: null,
+				placement: {
+					kind: 'legacy_directory',
+					projectId: null,
+					workspaceId: null,
+					setupRowId: rows.setupRows[0]!.id,
+				},
+				accepted_launch: { acceptedTaskArtifact: text },
+			})
+			expect(row!.placement.kind === 'legacy_directory' && row!.placement.workspaceSpecDigest).toEqual(
+				specBacked ? expect.stringMatching(/^[0-9a-f]{64}$/) : null,
+			)
+			expect((await call(launchTaskDraftProcedure, request, { context: context() })).outcome).toBe(
+				'already-launched',
+			)
+			for (const changed of [
+				{ ...request, reviewProgressionEnrollment: undefined },
+				{
+					...request,
+					reviewProgressionEnrollment: { ...request.reviewProgressionEnrollment!, returnRouteRef: 'other' },
+				},
+				{ ...request, firstSession: { ...request.firstSession, id: uuidv7() } },
+				{ ...request, taskContent: `${text}\nChanged acceptance` },
+			])
+				await expect(call(launchTaskDraftProcedure, changed, { context: context() })).rejects.toThrow()
+			expect(
+				await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, request.draftId)),
+			).toEqual([row])
+			const taskId = uuidv7()
+			const rollback = {
+				...request,
+				draftId: taskId,
+				slug: `enrolled-rollback-${taskId}`,
+				firstSession: { ...request.firstSession, id: uuidv7() },
+			}
+			await expect(call(launchTaskDraftProcedure, rollback, { context: context() })).rejects.toThrow()
+			expect(await countLaunchRows(taskId)).toMatchObject({
+				taskRows: [],
+				sessionRows: [],
+				launchRows: [],
+				setupRows: [],
+			})
+			expect(await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))).toHaveLength(
+				0,
+			)
+		},
+	)
 
 	test('creates a local-only launch with one canonical task, first session, event, setup row, and launch record', async () => {
 		const request = input()

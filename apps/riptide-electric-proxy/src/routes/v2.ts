@@ -7,6 +7,7 @@ import { diffComments } from '@humanlayer/db/tables/diff-comments'
 import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { providerLoginRequests } from '@humanlayer/db/tables/provider-login-requests'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskOrganizationAcl } from '@humanlayer/db/tables/task-organization-acl'
 import { taskUserAcl } from '@humanlayer/db/tables/task-user-acl'
@@ -211,6 +212,19 @@ export function createV2App(config: AppConfig) {
 		const { fragment, params } = buildWhereFragment(taskWorkspaceSetupForHost, [
 			{ column: taskWorkspaceSetupForHost.organization_id, value: organizationId },
 			{ column: taskWorkspaceSetupForHost.host_id, value: hostId },
+		])
+		applyWhereToUrl(c.var.electricOriginUrl, fragment, params)
+		return proxyElectricResponseWithRuntime(config, c.var.electricOriginUrl, undefined, c.req)
+	})
+
+	app.all('/daemon/review-progression', async (c) => {
+		const { organizationId, userId, hostId } = c.var.authContext
+		if (!hostId) return c.json({ error: 'hostId required in daemon token' }, StatusCodes.BAD_REQUEST)
+		c.var.electricOriginUrl.searchParams.set('table', getTableName(reviewProgression))
+		const { fragment, params } = buildWhereFragment(reviewProgression, [
+			{ column: reviewProgression.organization_id, value: organizationId },
+			{ column: reviewProgression.resource_owner_user_id, value: userId },
+			{ column: reviewProgression.host_id, value: hostId },
 		])
 		applyWhereToUrl(c.var.electricOriginUrl, fragment, params)
 		return proxyElectricResponseWithRuntime(config, c.var.electricOriginUrl, undefined, c.req)

@@ -58,3 +58,13 @@ Host status can also take time to update after shutdown, especially if the devic
 If HumanLayer shows **Could not stop the local daemon**, automatic startup stays off, but a local daemon may still be running. Use the retry action to stop it again.
 
 Do not assume the process has stopped just because the switch is off. Check the stop result and the host's status before leaving work unattended.
+
+## Review progression source boundary
+
+The opt-in review-progression source is default off and does not change the daemon controls above. Enrollment binds one owner/task/host and verified placement. Stopping a host does not move its enrolled work or grant a replacement writer. Cross-host handoff is not supported by this integration; reconcile the original host's retained action, journal and process evidence before authorizing more execution. SDK child-cleanup proof remains unresolved, so automatic progression is not functionally accepted.
+
+A separately authorized operator rollout must verify compatible helper output version 1 and handoff/return-ack version 1 on both repositories, exact installed helper/configuration digests, owner-private inbox and bridge identity, accepted task scope, host/placement and trusted return-route references. Unknown versions, missing pins, changed placement or revoked authority fail closed without falling back to another writer. Source revisions and passing fictional fixtures are not installed compatibility or delivery evidence.
+
+Source delivery does not authorize installation, changing enrollment/configuration, starting or restarting daemons, live notifications or merging. Controller-owned root/static/services/API/database checks, Phase 6/7 technical/manual gates and original human acceptance remain separate. A live canary needs explicit authority for its project, host and notification surface; a merge canary additionally needs approval for that exact test PR/head.
+
+For a separately authorized rollback, disable new enrollments/claims through the existing opt-ins and preserve task coordination rows, review journals, pending approvals, unknown action/send/merge intents and independent return receipts. Do not delete active state, reset budgets, resume on another host or infer nonexecution from a lost response. Keep the prior installed contract until explicit cutover. Reports return passively; an unsupported native-origin sender is a named limitation, never a fabricated success.

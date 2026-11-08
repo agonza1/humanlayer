@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm'
 import { Clock, Effect } from 'effect'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { lockReviewSession } from '../../../db/review-progression'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
 import { PostgresDb } from '../../../effects/services/postgres/postgres-db.service'
 import { Sentry } from '../../../instrument'
@@ -13,7 +14,12 @@ import {
 	SessionAccessControl,
 } from '../../../lib/session-multiplayer-prompting-auth'
 import { effectOrpcBaseOrganizationRequired, requiresBillingEffectMiddleware } from '../../effect-base'
-import { ORPCForbiddenError, ORPCNotFoundError, ORPCQueuedMessageUpdateFailedError } from '../../effect-errors'
+import {
+	ORPCBadRequestError,
+	ORPCForbiddenError,
+	ORPCNotFoundError,
+	ORPCQueuedMessageUpdateFailedError,
+} from '../../effect-errors'
 
 export const updateQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequired.sessions.queuedMessages.update
 	.use(requiresBillingEffectMiddleware)
@@ -32,6 +38,7 @@ export const updateQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 		const updateResult = yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					const locked = yield* tx.run(() => lockReviewSession(tx.client, organizationId, input.sessionId))
 					const [session] = yield* tx.query(
 						tx.client
 							.select({
@@ -61,6 +68,11 @@ export const updateQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 					if (!hasRequiredSessionAccess(accessLevel, SessionAccessControl.prompt)) {
 						return yield* new ORPCForbiddenError()
 					}
+					if (locked.boundary?.row)
+						return yield* new ORPCBadRequestError({
+							message:
+								'Could not edit this message. Enrolled input is retained for replay. Ask the task owner to reconcile queued work before continuing.',
+						})
 
 					const [updated] = yield* tx.query(
 						tx.client
@@ -137,6 +149,8 @@ export const updateQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 						),
 				}),
 				Effect.catchTags({
+					ORPCBadRequestError: (error) =>
+						Effect.fail(errors.BAD_REQUEST({ data: { message: error.message } })),
 					SessionDoesNotExistError: () => Effect.fail(new ORPCNotFoundError()),
 					PostgresDbQueryError: (error) => mapPostgresErrorToResponse(error, errors),
 					PostgresDbTransactionError: (error) => mapPostgresErrorToResponse(error, errors),

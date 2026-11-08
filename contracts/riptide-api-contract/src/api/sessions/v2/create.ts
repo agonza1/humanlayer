@@ -2,9 +2,11 @@ import { StatusCodes } from 'http-status-codes'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../../contract-builder'
+import { WorkEntryFields } from '../../../lib/review-progression'
 import { CodingAgentSchema, PermissionsModeSchema } from '../launch'
 
 export const CreateSessionV2InputSchema = z.object({
+	...WorkEntryFields,
 	sessionId: z.uuidv7().optional(),
 	draftId: z.uuidv7().optional().describe('Promote an existing caller-owned draft into this workspace'),
 	eventId: z.uuidv7().optional(),

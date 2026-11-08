@@ -6,7 +6,7 @@ import { hash } from 'ohash'
 import type { ArtifactActions } from '@/collections/electric/artifacts'
 import { createArtifactsCollection } from '@/collections/electric/artifacts'
 import type { TasksCollection } from '@/collections/electric/tasks'
-import type { ArtifactCollectionLike, ArtifactData } from '@/collections/types'
+import type { ArtifactChangeMessage, ArtifactCollectionLike, ArtifactData } from '@/collections/types'
 import type { DaemonRuntime } from '@/effects/runtime'
 import { Sentry } from '@/instrument'
 import logger from '@/logger'
@@ -164,6 +164,9 @@ export class TaskSyncContext implements ITaskSyncContext {
 		private readonly collection: ArtifactCollectionLike | undefined,
 		private readonly actions: ArtifactActions | undefined,
 		private readonly tasksCollection: TasksCollection,
+		private readonly flushWrites?: (
+			expected: readonly { fileName: string; contentHash: string }[],
+		) => Promise<void>,
 	) {}
 
 	createSessionManager(sessionId: string): ISyncManager {
@@ -177,6 +180,11 @@ export class TaskSyncContext implements ITaskSyncContext {
 
 	getTaskSlug(): string | null {
 		return this.tasksCollection.toArray.find((t) => t.id === this.taskId)?.slug ?? null
+	}
+
+	async flushArtifactWrites(expected: readonly { fileName: string; contentHash: string }[]): Promise<void> {
+		if (!this.flushWrites) throw new Error('artifact_sync_unavailable')
+		await this.flushWrites(expected)
 	}
 }
 
@@ -260,7 +268,6 @@ export class SyncService implements ISyncService {
 			})
 			// Return a context without a collection — upsert still works via oRPC
 			const degraded = new TaskSyncContext(this.orpc, taskId, undefined, undefined, this.tasksCollection)
-			this.taskContexts.set(taskId, degraded)
 			return degraded
 		} finally {
 			this.pendingTaskSetup.delete(taskId)
@@ -317,7 +324,12 @@ export class SyncService implements ISyncService {
 			this.token,
 			taskId,
 		)
-		let unsubscribe: { unsubscribe: () => void } | undefined
+		let unsubscribe:
+			| {
+					unsubscribe: () => void
+					flush: (expected: readonly { fileName: string; contentHash: string }[]) => Promise<void>
+			  }
+			| undefined
 
 		try {
 			// Subscribe before waiting so the disk writer receives both initial state and later changes.
@@ -370,7 +382,7 @@ export class SyncService implements ISyncService {
 				'Task artifacts collection ready',
 			)
 
-			return new TaskSyncContext(this.orpc, taskId, collection, actions, this.tasksCollection)
+			return new TaskSyncContext(this.orpc, taskId, collection, actions, this.tasksCollection, unsubscribe.flush)
 		} catch (error) {
 			unsubscribe?.unsubscribe()
 			await cleanup?.()
@@ -386,9 +398,18 @@ export class SyncService implements ISyncService {
 		collection: ArtifactCollectionLike,
 		cwd: string,
 		taskId: string,
-	): { unsubscribe: () => void } {
+	): {
+		unsubscribe: () => void
+		flush: (expected: readonly { fileName: string; contentHash: string }[]) => Promise<void>
+	} {
 		let setupPromise: Promise<{ storagePath: string; symlinkPath: string }> | null = null
 		const pendingWrites = new Map<string, Promise<void>>()
+		const failedWrites = new Map<string, Error>()
+		let stopped = false
+		const flushWaiters = new Map<() => void, () => void>()
+		const notifyFlush = () => {
+			for (const inspect of flushWaiters.keys()) inspect()
+		}
 
 		const resolveTaskSlugForWrite = (artifact: ArtifactData): string | null => {
 			return this.tasksCollection.toArray.find((t) => t.id === taskId)?.slug ?? artifact.task_slug
@@ -396,215 +417,279 @@ export class SyncService implements ISyncService {
 
 		const ensurePathsReady = async (taskSlug: string) => {
 			if (!setupPromise) {
-				setupPromise = this.setupArtifactPaths(cwd, taskId, taskSlug)
+				setupPromise = this.setupArtifactPaths(cwd, taskId, taskSlug).catch((error) => {
+					setupPromise = null
+					throw error
+				})
 			}
 			await setupPromise
 		}
 
-		return collection.subscribeChanges(
-			(changes) => {
-				logger.debug(
-					{
-						taskId,
-						changeCount: changes.length,
-						types: changes.map((c) => c.type),
-						fileNames: changes.map((c) => c.value?.file_name),
-						storageTypes: changes.map((c) => c.value?.storage_type),
-					},
-					'Disk writer: received changes from artifacts collection',
-				)
-				for (const change of changes) {
-					const artifact = change.value
-					if (isReservedArtifactTrashSubpath(artifact.file_name)) {
-						logger.debug(
-							{ taskId, fileName: artifact.file_name, changeType: change.type },
-							'Skipping disk management for reserved artifact trash path',
-						)
-						continue
-					}
-					const taskSlugForWrite = resolveTaskSlugForWrite(artifact)
+		const writeChanges = (changes: ArtifactChangeMessage[]) => {
+			logger.debug(
+				{
+					taskId,
+					changeCount: changes.length,
+					types: changes.map((c) => c.type),
+					fileNames: changes.map((c) => c.value?.file_name),
+					storageTypes: changes.map((c) => c.value?.storage_type),
+				},
+				'Disk writer: received changes from artifacts collection',
+			)
+			for (const change of changes) {
+				const artifact = change.value
+				if (isReservedArtifactTrashSubpath(artifact.file_name)) {
+					logger.debug(
+						{ taskId, fileName: artifact.file_name, changeType: change.type },
+						'Skipping disk management for reserved artifact trash path',
+					)
+					continue
+				}
+				const taskSlugForWrite = resolveTaskSlugForWrite(artifact)
 
-					// Handle tombstones from normal updates, reconnect inserts, and shape removals.
-					// All three should move any on-disk file into .trash and skip normal writes.
-					if (change.type === 'delete' || artifact.is_deleted) {
-						if (!taskSlugForWrite) continue
-						const taskDir = getArtifactSymlinkPath(cwd, taskSlugForWrite)
-						const filePath = join(taskDir, artifact.file_name)
-						const deletedDir = join(taskDir, '.trash')
-						const deletedPath = join(deletedDir, artifact.file_name)
-
-						const pending = pendingWrites.get(filePath) ?? Promise.resolve()
-						const next = pending
-							.then(async () => {
-								await ensurePathsReady(taskSlugForWrite)
-								await mkdir(deletedDir, { recursive: true })
-								await rename(filePath, deletedPath).catch(() => {
-									// File may not exist on disk (e.g. S3 artifact not yet downloaded)
-								})
-								logger.warn(
-									{ filePath, deletedPath, changeType: change.type },
-									'artifact tombstoned: moved to .trash',
-								)
-							})
-							.finally(() => {
-								if (pendingWrites.get(filePath) === next) pendingWrites.delete(filePath)
-							})
-						pendingWrites.set(filePath, next)
-						continue
-					}
-
-					if (change.type !== 'insert' && change.type !== 'update') continue
-
-					if (!taskSlugForWrite) {
-						logger.debug({ taskId, fileName: artifact.file_name }, 'Skipping disk write: no task slug')
-						continue
-					}
-
+				// Handle tombstones from normal updates, reconnect inserts, and shape removals.
+				// All three should move any on-disk file into .trash and skip normal writes.
+				if (change.type === 'delete' || artifact.is_deleted) {
+					if (!taskSlugForWrite) continue
 					const taskDir = getArtifactSymlinkPath(cwd, taskSlugForWrite)
+					const filePath = join(taskDir, artifact.file_name)
+					const deletedDir = join(taskDir, '.trash')
+					const deletedPath = join(deletedDir, artifact.file_name)
 
-					// Handle restore / reconnect after restore: clean up stale .trash copy
-					if (artifact.is_deleted === false) {
-						const trashedPath = join(taskDir, '.trash', artifact.file_name)
-						// Fire-and-forget cleanup of stale .trash copy
-						unlink(trashedPath).catch(() => {
-							// File may not exist in .trash — that's fine
-						})
-					}
-
-					// Validate path is within task directory before writing
-					const validation = validateArtifactWritePath(artifact.file_name, taskDir)
-					if (!validation.valid) {
-						logger.warn(
-							{ taskId, fileName: artifact.file_name, reason: validation.reason },
-							'Rejected artifact write in sync: path traversal detected',
-						)
-						continue
-					}
-					const filePath = validation.filePath
-
-					// Serialize writes per file via promise chaining
 					const pending = pendingWrites.get(filePath) ?? Promise.resolve()
 					const next = pending
 						.then(async () => {
-							// Ensure paths are set up — all concurrent callbacks await the same promise
 							await ensurePathsReady(taskSlugForWrite)
-
-							// S3-backed artifacts: download from S3 instead of writing content string
-							if (artifact.storage_type === 's3' && artifact.s3_key) {
-								const s3Key = artifact.s3_key
-								// Check if file exists on disk with matching hash
-								try {
-									const existingBytes = await readFile(filePath)
-									const existingHashBuffer = await crypto.subtle.digest('SHA-256', existingBytes)
-									const existingHash = Array.from(new Uint8Array(existingHashBuffer))
-										.map((b) => b.toString(16).padStart(2, '0'))
-										.join('')
-									if (existingHash === artifact.content_hash) {
-										logger.debug(
-											{ taskId, fileName: artifact.file_name },
-											'S3 disk write skipped: content hash matches',
-										)
-										return
-									}
-								} catch {
-									// File doesn't exist or can't be read — proceed to download
-								}
-
-								// Fetch pre-signed download URL from API
-								logger.debug(
-									{ taskId, fileName: artifact.file_name, artifactId: artifact.id },
-									'Disk writer: fetching S3 download URL',
-								)
-								const { downloadUrl } = await this.orpc.artifacts.downloadUrl({
-									artifactId: artifact.id,
-								})
-								logger.debug(
-									{ taskId, fileName: artifact.file_name },
-									'Disk writer: downloading S3 artifact',
-								)
-								const response = await fetch(downloadUrl)
-								if (!response.ok) {
-									throw new ArtifactS3DownloadError(
-										artifact.id,
-										s3Key,
-										response.status,
-										response.statusText,
-									)
-								}
-								const buffer = await response.arrayBuffer()
-								await mkdir(dirname(filePath), { recursive: true })
-								await writeFile(filePath, new Uint8Array(buffer))
-								logger.info(
-									{ taskId, fileName: artifact.file_name, bytes: buffer.byteLength },
-									'Disk writer: wrote S3 artifact to disk',
-								)
-								return
-							}
-
-							const onDiskContent = await readFile(filePath, 'utf-8').catch(() => null)
-							const onDiskHash = onDiskContent ? hash(onDiskContent) : null
-							if (artifact.content_hash === onDiskHash) {
-								logger.debug(
-									{ taskId, fileName: artifact.file_name },
-									'Disk write skipped: content hash matches',
-								)
-								return
-							}
-
-							await mkdir(dirname(filePath), { recursive: true })
-							await writeFile(filePath, artifact.content)
-							logger.info({ taskId, fileName: artifact.file_name }, 'Disk writer: wrote artifact to disk')
-						})
-						.catch((error) => {
-							if (error instanceof ArtifactS3DownloadError) {
-								logger.error(
-									{
-										artifactId: error.artifactId,
-										s3Key: error.s3Key,
-										status: error.status,
-										statusText: error.statusText,
-										taskId,
-										fileName: artifact.file_name,
-									},
-									'Disk writer: failed to download artifact from S3',
-								)
-								Sentry.captureException(error, {
-									tags: { task_id: taskId },
-									extra: {
-										artifactId: error.artifactId,
-										s3Key: error.s3Key,
-										status: error.status,
-										fileName: artifact.file_name,
-									},
-								})
-							} else {
-								logger.error(
-									{
-										errMessage: error instanceof Error ? error.message : String(error),
-										errStack: error instanceof Error ? error.stack : undefined,
-										errName: error instanceof Error ? error.name : undefined,
-										taskId,
-										fileName: artifact.file_name,
-										storageType: artifact.storage_type,
-										s3Key: artifact.s3_key,
-									},
-									'Disk writer: failed to write artifact',
-								)
-								Sentry.captureException(error, {
-									tags: { task_id: taskId },
-									extra: { fileName: artifact.file_name },
-								})
-							}
+							await mkdir(deletedDir, { recursive: true })
+							await rename(filePath, deletedPath).catch(() => {
+								// File may not exist on disk (e.g. S3 artifact not yet downloaded)
+							})
+							logger.warn(
+								{ filePath, deletedPath, changeType: change.type },
+								'artifact tombstoned: moved to .trash',
+							)
 						})
 						.finally(() => {
-							if (pendingWrites.get(filePath) === next) {
-								pendingWrites.delete(filePath)
-							}
+							if (pendingWrites.get(filePath) === next) pendingWrites.delete(filePath)
+							notifyFlush()
 						})
 					pendingWrites.set(filePath, next)
+					continue
 				}
+
+				if (change.type !== 'insert' && change.type !== 'update') continue
+
+				if (!taskSlugForWrite) {
+					logger.debug({ taskId, fileName: artifact.file_name }, 'Skipping disk write: no task slug')
+					continue
+				}
+
+				const taskDir = getArtifactSymlinkPath(cwd, taskSlugForWrite)
+
+				// Handle restore / reconnect after restore: clean up stale .trash copy
+				if (artifact.is_deleted === false) {
+					const trashedPath = join(taskDir, '.trash', artifact.file_name)
+					// Fire-and-forget cleanup of stale .trash copy
+					unlink(trashedPath).catch(() => {
+						// File may not exist in .trash — that's fine
+					})
+				}
+
+				// Validate path is within task directory before writing
+				const validation = validateArtifactWritePath(artifact.file_name, taskDir)
+				if (!validation.valid) {
+					logger.warn(
+						{ taskId, fileName: artifact.file_name, reason: validation.reason },
+						'Rejected artifact write in sync: path traversal detected',
+					)
+					continue
+				}
+				const filePath = validation.filePath
+
+				// Serialize writes per file via promise chaining
+				const pending = pendingWrites.get(filePath) ?? Promise.resolve()
+				const next = pending
+					.then(async () => {
+						// Ensure paths are set up — all concurrent callbacks await the same promise
+						await ensurePathsReady(taskSlugForWrite)
+
+						// S3-backed artifacts: download from S3 instead of writing content string
+						if (artifact.storage_type === 's3' && artifact.s3_key) {
+							const s3Key = artifact.s3_key
+							// Check if file exists on disk with matching hash
+							try {
+								const existingBytes = await readFile(filePath)
+								const existingHashBuffer = await crypto.subtle.digest('SHA-256', existingBytes)
+								const existingHash = Array.from(new Uint8Array(existingHashBuffer))
+									.map((b) => b.toString(16).padStart(2, '0'))
+									.join('')
+								if (existingHash === artifact.content_hash) {
+									logger.debug(
+										{ taskId, fileName: artifact.file_name },
+										'S3 disk write skipped: content hash matches',
+									)
+									return
+								}
+							} catch {
+								// File doesn't exist or can't be read — proceed to download
+							}
+
+							// Fetch pre-signed download URL from API
+							logger.debug(
+								{ taskId, fileName: artifact.file_name, artifactId: artifact.id },
+								'Disk writer: fetching S3 download URL',
+							)
+							const { downloadUrl } = await this.orpc.artifacts.downloadUrl({
+								artifactId: artifact.id,
+							})
+							logger.debug(
+								{ taskId, fileName: artifact.file_name },
+								'Disk writer: downloading S3 artifact',
+							)
+							const response = await fetch(downloadUrl)
+							if (!response.ok) {
+								throw new ArtifactS3DownloadError(
+									artifact.id,
+									s3Key,
+									response.status,
+									response.statusText,
+								)
+							}
+							const buffer = await response.arrayBuffer()
+							await mkdir(dirname(filePath), { recursive: true })
+							await writeFile(filePath, new Uint8Array(buffer))
+							logger.info(
+								{ taskId, fileName: artifact.file_name, bytes: buffer.byteLength },
+								'Disk writer: wrote S3 artifact to disk',
+							)
+							return
+						}
+
+						const onDiskContent = await readFile(filePath, 'utf-8').catch(() => null)
+						const onDiskHash = onDiskContent ? hash(onDiskContent) : null
+						if (artifact.content_hash === onDiskHash) {
+							logger.debug(
+								{ taskId, fileName: artifact.file_name },
+								'Disk write skipped: content hash matches',
+							)
+							return
+						}
+
+						await mkdir(dirname(filePath), { recursive: true })
+						await writeFile(filePath, artifact.content)
+						logger.info({ taskId, fileName: artifact.file_name }, 'Disk writer: wrote artifact to disk')
+					})
+					.then(() => {
+						failedWrites.delete(artifact.file_name)
+					})
+					.catch((error) => {
+						failedWrites.set(artifact.file_name, error instanceof Error ? error : new Error(String(error)))
+						if (error instanceof ArtifactS3DownloadError) {
+							logger.error(
+								{
+									artifactId: error.artifactId,
+									s3Key: error.s3Key,
+									status: error.status,
+									statusText: error.statusText,
+									taskId,
+									fileName: artifact.file_name,
+								},
+								'Disk writer: failed to download artifact from S3',
+							)
+							Sentry.captureException(error, {
+								tags: { task_id: taskId },
+								extra: {
+									artifactId: error.artifactId,
+									s3Key: error.s3Key,
+									status: error.status,
+									fileName: artifact.file_name,
+								},
+							})
+						} else {
+							logger.error(
+								{
+									errMessage: error instanceof Error ? error.message : String(error),
+									errStack: error instanceof Error ? error.stack : undefined,
+									errName: error instanceof Error ? error.name : undefined,
+									taskId,
+									fileName: artifact.file_name,
+									storageType: artifact.storage_type,
+									s3Key: artifact.s3_key,
+								},
+								'Disk writer: failed to write artifact',
+							)
+							Sentry.captureException(error, {
+								tags: { task_id: taskId },
+								extra: { fileName: artifact.file_name },
+							})
+						}
+					})
+					.finally(() => {
+						if (pendingWrites.get(filePath) === next) {
+							pendingWrites.delete(filePath)
+						}
+						notifyFlush()
+					})
+				pendingWrites.set(filePath, next)
+			}
+			notifyFlush()
+		}
+		const subscription = collection.subscribeChanges(writeChanges, { includeInitialState: true })
+		return {
+			unsubscribe: () => {
+				stopped = true
+				subscription.unsubscribe()
+				for (const cancel of [...flushWaiters.values()]) cancel()
 			},
-			{ includeInitialState: true },
-		)
+			flush: (expected) =>
+				new Promise<void>((resolve, reject) => {
+					if (stopped) {
+						reject(new Error('artifact_sync_stopped'))
+						return
+					}
+					const finish = (error?: Error) => {
+						clearTimeout(timeout)
+						flushWaiters.delete(inspect)
+						if (error) reject(error)
+						else resolve()
+					}
+					const inspect = () => {
+						if (pendingWrites.size !== 0) return
+						if (expected.some((file) => failedWrites.has(file.fileName))) {
+							finish(new Error('artifact_sync_write_failed'))
+							return
+						}
+						if (
+							expected.every((file) =>
+								collection.toArray.some(
+									(row) =>
+										!row.is_deleted &&
+										row.file_name === file.fileName &&
+										row.content_hash === file.contentHash,
+								),
+							)
+						)
+							finish()
+					}
+					const timeout = setTimeout(
+						() => finish(new Error('artifact_sync_unavailable')),
+						this.readyTimeoutMs,
+					)
+					flushWaiters.set(inspect, () => finish(new Error('artifact_sync_stopped')))
+					const rows = collection.toArray.filter((row) => {
+						const slug = resolveTaskSlugForWrite(row)
+						return (
+							slug &&
+							!pendingWrites.has(join(getArtifactSymlinkPath(cwd, slug), row.file_name)) &&
+							!row.is_deleted &&
+							expected.some(
+								(file) => file.fileName === row.file_name && file.contentHash === row.content_hash,
+							)
+						)
+					})
+					writeChanges(rows.map((row) => ({ type: 'update', key: row.id, value: row })))
+					inspect()
+				}),
+		}
 	}
 }

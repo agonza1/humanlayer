@@ -3,12 +3,14 @@ import { CodingAgentZodSchema } from '@humanlayer/schemas/coding-agent'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
+import { WorkEntryFields } from '../../lib/review-progression'
 
 export const PermissionsModeSchema = permissionsModeSchema.default('default')
 
 export const CodingAgentSchema = CodingAgentZodSchema.default('claude')
 
 export const LaunchSessionInputSchema = z.object({
+	...WorkEntryFields,
 	id: z.uuidv7().optional().describe('Client-generated session ID for optimistic inserts (new sessions only)'),
 	eventId: z.uuidv7().optional().describe('Client-generated event ID for optimistic inserts'),
 	draftId: z.uuidv7().optional().describe('Optional ID of an existing draft session to launch'),

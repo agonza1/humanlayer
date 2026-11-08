@@ -55,4 +55,10 @@ describe('useTaskWorkflow', () => {
 		const { result } = renderHook(() => useTaskWorkflow('task'))
 		expect(result.current.canChange).toBe(false)
 	})
+	it('does not send workflow mutations for collaborators', async () => {
+		state.task = { ...state.task, resource_owner_user_id: 'someone-else', workflow_revision: 1n }
+		const { result } = renderHook(() => useTaskWorkflow('task'))
+		await result.current.change('prd_tdd')
+		expect(update).not.toHaveBeenCalled()
+	})
 })

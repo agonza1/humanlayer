@@ -266,6 +266,7 @@ import { reportWorkspaceRepositoryResultContract } from './daemon/project-worksp
 import { updateDaemonProviderLoginContract } from './daemon/provider-login/update'
 import { listOpenPullRequestsForHostContract } from './daemon/pull-requests/list-open-for-host'
 import { refreshPullRequestStatusContract } from './daemon/pull-requests/refresh-status'
+import { reviewProgressionContract } from './daemon/review-progression'
 import { recordCommitsContract } from './daemon/sessions/commits/record'
 import { ensureStreamHydratedContract } from './daemon/sessions/ensure-stream-hydrated'
 import { upsertSessionPullRequestContract } from './daemon/sessions/pull-requests/upsert'
@@ -275,6 +276,7 @@ import { recordSessionUsageContract } from './daemon/sessions/usage-record'
 import { daemonGetSettingsContract } from './daemon/settings/get'
 import { syncDaemonApprovalsContract } from './daemon/sync/approvals'
 import { syncDaemonArtifactsContract } from './daemon/sync/artifacts'
+import { syncDaemonReviewProgressionContract } from './daemon/sync/review-progression'
 import { syncDaemonSessionsContract } from './daemon/sync/sessions'
 import { syncDaemonTaskWorkspaceSetupForHostContract } from './daemon/sync/task-workspace-setup-for-host'
 import { syncDaemonTasksContract } from './daemon/sync/tasks'
@@ -641,6 +643,7 @@ export const RiptideApiContract = {
 }
 
 export const RiptideDaemonApiContract = {
+	reviewProgression: reviewProgressionContract,
 	hosts: {
 		heartbeat: heartbeatContract,
 		shutdown: shutdownContract,
@@ -731,6 +734,7 @@ export const RiptideDaemonApiContract = {
 	},
 	sync: {
 		sessions: syncDaemonSessionsContract,
+		reviewProgression: syncDaemonReviewProgressionContract,
 		approvals: syncDaemonApprovalsContract,
 		tasks: syncDaemonTasksContract,
 		artifacts: syncDaemonArtifactsContract,

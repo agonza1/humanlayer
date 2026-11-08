@@ -262,6 +262,7 @@ import { advanceRepositorySetupStageProcedure } from './daemon/project-workspace
 import { updateDaemonProviderLoginProcedure } from './daemon/provider-login/update'
 import { listOpenPullRequestsForHostProcedure } from './daemon/pull-requests/list-open-for-host.effect'
 import { refreshPullRequestStatusProcedure } from './daemon/pull-requests/refresh-status.effect'
+import { reviewProgressionProcedures } from './daemon/review-progression'
 import { recordCommitsProcedure } from './daemon/sessions/commits/record.effect'
 import { ensureStreamHydratedProcedure } from './daemon/sessions/ensure-stream-hydrated'
 import { createEventProcedure } from './daemon/sessions/events/create'
@@ -272,6 +273,7 @@ import { recordSessionUsageEffectProcedure } from './daemon/sessions/usage/recor
 import { daemonGetSettingsEffectProcedure } from './daemon/settings/get.effect'
 import { syncDaemonApprovalsProcedure } from './daemon/sync/approvals'
 import { syncDaemonArtifactsProcedure } from './daemon/sync/artifacts'
+import { syncDaemonReviewProgressionProcedure } from './daemon/sync/review-progression'
 import { syncDaemonSessionsProcedure } from './daemon/sync/sessions'
 import { syncDaemonTaskWorkspaceSetupForHostProcedure } from './daemon/sync/task-workspace-setup-for-host'
 import { syncDaemonTasksProcedure } from './daemon/sync/tasks'
@@ -641,6 +643,7 @@ export const apiRouter = os.router({
 })
 
 export const daemonRouter = daemonBase.router({
+	reviewProgression: reviewProgressionProcedures,
 	workspaceSetup: { update: updateDaemonWorkspaceSetupProcedure },
 	providerLogin: { update: updateDaemonProviderLoginProcedure },
 	hosts: {
@@ -729,6 +732,7 @@ export const daemonRouter = daemonBase.router({
 	},
 	sync: {
 		sessions: syncDaemonSessionsProcedure,
+		reviewProgression: syncDaemonReviewProgressionProcedure,
 		approvals: syncDaemonApprovalsProcedure,
 		tasks: syncDaemonTasksProcedure,
 		artifacts: syncDaemonArtifactsProcedure,

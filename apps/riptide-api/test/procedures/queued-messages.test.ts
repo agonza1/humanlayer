@@ -4,14 +4,17 @@ import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import type { SessionStatus } from '@humanlayer/db/tables/sessions'
 import { sessions } from '@humanlayer/db/tables/sessions'
+import { tasks } from '@humanlayer/db/tables/tasks'
 import { call } from '@orpc/server'
 import { and, eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
+import { acceptedReviewLaunch, retainReviewEnrollment } from '../../src/db/review-progression'
 import {
 	createQueuedMessageEffectProcedure as liveCreateQueuedMessageEffectProcedure,
 	deleteQueuedMessageEffectProcedure as liveDeleteQueuedMessageEffectProcedure,
@@ -121,6 +124,73 @@ describe('api/sessions/queuedMessages', async () => {
 		})
 		return sessionId
 	}
+
+	test.each(['create', 'update', 'delete'] as const)(
+		'enrolled legacy %s fails before changing input, session, or receipts',
+		async (operation) => {
+			const sessionId = await createSessionWithStatus('running')
+			const messageId = uuidv7(),
+				taskId = uuidv7()
+			await call(
+				createQueuedMessageProcedure,
+				{ sessionId, messageId, text: 'Retained input' },
+				{ context: makeContext() },
+			)
+			await db.insert(tasks).values({
+				id: taskId,
+				organization_id: organizationId,
+				created_by: userId,
+				resource_owner_user_id: userId,
+				name: 'Enrolled queue',
+				slug: 'enrolled-queue',
+			})
+			await db.update(sessions).set({ task_id: taskId }).where(eq(sessions.id, sessionId))
+			await db.transaction((tx) =>
+				retainReviewEnrollment(tx, {
+					taskId,
+					organizationId,
+					ownerUserId: userId,
+					hostId,
+					sourceSessionId: sessionId,
+					enrollment: { enrollmentId: 'personal', returnRouteRef: 'origin' },
+					placement: {
+						kind: 'legacy_directory',
+						projectId: null,
+						workspaceId: null,
+						setupRowId: uuidv7(),
+						workspaceSpecDigest: null,
+					},
+					acceptedLaunch: acceptedReviewLaunch({ taskContent: 'Accepted task' }),
+				}),
+			)
+			const beforeSession = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+			const beforeQueue = await db.select().from(queuedMessages).where(eq(queuedMessages.session_id, sessionId))
+			const beforeReview = await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))
+			const context = makeContext()
+			const attempt =
+				operation === 'create'
+					? call(
+							createQueuedMessageProcedure,
+							{ sessionId, messageId: uuidv7(), text: 'Bypass' },
+							{ context },
+						)
+					: operation === 'update'
+						? call(
+								updateQueuedMessageProcedure,
+								{ sessionId, queuedMessageId: messageId, text: 'Changed' },
+								{ context },
+							)
+						: call(deleteQueuedMessageProcedure, { sessionId, queuedMessageId: messageId }, { context })
+			await expect(attempt).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+			expect(await db.select().from(sessions).where(eq(sessions.id, sessionId))).toEqual(beforeSession)
+			expect(await db.select().from(queuedMessages).where(eq(queuedMessages.session_id, sessionId))).toEqual(
+				beforeQueue,
+			)
+			expect(await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))).toEqual(
+				beforeReview,
+			)
+		},
+	)
 
 	describe('create', () => {
 		test('queues a message on a running session', async () => {

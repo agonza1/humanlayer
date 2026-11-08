@@ -1,3 +1,4 @@
+import type { Session } from '@humanlayer/db/tables/sessions'
 import type { Task } from '@humanlayer/db/tables/tasks'
 import { eq, useLiveQuery } from '@tanstack/react-db'
 import { useQuery } from '@tanstack/react-query'
@@ -5,7 +6,10 @@ import { ChevronDown } from 'lucide-react'
 import { type ReactNode, useRef, useState } from 'react'
 
 import { useSync } from '@/components/providers/SyncProvider'
+import { useBrowserAuth } from '@/hooks/use-browser-auth'
 import { type OrgMember, useOrgMembers } from '@/hooks/useOrgMembers'
+import { useDevelopmentResume } from '@/hooks/useSessionActions'
+import { canResumeDevelopment } from '@/lib/review-progression'
 import { taskBranch, useHost, useProjects, useTask } from '@/minimalist/lib/data'
 import { formatAgo, shortPath, toMs } from '@/minimalist/lib/format'
 import { personName, taskPeople } from '@/minimalist/lib/people'
@@ -45,6 +49,7 @@ export function WiredTaskDetails({ taskId }: { taskId: string }) {
 			) : null}
 			{host ? <Detail term="Host">{host.name}</Detail> : null}
 			<WorkflowDetail taskId={taskId} />
+			<ResumeDevelopmentDetail session={latest} owner={owner} />
 			{task.ticket_id ? <TicketDetail id={task.ticket_id} url={task.ticket_url} /> : null}
 			<Detail term="Owner">
 				<Person userId={owner} member={membersMap.get(owner)} />
@@ -60,6 +65,28 @@ export function WiredTaskDetails({ taskId }: { taskId: string }) {
 			) : null}
 			<Detail term="Created">{formatAgo(toMs(task.created_at))}</Detail>
 		</dl>
+	)
+}
+
+function ResumeDevelopmentDetail({ session, owner }: { session: Session | null; owner: string }) {
+	const { user } = useBrowserAuth()
+	const canManage = user?.id === owner && user?.id === session?.created_by
+	const action = useDevelopmentResume(session, canManage)
+	if (!session || !canResumeDevelopment(session, canManage)) return null
+	return (
+		<Detail term="Development">
+			<button
+				type="button"
+				className="task-detail-pick"
+				disabled={action.pending}
+				onClick={() => {
+					void action.resume()
+				}}
+			>
+				Resume development
+			</button>
+			{action.error && <span role="alert">{action.error}</span>}
+		</Detail>
 	)
 }
 

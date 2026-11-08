@@ -2,6 +2,8 @@ import type { PermissionsMode } from '@humanlayer/db/tables/sessions'
 import type { TicketProvider } from '@humanlayer/db/tables/tasks'
 import type { Task } from '@humanlayer/db/tables/tasks'
 import type { CreatedWithExperimentFlags } from '@humanlayer/db/zodschemas/created-with-experiment-flags'
+import type { ReviewProgressionEnrollment } from '@humanlayer/db/zodschemas/review-progression'
+import type { ReviewAcceptedArtifact } from '@humanlayer/db/zodschemas/review-progression'
 import type { CodingAgent } from '@humanlayer/schemas/coding-agent'
 import type { WorkspaceSpec } from '@humanlayer/schemas/effect/workspace'
 import type { TaskIntent } from '@humanlayer/schemas/task-intent'
@@ -33,6 +35,8 @@ export type TaskLaunchFirstSession = {
 }
 
 export type LaunchTaskDraftInput = {
+	readonly reviewProgressionEnrollment?: ReviewProgressionEnrollment
+	readonly preparedReviewArtifacts?: ReviewAcceptedArtifact[]
 	readonly draftId: string
 	readonly organizationId: string
 	readonly userId: string

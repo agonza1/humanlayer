@@ -7,6 +7,10 @@ import { parseSessionForExecution, runSession, type SessionContinuationKind } fr
 import type { SessionChangeMessage } from '@/collections/types'
 import { ClaudeSessions } from '@/effects/services/claude-sessions/claude-sessions.service'
 import { foldAdmissionPolicyFor } from '@/effects/services/fold-sessions/fold-session-executor'
+import {
+	checkReviewSessionLaunch,
+	prepareReviewSessionArtifacts,
+} from '@/effects/services/review-integration/review-integration'
 import logger from '@/logger'
 
 /**
@@ -34,8 +38,19 @@ export function continuationKindFor(change: SessionChangeMessage): SessionContin
  * Receives DaemonServices via dependency injection from subscriptions.ts.
  */
 export async function handleContinueSession(change: SessionChangeMessage, services: DaemonServices) {
-	const session = change.value
+	const session = structuredClone(change.value)
 	if (services.automationTargetSessionId !== undefined && session.id !== services.automationTargetSessionId) return
+	if (
+		!(await checkReviewSessionLaunch(
+			session.id,
+			services.orpc,
+			(snapshot) => prepareReviewSessionArtifacts(services, snapshot),
+			session,
+			services.reviewWriterObservations,
+			session.coding_agent === 'claude',
+		))
+	)
+		return
 
 	// Parse the agent against the set the daemon can actually run. Anything outside it — opencode
 	// today — is rejected until its execution path lands. See
@@ -121,6 +136,18 @@ export async function handleContinueSession(change: SessionChangeMessage, servic
 		}
 		logger.info({ sessionId: session.id, outcome }, 'Live Claude send unavailable; falling back to resume')
 	}
+
+	// A failed live send does not authorize rebuilding a cleanup-uncertain generation.
+	if (
+		!(await checkReviewSessionLaunch(
+			session.id,
+			services.orpc,
+			(snapshot) => prepareReviewSessionArtifacts(services, snapshot),
+			session,
+			services.reviewWriterObservations,
+		))
+	)
+		return
 
 	// Update status to running before continuing through a persisted resume.
 	await markSessionRunningBeforeDelivery()

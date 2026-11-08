@@ -37,6 +37,7 @@
   "exports": {
     "./contract-router": "./src/contract-router.ts",
     "./api/*": "./src/api/*.ts",
+    "./daemon/review-progression": "./src/daemon/review-progression/index.ts",
     "./daemon/*": "./src/daemon/*.ts",
     "./lib/*": "./src/lib/*.ts",
     "./types/*": "./src/types/*.ts",

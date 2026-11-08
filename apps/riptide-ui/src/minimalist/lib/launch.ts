@@ -1,4 +1,5 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
+import type { ReviewProgressionEnrollment, WorkEntry } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import type { ProjectRepository } from '@humanlayer/schemas/effect/project-workspace'
 import type { ResolvedTaskWorkflow, WorktreeTiming } from '@humanlayer/schemas/effect/taskconfiguration'
 import { ORPCError } from '@orpc/client'
@@ -6,6 +7,7 @@ import { ORPCError } from '@orpc/client'
 import { useSettingsStore } from '@/hooks/stores/settingsStore'
 import { getFirstSessionParams, withDescribePrNextStep } from '@/lib/auto-advance'
 import { initialRepositorySourceSelections, missingRepositorySources } from '@/lib/repository-sources'
+import { withSameSessionDelivery } from '@/lib/review-progression'
 import { getTaskConflictMessage } from '@/lib/task-creation-error'
 import { getTicketLookupError } from '@/lib/ticket-lookup-error'
 import { type AttachmentMetadata, withAttachments } from '@/minimalist/lib/attachments'
@@ -173,6 +175,7 @@ type NewTask = {
 	workflow: ResolvedTaskWorkflow
 	/** A small task: labeled as implementation, and asked to offer describe-pr when it's done. */
 	directImplementation?: boolean
+	reviewProgressionEnrollment?: ReviewProgressionEnrollment
 }
 
 /**
@@ -190,12 +193,18 @@ export async function startTask(api: RiptideApiClient, input: NewTask): Promise<
 	const name = ticket?.name ?? draftTitle(input.draft)
 	const slug = ticket?.slug ?? slugify(name, ids.taskId.slice(-4))
 	const prompt = withTicket(withAttachments(input.draft, slug, attachments), slug, ticket)
-	const text = input.directImplementation ? withDescribePrNextStep(prompt) : prompt
+	const enrollment = input.reviewProgressionEnrollment
+	const text = enrollment
+		? withSameSessionDelivery(prompt)
+		: input.directImplementation
+			? withDescribePrNextStep(prompt)
+			: prompt
 	const directoryWorkspace = target.kind === 'directory' ? (target.worktree?.(slug) ?? null) : null
 	const worktreeTiming: WorktreeTiming = target.kind === 'project' || directoryWorkspace ? 'now' : 'never'
-	const flags = projectTaskAutoAdvanceFlags(input.workflow, worktreeTiming)
+	const workflow = enrollment ? { workflowType: 'freeform' as const, autoAdvance: false } : input.workflow
+	const flags = projectTaskAutoAdvanceFlags(workflow, worktreeTiming)
 	const phase =
-		input.workflow.workflowType === 'freeform'
+		workflow.workflowType === 'freeform'
 			? null
 			: getFirstSessionParams({
 					slug,
@@ -211,13 +220,16 @@ export async function startTask(api: RiptideApiClient, input: NewTask): Promise<
 		hostId: input.hostId,
 		...launchFields(input.settings),
 		permissionsMode: phase?.permissionsMode ?? input.settings.permissionsMode,
-		intent: input.directImplementation ? ('implementation' as const) : undefined,
+		intent: enrollment || input.directImplementation ? ('implementation' as const) : undefined,
 	}
-	const shared = {
+	const shared: { reviewProgressionEnrollment?: ReviewProgressionEnrollment } & Omit<
+		Parameters<RiptideApiClient['tasks']['launchDraft']>[0],
+		'draftId' | 'defaultWorkingDirectory' | 'worktreeTiming' | 'firstSession'
+	> = {
 		name,
 		slug,
 		taskContent: text,
-		workflowType: input.workflow.workflowType,
+		workflowType: workflow.workflowType,
 		attachments,
 		autoAdvanceQuestionsToResearch: flags.autoAdvanceQuestionsToResearch,
 		autoAdvanceResearchToDesign: flags.autoAdvanceResearchToDesign,
@@ -226,6 +238,7 @@ export async function startTask(api: RiptideApiClient, input: NewTask): Promise<
 		autoAdvanceImplementationToPr: flags.autoAdvanceImplementationToPr,
 		...ticketFields(ticket),
 	}
+	if (enrollment) shared.reviewProgressionEnrollment = enrollment
 	if (target.kind === 'project') {
 		const branch = branchName(readGitPrefs().branchPrefix, slug)
 		const repositories = target.project.repositories.map((repository) => ({ ...repository, branch }))
@@ -330,7 +343,7 @@ export function rememberSettings(settings: ComposerSettings) {
 	})
 }
 
-type SessionInTask = {
+type SessionInTask = WorkEntry & {
 	sessionId: string
 	eventId: string
 	text: string
@@ -351,6 +364,8 @@ export async function launchInTask(
 	input: SessionInTask,
 ) {
 	const shared = {
+		executionPhase: input.executionPhase,
+		planningSkill: input.planningSkill,
 		eventId: input.eventId,
 		taskId: task.id,
 		text: input.text,

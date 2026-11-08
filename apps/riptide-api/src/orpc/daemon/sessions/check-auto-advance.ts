@@ -3,12 +3,15 @@ import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskUserSettings } from '@humanlayer/db/tables/task-user-settings'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { userSettings } from '@humanlayer/db/tables/user-settings'
+import { PlanningSkillSchema, type WorkEntry } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import type { TaskWorkflowType, WorktreeTiming } from '@humanlayer/schemas/effect/taskconfiguration'
 import { and, eq, gt, not, sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { Effect } from 'effect'
+import { uuidv7 } from 'uuidv7'
 
 import { createSessionForLaunch } from '../../../db/create-session-for-launch'
+import { lockReviewTask, beginReviewWriter, finishReviewWriter, reviewRowForTask } from '../../../db/review-progression'
 import type { AppRuntime } from '../../../effects/app-runtime'
 import { OnboardingService } from '../../../effects/services/onboarding/onboarding.service'
 import { Sentry } from '../../../instrument'
@@ -233,7 +236,8 @@ export async function checkAutoAdvance(
 		//   - non-owner → per-user override ?? task-level flag, so collaborators'
 		//     overrides still win. A missing TUS row LEFT JOINs to null and falls
 		//     through to the task-level flag.
-		const isOwner = session.created_by === session.resource_owner_user_id
+		const [enrollment] = await reviewRowForTask(db, organizationId, session.task_id)
+		const isOwner = Boolean(enrollment) || session.created_by === session.resource_owner_user_id
 		const resolveFlag = (userVal: boolean | null, taskVal: boolean | null) =>
 			isOwner ? taskVal : (userVal ?? taskVal)
 
@@ -259,6 +263,7 @@ export async function checkAutoAdvance(
 				session.task_auto_advance_impl_to_pr,
 			),
 		}
+		if (enrollment) taskFlags.auto_advance_implementation_to_pr = false
 
 		for (const baseTransition of transitions) {
 			const workflowTransition = maybeOverrideAutoAdvanceTransitionFromTaskWorkflowType(
@@ -385,6 +390,7 @@ export async function checkAutoAdvance(
 			const currentTaskId = session.task_id
 
 			const lockedSourceSession = await db.transaction(async (tx) => {
+				const boundary = await lockReviewTask(tx, organizationId, currentTaskId)
 				await tx
 					.select({ id: tasks.id })
 					.from(tasks)
@@ -412,8 +418,67 @@ export async function checkAutoAdvance(
 					.for('no key update')
 
 				if (!currentSession || currentSession.task_id !== currentTaskId) return null
+				const planning = PlanningSkillSchema.safeParse(transition.launchLabel)
+				const entry: WorkEntry =
+					transition.launchLabel === 'rpi:implementation'
+						? { executionPhase: 'implementation' }
+						: planning.success
+							? { executionPhase: null, planningSkill: planning.data }
+							: {}
+				const id = uuidv7(),
+					eventId = uuidv7()
+				if (boundary.row) {
+					const task = boundary.task,
+						source = boundary.siblings.find((item) => item.id === sessionId)
+					if (!task) return null
+					const freshTransition = maybeOverrideAutoAdvanceTransitionFromTaskWorktreeTiming(
+						maybeOverrideAutoAdvanceTransitionFromTaskWorkflowType(baseTransition, task.workflow_type),
+						task.worktree_timing,
+					)
+					if (
+						!source ||
+						source.status !== 'ready_for_input' ||
+						source.archived ||
+						!task[transition.taskFlag] ||
+						freshTransition.launchLabel !== transition.launchLabel ||
+						transition.launchLabel === 'rpi:describe-pr' ||
+						(!planning.success && entry.executionPhase !== 'implementation') ||
+						(suggestedDirectory && suggestedDirectory !== boundary.row.verified_binding?.workingDirectory)
+					)
+						return null
+					if (
+						boundary.siblings.some(
+							(item) =>
+								item.id !== source.id &&
+								!item.archived &&
+								item.created_at > source.created_at &&
+								item.labels?.some((label) => label.name === transition.dedupLabel),
+						)
+					)
+						return null
+				}
+				const started = await beginReviewWriter(tx, boundary, {
+					userId: currentSession.created_by,
+					hostId: currentSession.host_id,
+					sessionId: id,
+					eventId,
+					kind: 'auto-advance',
+					request: {
+						text: prompt,
+						sourceSessionId: sessionId,
+						transition: transition.taskFlag,
+						workflowRevision: boundary.task?.workflow_revision.toString(),
+					},
+					entry,
+					internal: true,
+				})
 
 				await createSessionForLaunch(tx, {
+					id,
+					eventId,
+					...entry,
+					reviewAdmission: started?.admission,
+					workflowType: boundary.task?.workflow_type,
 					taskId: currentSession.task_id,
 					organizationId,
 					resourceOwnerUserId: currentSession.resource_owner_user_id,
@@ -432,6 +497,18 @@ export async function checkAutoAdvance(
 					permissionsMode: currentSession.permissions_mode ?? 'default',
 					labels: [{ name: transition.launchLabel, title: transition.launchLabelTitle }],
 				})
+				if (boundary.row && boundary.task) {
+					await finishReviewWriter(tx, boundary, started, {
+						sessionId: id,
+						eventId,
+						entry,
+						result: { sessionId: id },
+					})
+					await tx
+						.update(tasks)
+						.set({ [transition.taskFlag]: false, workflow_revision: boundary.task.workflow_revision + 1n })
+						.where(eq(tasks.id, currentTaskId))
+				}
 				return currentSession
 			})
 
@@ -475,7 +552,7 @@ export async function checkAutoAdvance(
 
 			// Update task default_working_directory to match the worktree path
 			// so future manual sessions default to the new directory
-			if (suggestedDirectory && session.task_id) {
+			if (!enrollment && suggestedDirectory && session.task_id) {
 				await db
 					.update(tasks)
 					.set({ default_working_directory: suggestedDirectory })
@@ -490,7 +567,9 @@ export async function checkAutoAdvance(
 			//   - non-owner without a row → insert an override copying the resolved flags
 			// Best-effort: a failure here must never undo or mask the successful creation.
 			try {
-				if (isOwner) {
+				if (enrollment) {
+					// Enrolled consumption committed with admission above.
+				} else if (isOwner) {
 					await db
 						.update(tasks)
 						.set({ [transition.taskFlag]: false })

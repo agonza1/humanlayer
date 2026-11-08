@@ -1,3 +1,4 @@
+import { StatusCodes } from 'http-status-codes'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
@@ -16,6 +17,10 @@ export const UpsertArtifactInputSchema = z.object({
 	taskId: z.uuid().describe('The task ID to associate this artifact with'),
 	fileName: safeSubpathSchema.describe('The file path/name of the artifact'),
 	content: z.string().max(MAX_TEXT_CONTENT_BYTES).describe('The full content of the artifact'),
+	ifExists: z
+		.literal('match')
+		.optional()
+		.describe('Create or reuse identical stored content; reject conflicts without mutation.'),
 	// Note: contentHash is computed server-side using ohash, not passed by client
 	// NEW: for operations log
 	sessionId: z.uuid().optional().describe('Session ID if called from a session context'),
@@ -44,3 +49,4 @@ export const UpsertArtifactOutputSchema = z.object({
 export const upsertArtifactContract = contractBuilder
 	.input(UpsertArtifactInputSchema)
 	.output(UpsertArtifactOutputSchema)
+	.errors({ CONFLICT: { status: StatusCodes.CONFLICT } })

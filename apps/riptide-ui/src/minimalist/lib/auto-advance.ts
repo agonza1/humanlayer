@@ -5,6 +5,7 @@ import { useSync } from '@/components/providers/SyncProvider'
 import { useBrowserAuth } from '@/hooks/use-browser-auth'
 import { useTaskPermissions } from '@/hooks/useTaskPermissions'
 import { useTaskSettings } from '@/hooks/useTaskSettings'
+import { isReviewEnrolledTask } from '@/lib/review-progression'
 import { useTask } from '@/minimalist/lib/data'
 import { useUi } from '@/minimalist/lib/ui-state'
 import { projectTaskAutoAdvanceFlags } from '@/modules/launcher-v3/launcher-v3-workflow'
@@ -25,11 +26,15 @@ const HAND_OFFS: Record<Flag, (prd: boolean) => string> = {
  * its one auto-advance switch: questions → research → design (or PRD), and the worktree when it is
  * set up later, for guided workflows; implementation → PR for small and freeform ones.
  */
-export function autoAdvanceFlags(task: Pick<Task, 'workflow_type' | 'worktree_timing'>): Flag[] {
+export function autoAdvanceFlags(
+	task: Pick<Task, 'workflow_type' | 'worktree_timing'> & { workflow_revision?: bigint },
+): Flag[] {
 	// Older tasks say `rpi`; the launcher now calls the same guided workflow `outline_only`.
 	const workflowType = task.workflow_type === 'rpi' ? 'outline_only' : task.workflow_type
 	const flags = projectTaskAutoAdvanceFlags({ workflowType, autoAdvance: true }, task.worktree_timing)
-	return (Object.keys(flags) as Flag[]).filter((flag) => flags[flag])
+	return (Object.keys(flags) as Flag[]).filter(
+		(flag) => flags[flag] && !(isReviewEnrolledTask(task) && flag === 'autoAdvanceImplementationToPr'),
+	)
 }
 
 /**
@@ -60,7 +65,11 @@ export function useTaskAutoAdvance(taskId: string | null | undefined) {
 	const on = flags.length > 0 && flags.every((flag) => settings[flag])
 	const prd = task?.workflow_type === 'prd_tdd'
 	return {
-		available: Boolean(task) && flags.length > 0 && canEditTask,
+		available:
+			Boolean(task) &&
+			flags.length > 0 &&
+			canEditTask &&
+			(!isReviewEnrolledTask(task) || task?.resource_owner_user_id === user?.id),
 		on,
 		handOffs: flags.map((flag) => HAND_OFFS[flag](prd)),
 		toggle: () => {

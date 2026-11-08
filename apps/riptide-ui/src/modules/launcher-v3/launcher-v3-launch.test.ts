@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createLauncherV3DefaultValues, toLaunchCommand } from './launcher-v3-form'
+import { createLauncherV3DefaultValues, toLaunchCommand, type LauncherV3Command } from './launcher-v3-form'
 import { buildCreateTaskV2Input, launchTask, type LauncherV3LaunchDependencies } from './launcher-v3-launch'
 import {
 	LAUNCHER_V3_EVENT_ID as EVENT_ID,
@@ -11,13 +11,50 @@ import {
 	launcherV3ProjectLaunch as projectLaunch,
 } from './launcher-v3-test-fixtures'
 
-function launchResult() {
+function launchResult(): Awaited<ReturnType<LauncherV3LaunchDependencies['tasks']['launchDraft']>> {
 	return {
 		outcome: 'created' as const,
 		taskId: TASK_ID,
 		firstSessionId: SESSION_ID,
 		transactionId: 'tx-1',
-		task: { id: TASK_ID } as never,
+		task: {
+			id: TASK_ID,
+			organization_id: TASK_ID,
+			created_by: 'owner',
+			resource_owner_user_id: 'owner',
+			created_at: '9007199254740993',
+			updated_at: '9007199254740995',
+			workflow_revision: '9007199254740997',
+			name: 'Launcher V3',
+			slug: 'launcher-v3',
+			team_id: null,
+			project_id: null,
+			workspace_id: null,
+			default_working_directory: '/repo/syncopate',
+			external_task_id: null,
+			archived: false,
+			is_draft: false,
+			setup_status: null,
+			setup_details: null,
+			ticket_id: null,
+			ticket_url: null,
+			ticket_description: null,
+			ticket_provider: null,
+			github_connection_id: null,
+			ticket_repository_id: null,
+			ticket_repository_full_name: null,
+			created_with_experiment_flags: null,
+			workflow_type: 'freeform',
+			worktree_timing: 'never',
+			workspace_state: null,
+			workspace_spec: null,
+			auto_advance_questions_to_research: false,
+			auto_advance_research_to_design: false,
+			auto_advance_plan_to_worktree: false,
+			auto_advance_worktree_to_implementation: false,
+			auto_advance_implementation_to_pr: false,
+			slack_notifications_muted: false,
+		},
 	}
 }
 
@@ -152,6 +189,51 @@ describe('launchTask with a project', () => {
 })
 
 describe('launchTask', () => {
+	it('preserves wire decimal timestamps and workflow revisions above the safe integer limit', async () => {
+		const run = harness()
+		const result = await launchTask(attempt(), run.dependencies)
+		expect(result.task).toEqual(launchResult().task)
+		expect(result.task).toMatchObject({
+			created_at: '9007199254740993',
+			updated_at: '9007199254740995',
+			workflow_revision: '9007199254740997',
+		})
+	})
+	it.each(['project', 'directory'] as const)(
+		'enrolls %s only with explicit same-session delivery and no automatic successor',
+		async (destination) => {
+			const run = harness()
+			const selected = toLaunchCommand(
+				createLauncherV3DefaultValues({
+					prompt: 'Implement the accepted criteria',
+					title: 'Delivery',
+					slug: 'delivery',
+					directory: '/repo/syncopate',
+					hostId: 'host-1',
+					workflowType: 'prd_tdd',
+					autoAdvance: true,
+					reviewDeliveryEnabled: true,
+					reviewEnrollmentId: 'personal',
+					reviewReturnRouteRef: 'origin',
+				}),
+			)
+			await launchTask(
+				attempt({ ...selected, ...(destination === 'project' ? { project: projectLaunch() } : {}) }),
+				run.dependencies,
+			)
+			const request = (destination === 'project' ? run.createV2 : run.launchDraft).mock.calls[0]![0]
+			expect(request).toMatchObject({
+				workflowType: 'freeform',
+				reviewProgressionEnrollment: { enrollmentId: 'personal', returnRouteRef: 'origin' },
+				autoAdvanceImplementationToPr: false,
+				firstSession: { intent: 'implementation' },
+			})
+			expect(request.firstSession.text).toContain('DeliveryReportV1')
+			expect(request.taskContent).toContain('DeliveryReportV1')
+			expect(request.firstSession.text).not.toContain('```\n/rpi:describe-pr\n```')
+		},
+	)
+
 	it.each(['project', 'directory'] as const)(
 		'sends PR-only Freeform auto-advance through the %s request preserving prompt and permissions',
 		async (destination) => {

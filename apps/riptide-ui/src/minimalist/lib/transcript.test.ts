@@ -33,6 +33,28 @@ function row(partial: Partial<EventRow>): EventRow {
 }
 
 describe('buildTurns', () => {
+	it('keeps a review update passive and separate from agent work', () => {
+		const outcomeKey = 'a'.repeat(64)
+		const content = JSON.stringify({
+			kind: 'review_progression',
+			version: 1,
+			outcomeKey,
+			status: 'needs_decision',
+			repository: 'fixture/project',
+			pr: null,
+			headSha: null,
+			reportArtifact: `review-report-${outcomeKey}.md`,
+		})
+		const turns = buildTurns([
+			row({ content: 'Implementation stopped' }),
+			row({ event_type: 'system', role: 'system', content }),
+			row({ content: 'A later agent response' }),
+		])
+		expect(turns.map((turn) => turn.kind)).toEqual(['agent', 'review_progression', 'agent'])
+		expect(turns[1]).toMatchObject({ kind: 'review_progression', note: { status: 'needs_decision' } })
+		expect(buildTurns([row({ event_type: 'system', role: 'assistant', content })])).toEqual([])
+	})
+
 	it('keeps who sent each message so multiplayer threads can show their avatar', () => {
 		const turns = buildTurns([row({ role: 'user', content: 'Ship it', user_id: 'user_ada', user_name: 'Ada' })])
 		expect(turns[0]).toMatchObject({ kind: 'user', userId: 'user_ada', author: 'Ada' })
