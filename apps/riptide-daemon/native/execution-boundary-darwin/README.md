@@ -48,3 +48,22 @@ These tests use real temporary files and loopback frames with a controlled nativ
 witness.
 
 [Apple Virtualization](https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon) · [NBD protocol revision](https://github.com/NetworkBlockDevice/nbd/blob/6725f91e6a33bc9f62d31d82798c04ec1cde1c73/doc/proto.md)
+
+## Native process identity on the host
+
+The non-VM process driver captures a kernel audit token for a PID whose real and
+effective UID match the supervisor's lease. It signals that token through
+`libproc`. A stale token stays a failure. The driver has no PID-only fallback.
+
+Run the disposable check as an ordinary user on macOS. The supervisor needs
+permission to inspect task-name ports.
+
+```sh
+sh test-process-identity.sh /absolute/new/private-directory
+```
+
+The fixture launches and reaps one child, including a new session and an exec.
+It checks that a mismatched expected UID and the pre-exec token are refused. The
+current token delivers the signal on macOS build `26A434`. The supervisor still
+needs to prove UID membership, seal admission, and verify the cohort is empty.
+Storage and delegated writers have separate proof requirements.
