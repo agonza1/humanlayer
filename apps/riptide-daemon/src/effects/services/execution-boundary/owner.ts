@@ -26,6 +26,7 @@ type BoundaryErrorCode =
 	| 'invalid-boundary'
 	| 'stale-owner'
 	| 'journal-conflict'
+	| 'journal-busy'
 	| 'admission-closed'
 	| 'invalid-reservation'
 	| 'reservation-conflict'
@@ -146,8 +147,7 @@ function waitForStop(work: Promise<StopAssessment>, signal?: AbortSignal): Promi
 	})
 }
 
-// Source-only, trusted daemon-side owner. No production launcher or persistent journal
-// implementation uses this module. The caller must already own the task/generation slot.
+// The trusted caller must already own the task/generation slot.
 export class ExecutionBoundaryOwner {
 	private readonly digest: string
 	private readonly epoch: number
@@ -158,6 +158,8 @@ export class ExecutionBoundaryOwner {
 	private readonly ticketIds = new Map<symbol, string>()
 	private readonly tickets = new Map<string, symbol>()
 	private pendingStop: Promise<StopAssessment> | undefined
+	private requestedStopDeadline: number | undefined
+	private waitingForSeal: PromiseWithResolvers<StopAssessment> | undefined
 
 	private constructor(options: BoundaryOwnerOptions) {
 		validateManifest(options.identity, options.controllerEpoch, options.owners)
@@ -221,6 +223,7 @@ export class ExecutionBoundaryOwner {
 			},
 		}
 		if (!owner.journal.compareAndSet(previous.revision, next)) throw new BoundaryError('journal-conflict')
+		owner.requestedStopDeadline = previous.stop.firstDeadlineAt
 		return owner
 	}
 
@@ -243,6 +246,7 @@ export class ExecutionBoundaryOwner {
 	}
 
 	reserve(request: EffectRequest): symbol {
+		if (this.requestedStopDeadline !== undefined) throw new BoundaryError('admission-closed')
 		const entry = this.capabilityOwners.get(request.capabilityId)
 		if (!entry || !isOpaqueId(request.id) || !isDigest(request.operationDigest)) {
 			throw new BoundaryError('invalid-reservation')
@@ -287,6 +291,7 @@ export class ExecutionBoundaryOwner {
 	async activate(ticket: symbol): Promise<Reservation['phase']> {
 		const id = this.ticketIds.get(ticket)
 		if (!id) throw new BoundaryError('invalid-ticket')
+		if (this.requestedStopDeadline !== undefined) throw new BoundaryError('admission-closed')
 		const { reservation, dispatch } = this.update((record) => {
 			if (record.stop) throw new BoundaryError('admission-closed')
 			const original = record.reservations.find((effect) => effect.id === id)
@@ -362,30 +367,62 @@ export class ExecutionBoundaryOwner {
 	}
 
 	async requestStop(firstDeadlineAt: number, signal?: AbortSignal): Promise<StopAssessment> {
-		const stop = this.update((record) => {
-			if (record.stop) return unchanged(record, record.stop)
-			if (!Number.isSafeInteger(firstDeadlineAt) || firstDeadlineAt < 0)
-				throw new BoundaryError('invalid-deadline')
-			const intent: StopIntent = {
-				id: randomUUID(),
-				firstDeadlineAt,
-				fenceSequence: record.reservations.length,
-				proofRevision: 1,
-				challenge: randomUUID(),
-			}
-			return { next: { ...record, stop: intent }, value: intent }
-		})
-		const recorded = this.current().assessment
-		if (recorded) return waitForStop(Promise.resolve(recorded), signal)
-
 		if (!this.pendingStop) {
-			const work = Promise.resolve().then(() => this.drain(stop))
+			if (
+				this.requestedStopDeadline === undefined &&
+				(!Number.isSafeInteger(firstDeadlineAt) || firstDeadlineAt < 0)
+			)
+				throw new BoundaryError('invalid-deadline')
+			this.requestedStopDeadline ??= firstDeadlineAt
+			const work = this.sealAndDrain(this.requestedStopDeadline)
 			this.pendingStop = work
 			void work.catch(() => {
-				if (this.pendingStop === work) this.pendingStop = undefined
+				if (this.pendingStop !== work) return
+				this.pendingStop = undefined
+				this.waitingForSeal = undefined
 			})
 		}
-		return waitForStop(this.pendingStop, signal)
+		const work = this.waitingForSeal
+			? Promise.race([this.pendingStop, this.waitingForSeal.promise])
+			: this.pendingStop
+		return waitForStop(work, signal)
+	}
+
+	private async sealAndDrain(firstDeadlineAt: number): Promise<StopAssessment> {
+		for (;;) {
+			let sealed: Pick<BoundaryRecord, 'stop' | 'assessment'>
+			try {
+				sealed = this.update<Pick<BoundaryRecord, 'stop' | 'assessment'>>((record) => {
+					if (record.stop) return unchanged(record, record)
+					const stop: StopIntent = {
+						id: randomUUID(),
+						firstDeadlineAt,
+						fenceSequence: record.reservations.length,
+						proofRevision: 1,
+						challenge: randomUUID(),
+					}
+					const next = { ...record, stop }
+					return { next, value: next }
+				})
+			} catch (error) {
+				if (!this.journal.isContention?.(error)) throw error
+				const now = this.clock.now()
+				this.waitingForSeal ??= Promise.withResolvers<StopAssessment>()
+				const expired = now >= firstDeadlineAt
+				if (expired) this.waitingForSeal.reject(new BoundaryError('journal-busy'))
+				// Report the uncommitted seal at the deadline. The owner still
+				// reconciles it once the competing launch releases the lock.
+				await new Promise<void>((resolve) => {
+					this.clock.alarm(expired ? now + 250 : Math.min(now + 10, firstDeadlineAt), resolve)
+				})
+				continue
+			}
+			const { stop, assessment } = sealed
+			if (!stop) throw new BoundaryError('journal-conflict')
+			this.waitingForSeal = undefined
+			this.requestedStopDeadline = stop.firstDeadlineAt
+			return assessment ?? Promise.resolve().then(() => this.drain(stop))
+		}
 	}
 
 	private async drain(stop: StopIntent): Promise<StopAssessment> {

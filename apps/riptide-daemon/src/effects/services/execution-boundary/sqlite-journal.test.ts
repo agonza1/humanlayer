@@ -1,12 +1,14 @@
 import { Database } from 'bun:sqlite'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ActivationIntent, BoundaryRecord, Reservation } from './contract'
+import type { ActivationIntent, BoundaryRecord, OwnerPort, Reservation } from './contract'
+import { darwinLaunchDigest, launchDarwinWorker } from './darwin-launcher'
+import { ExecutionBoundaryOwner } from './owner'
 import { SqliteBoundaryJournal } from './sqlite-journal'
 
 const prepared: BoundaryRecord = {
@@ -69,6 +71,31 @@ describe.skipIf(process.platform === 'win32')('persistent execution boundary jou
 	function remember(journal: SqliteBoundaryJournal): SqliteBoundaryJournal {
 		journals.push(journal)
 		return journal
+	}
+
+	function createOwner(journal: SqliteBoundaryJournal, owners: readonly OwnerPort[]): ExecutionBoundaryOwner {
+		return ExecutionBoundaryOwner.prepare({
+			identity: {
+				taskId: 'task',
+				sessionId: 'session',
+				rootRunId: 'run',
+				generation: 'generation',
+				boundaryId: 'boundary',
+				incarnation: 'boot',
+				policyDigest: 'a'.repeat(64),
+				imageDriverDigest: 'b'.repeat(64),
+			},
+			controllerEpoch: 1,
+			journal,
+			clock: {
+				now: Date.now,
+				alarm: (at, fire) => {
+					const timer = setTimeout(fire, Math.max(0, at - Date.now()))
+					return () => clearTimeout(timer)
+				},
+			},
+			owners,
+		})
 	}
 
 	function prepareDispatch(): SqliteBoundaryJournal {
@@ -193,6 +220,151 @@ describe.skipIf(process.platform === 'win32')('persistent execution boundary jou
 		expect(writer.compareAndSet(undefined, prepared)).toBe(true)
 		expect(writer.compareAndSet(undefined, prepared)).toBe(false)
 		expect(() => writer.compareAndSet(0, { ...prepared, revision: 2 })).toThrow('next revision')
+	})
+
+	it.skipIf(process.platform !== 'darwin').each(['ready', 'denied', 'wrong-account'] as const)(
+		'tracks the actual Mac launch through the owner for a %s worker',
+		async (mode) => {
+			const writer = remember(SqliteBoundaryJournal.create(file))
+			const uid = process.getuid?.() ?? 0
+			const plan = {
+				command: ['/bin/bash', '--noprofile', '--norc', '-c', 'printf "%s\\n" "$PWD"'] as const,
+				cwd: realpathSync(directory),
+				sandboxProfile:
+					mode === 'denied'
+						? '(version 1)(allow default)(deny process-exec)'
+						: '(version 1)(allow default)(deny network*)(deny file-write*)',
+				env: { PATH: '/usr/bin:/bin', LANG: 'C' },
+				uid: mode === 'wrong-account' ? uid + 1 : uid,
+				gid: process.getgid?.() ?? 0,
+			}
+			let started: ReturnType<typeof launchDarwinWorker> | undefined
+			const activate = vi.fn<OwnerPort['activate']>(async (launchIntent) => {
+				expect(launchDarwinWorker(writer, launchIntent, { ...plan, cwd: '/' })).toEqual({
+					outcome: 'not-accepted',
+				})
+				started = launchDarwinWorker(writer, launchIntent, plan)
+				return started.outcome
+			})
+			const owner = createOwner(
+				writer,
+				(['guest', 'device-io', 'host'] as const).map((role) => ({
+					spec: {
+						id: role,
+						role,
+						attestorId: role,
+						capabilities:
+							role === 'host'
+								? [{ id: 'compute', parentCapabilityId: null, tracksExternalOutcome: false }]
+								: [],
+					},
+					activate: role === 'host' ? activate : async () => 'not-accepted',
+					closeAndDrain: async () => {
+						throw new Error('No stop requested in the launch fixture')
+					},
+				})),
+			)
+			const ticket = owner.reserve({
+				id: 'child',
+				capabilityId: 'compute',
+				parentEffectId: null,
+				operationDigest: darwinLaunchDigest(plan),
+			})
+			await expect(owner.activate(ticket)).resolves.toBe(mode === 'wrong-account' ? 'not-accepted' : 'accepted')
+			if (mode === 'wrong-account') {
+				expect(started?.child).toBeUndefined()
+				return
+			}
+			if (!started?.child) throw new Error('Expected a launched child')
+			const [stdout, stderr, exit] = await Promise.all([
+				new Response(started.child.stdout).text(),
+				new Response(started.child.stderr).text(),
+				started.child.exited,
+			])
+			if (mode === 'ready') {
+				expect(exit, stderr).toBe(0)
+				expect(stderr).toBe('')
+				expect(stdout.trimEnd()).toBe(plan.cwd)
+			} else {
+				expect(exit).not.toBe(0)
+				expect(stdout).toBe('')
+				expect(stderr).toMatch(/not permitted|permission denied/i)
+			}
+			const launchIntent = activate.mock.calls[0]?.[0]
+			if (!launchIntent) throw new Error('Expected a reserved launch')
+			expect(launchDarwinWorker(writer, launchIntent, plan)).toMatchObject({
+				outcome: 'activation-unknown',
+				child: undefined,
+			})
+		},
+	)
+
+	it.each(['release', 'deadline'] as const)('seals a stop under real SQLite contention after %s', async (mode) => {
+		const writer = remember(SqliteBoundaryJournal.create(file))
+		const startedDraining = Promise.withResolvers<void>()
+		const ports: OwnerPort[] = (['guest', 'device-io'] as const).map((role) => ({
+			spec: { id: role, role, attestorId: role, capabilities: [] },
+			activate: async () => 'not-accepted',
+			closeAndDrain: vi.fn<OwnerPort['closeAndDrain']>(async (scope) => {
+				startedDraining.resolve()
+				return {
+					challenge: scope.challenge,
+					fence: 'unconfirmed',
+					observation: { kind: 'unconfirmed' },
+					effects: [],
+					reference: 'test',
+				}
+			}),
+		}))
+		const owner = createOwner(writer, ports)
+		const lock = Bun.spawn(
+			[
+				process.execPath,
+				'--no-env-file',
+				'-e',
+				`
+			import { Database } from 'bun:sqlite'
+			const db = new Database(process.argv[1], { create: false, readwrite: true })
+			db.exec('BEGIN IMMEDIATE')
+			console.log('locked')
+			await Bun.stdin.text()
+			db.exec('ROLLBACK')
+		`,
+				file,
+			],
+			{ stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', timeout: 5000 },
+		)
+		const reader = lock.stdout.getReader()
+		try {
+			const ready = await reader.read()
+			expect(new TextDecoder().decode(ready.value)).toContain('locked')
+			const deadline = Date.now() + (mode === 'release' ? 2000 : 40)
+			const invalid = owner.requestStop(Number.NaN)
+			const stopping = owner.requestStop(deadline)
+			await expect(invalid).rejects.toMatchObject({ code: 'invalid-deadline' })
+			expect(writer.read()?.stop).toBeNull()
+			for (const port of ports) expect(port.closeAndDrain).not.toHaveBeenCalled()
+			if (mode === 'deadline') {
+				await expect(stopping).rejects.toMatchObject({ code: 'journal-busy' })
+				expect(writer.read()?.stop).toBeNull()
+			}
+			lock.stdin.end()
+			expect(await lock.exited).toBe(0)
+			// The expired waiter cannot be responsible for resuming the stop.
+			await startedDraining.promise
+			const result = await (mode === 'release' ? stopping : owner.requestStop(Date.now() + 2000))
+			expect(result).toMatchObject({
+				stop: { firstDeadlineAt: deadline },
+				deadlineReached: mode === 'deadline',
+				ownedWritersQuiescent: false,
+			})
+			expect(writer.read()?.stop).toEqual(result.stop)
+			for (const port of ports) expect(port.closeAndDrain).toHaveBeenCalledTimes(1)
+		} finally {
+			reader.releaseLock()
+			lock.stdin.end()
+			await lock.exited
+		}
 	})
 
 	it('fails closed if the stored record no longer matches the committed payload', () => {

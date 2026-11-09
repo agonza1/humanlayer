@@ -150,6 +150,7 @@ export interface BoundaryRecord {
 export interface BoundaryJournal {
 	read(): BoundaryRecord | undefined
 	compareAndSet(expectedRevision: number | undefined, next: BoundaryRecord): boolean
+	isContention?(error: unknown): boolean
 }
 
 // One trusted time domain, including when recovering a sealed stop. The first absolute

@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite'
+import { Database, SQLiteError } from 'bun:sqlite'
 import { closeSync, fsyncSync, lstatSync, openSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 
@@ -104,6 +104,10 @@ export class SqliteBoundaryJournal implements BoundaryJournal {
 	close(): void {
 		this.requireAutocommit()
 		this.database.close()
+	}
+
+	isContention(error: unknown): boolean {
+		return error instanceof SQLiteError && error.code === 'SQLITE_BUSY'
 	}
 
 	read(): BoundaryRecord | undefined {
