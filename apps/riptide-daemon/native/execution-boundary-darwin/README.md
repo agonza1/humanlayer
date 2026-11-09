@@ -1,27 +1,50 @@
-# Execution boundary feasibility scaffold
+# HumanLayer native stop and storage proof
 
-This directory contains compile-only Swift source for a future HumanLayer execution
-adapter. It represents the framework’s reported compute state with the exact stop
-scope. A stopped state does not prove authority fencing, device or storage drain,
-host settlement, or remote job termination.
+This disposable feasibility harness checks an actual macOS worker and one owned 64 MiB
+storage export. The harness runs as a standalone command alongside the TypeScript owner
+contract and compile-only Swift observation scaffold.
 
-On Apple silicon, pass a new, existing scratch directory to the compiler:
+Build the arm64 runner and guest fixture into a fresh private directory. The build
+also signs a separate read-only checker with Apple's required Virtualization
+entitlement. Its compiled entry points are image inspection and URL validation.
+Preparation checks the local Apple restore descriptor, VM budget and NBD URL form,
+then writes a hashed packet for the operator to review before the first install or
+boot.
 
 ```sh
-sh compile-only.sh /absolute/existing/output-directory
+sh build-proof.sh /absolute/private/build-directory
+python3 -B native_proof.py prepare /absolute/private/build-directory \
+  /absolute/restore/download-readback.json /absolute/private/packet/boot-packet.json
 ```
 
-The command emits a Swift module, with no executable or entitlement. Nothing here
-creates, installs, boots or stops a VM, or downloads an image. Nothing imports the
-module into the daemon.
+The packet pins the Apple macOS 27.0.1 build `26A434`, exact local asset identities
+and digests, and one run directory. It budgets four vCPUs, 8 GiB RAM, a 44 GiB sparse
+system disk, a 64 MiB probe disk and an 8 GiB host space reserve. The install checks
+free space while it runs and requests cancellation at the reserve. A small installer
+disk or an unsupported device can still prevent the feasibility run.
 
-The TypeScript sibling under `src/effects/services/execution-boundary/` exercises
-the owner and receipt contracts with controlled ports. It relies on an atomic,
-durable journal and enforcing owner ports that fence actual starts and join their
-work. Neither a production journal nor any native, host, storage or remote port is
-provided here. Its assessment applies only to the declared capability manifest,
-and never grants publication, retry, replacement or merge authority.
+After the operator approves the exact packet, the run signs only a scratch copy of the
+runner with Virtualization and network-client entitlements. It installs one local guest,
+then opens that guest using a private display, read-only fixture media and the marked
+NBD disk. The guest has zero NICs and host shares. Complete the guest Setup Assistant
+with a local account and run the printed command in its Terminal, substituting the
+64 MiB probe disk from `diskutil list`. The fixture checks the virtual machine model,
+disk geometry and per-run marker before writing.
 
-Recovery in this slice only resumes an already sealed, unassessed stop. Late
-evidence never upgrades a retained uncertain assessment. The next slice must
-prove native stop and storage drain with a real driver and disposable environment.
+The fixture's reparented process writes a heartbeat. Its parent issues a second write
+which the export admits and holds before writing the backing file. The host closes
+admission, requests native stop, checks that the held write remains pending, and tests
+stale reconnect rejection. It then releases the already admitted write and requires
+the real I/O worker, file sync and descriptor close to finish at the same frontier
+within the first stop deadline. The result records the observed scope.
+
+The proof covers the native stop and this export. The macOS system disk and auxiliary
+storage use the framework's file attachments. Full backend cleanup, Docker parity and
+host and remote work require their own evidence before task progression can use it.
+
+Run the focused host checks from this directory with
+`python3 -B -m unittest -v test_probe_export.py test_native_proof.py`.
+These tests use real temporary files and loopback frames with a controlled native
+witness.
+
+[Apple Virtualization](https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon) · [NBD protocol revision](https://github.com/NetworkBlockDevice/nbd/blob/6725f91e6a33bc9f62d31d82798c04ec1cde1c73/doc/proto.md)
