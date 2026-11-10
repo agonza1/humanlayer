@@ -67,3 +67,24 @@ It checks that a mismatched expected UID and the pre-exec token are refused. The
 current token delivers the signal on macOS build `26A434`. The supervisor still
 needs to prove UID membership, seal admission, and verify the cohort is empty.
 Storage and delegated writers have separate proof requirements.
+
+## Private worker workspace on the host
+
+The trusted child enters a pinned workspace directory after permanently dropping
+to the reserved UID and GID. It verifies the kernel group list, the loss of saved
+root credentials and access to the directory by path under the worker identity.
+The supervisor supplies the directory descriptor and owns the worker lifecycle.
+
+Build and preflight the disposable fixture as an ordinary user.
+
+```sh
+sh build-workspace-proof.sh /absolute/new/private-directory
+/absolute/new/private-directory/workspace-proof --preflight
+```
+
+The administrator fixture stages a tracked source file in a fresh local Git
+workspace, writes and renames a file there, and verifies that the sandbox denies
+access to a sibling directory owned by the same worker. The parent checks the
+write, reaps the child and removes its fixture paths. Production needs its own
+workspace provisioning and a trusted supervisor that joins this handoff to the
+launch journal.
