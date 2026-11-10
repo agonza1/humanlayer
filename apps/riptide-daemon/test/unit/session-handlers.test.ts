@@ -26,6 +26,7 @@ import { SyncService } from '@/lib/sync-service'
 import { createMockDaemonServices } from '../helpers/create-mock-daemon-services'
 import { hasRealClaudeTestEnv } from '../helpers/real-claude'
 import { makeSessionChange } from '../helpers/session-fixtures'
+import { createMockORPCClient } from '../mocks/orpc-client.mock'
 
 const executeClaude: SessionExecutor = async () => {}
 
@@ -43,11 +44,11 @@ function createValidationServices() {
 		transactionId: `mock-txid-${Date.now()}`,
 	}))
 
-	const mockOrpc = {
+	const mockOrpc = createMockORPCClient({
 		sessions: {
 			update: mockSessionsUpdate,
 		},
-	} as unknown as ORPCClient
+	})
 
 	// These branches return before touching collections, shutdown, or sync, so the fixture
 	// defaults stand in for them.
@@ -62,9 +63,9 @@ function createMockServices() {
 		transactionId: `mock-txid-${Date.now()}`,
 	}))
 	const mockServices = createMockDaemonServices({
-		orpc: {
+		orpc: createMockORPCClient({
 			sessions: { update: mockSessionsUpdate },
-		} as unknown as ORPCClient,
+		}),
 		executors: {
 			claude: vi.fn(async () => {}),
 			codelayer: vi.fn(async () => {}),
@@ -260,6 +261,69 @@ describe('daemon fork metadata parsing', () => {
 })
 
 describe('handleLaunchSession', () => {
+	test.each([false, true])(
+		'legacy spec=%s never starts on unknown or blocked admission and rechecks a later valid change',
+		async (specBacked) => {
+			const { mockServices, mockSessionsUpdate } = createValidationServices()
+			const admission = vi
+				.fn<ORPCClient['reviewProgression']['admission']>()
+				.mockRejectedValueOnce(new Error('unavailable'))
+				.mockResolvedValueOnce({ kind: 'blocked', reason: 'setup_not_verified' })
+				.mockResolvedValue({ kind: 'not_enrolled' })
+			mockServices.orpc = createMockORPCClient({
+				reviewProgression: { admission },
+				sessions: { update: mockSessionsUpdate },
+			})
+			const change = makeSessionChange({
+				type: 'update',
+				value: {
+					id: specBacked ? '00000000-0000-4000-8000-000000000011' : '00000000-0000-4000-8000-000000000012',
+					task_id: 'task-legacy',
+					status: 'waiting_for_workspace',
+					coding_agent: 'opencode',
+				},
+			})
+			const workspaceSpec = {
+				specVersion: 1,
+				directory: '/fictional/task',
+				workspaceBaseDirectory: '/fictional',
+				setupBlocksFirstSession: true,
+				repos: [
+					{
+						localPath: '/fictional/source',
+						targetPath: '/fictional/task',
+						branch: 'codex/test',
+						sourceRef: 'HEAD',
+						copyGlobs: [],
+						primary: true,
+					},
+				],
+			}
+			mockServices.collections.tasks = {
+				toArray: [{ id: 'task-legacy', workspace_spec: specBacked ? workspaceSpec : null }],
+			} as unknown as DaemonServices['collections']['tasks']
+			const gate = specBacked
+				? {
+						workspaceSpec,
+						workspaceSetupState: {
+							specVersion: 1,
+							repos: [{ localPath: '/fictional/source', status: 'done' as const }],
+						},
+					}
+				: undefined
+			await handleLaunchSession(change, mockServices, gate)
+			await handleLaunchSession(change, mockServices, gate)
+			expect(mockSessionsUpdate.mock.calls.every(([input]) => !(input as { status?: string }).status)).toBe(true)
+			await handleLaunchSession(change, mockServices, gate)
+			expect(admission).toHaveBeenCalledTimes(3)
+			expect(mockSessionsUpdate).toHaveBeenCalledWith({ sessionId: change.value.id, errorMessage: '' })
+			expect(mockSessionsUpdate).toHaveBeenLastCalledWith({
+				sessionId: change.value.id,
+				status: 'failed',
+				errorMessage: 'The opencode coding agent is not currently supported.',
+			})
+		},
+	)
 	test('dispatches Claude launches through the injected executor registry', async () => {
 		const { mockServices } = createMockServices()
 		const change = makeSessionChange({
@@ -347,6 +411,7 @@ describe('handleLaunchSession', () => {
 			}))
 
 			const mockOrpc = {
+				reviewProgression: createMockORPCClient().reviewProgression,
 				sessions: {
 					update: mockSessionsUpdate,
 					ensureStreamHydrated: vi.fn(async () => ({ sessionId: 'mock', status: 'exists' as const })),
@@ -664,6 +729,7 @@ describe('handleContinueSession', () => {
 			}))
 
 			const mockOrpc = {
+				reviewProgression: createMockORPCClient().reviewProgression,
 				sessions: {
 					update: mockSessionsUpdate,
 					ensureStreamHydrated: vi.fn(async () => ({ sessionId: 'mock', status: 'exists' as const })),

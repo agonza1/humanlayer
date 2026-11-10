@@ -119,6 +119,7 @@ function createServices() {
 	}
 	const services: DaemonServices = createMockDaemonServices({
 		orpc: {
+			reviewProgression: { admission: vi.fn(async () => ({ kind: 'not_enrolled' })) },
 			sessions: {
 				update: vi.fn(async () => undefined),
 			},

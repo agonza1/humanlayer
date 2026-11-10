@@ -1,10 +1,12 @@
 import { type PullRequest, type PullRequestState, pullRequests } from '@humanlayer/db/tables/pull-requests'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { toEpochMs } from '@humanlayer/db/utils/epoch-ms'
 import { type PullRequestAttributionTier, pullRequestTierRank } from '@humanlayer/git-attribution'
 import type { PullRequestRowType } from '@humanlayer/streams/pr-status'
 import { and, desc, eq, or, type SQL, sql, type SQLWrapper } from 'drizzle-orm'
 import { Clock, Effect } from 'effect'
 
+import { reviewDigest } from '../../../../db/review-progression'
 import { PostgresDb, PostgresDbLive } from '../../postgres/postgres-db.service'
 import { GitHubIntegrationUnavailableError } from '../github.errors'
 import {
@@ -201,6 +203,24 @@ const writeRecordedPullRequest = (context: {
 	Effect.gen(function* () {
 		const { input, repoFullName, now } = context
 		const postgres = yield* PostgresDb
+		// Serialize this PR's upserts, including the absent-row case, before comparing semantic state.
+		yield* postgres.query(
+			postgres.client.execute(
+				sql`select pg_advisory_xact_lock(hashtextextended(${`${input.organizationId}:${repoFullName}:${input.row.number}`}, 0))`,
+			),
+		)
+		const [previous] = yield* postgres.query(
+			postgres.client
+				.select()
+				.from(pullRequests)
+				.where(
+					and(
+						eq(pullRequests.organization_id, input.organizationId),
+						eq(pullRequests.repo_full_name, repoFullName),
+						eq(pullRequests.number, input.row.number),
+					),
+				),
+		)
 		const owner = input.owner ??
 			(yield* findSessionForBranch({
 				organizationId: input.organizationId,
@@ -274,6 +294,7 @@ const writeRecordedPullRequest = (context: {
 				new GitHubIntegrationUnavailableError({ cause: 'pull_request_upsert_returned_nothing' }),
 			)
 		}
+		// Finish task/session FK attribution before taking progression locks shared with task-first admission.
 		const linked = yield* linkPullRequestSessions({
 			organizationId: input.organizationId,
 			repoFullName,
@@ -281,6 +302,24 @@ const writeRecordedPullRequest = (context: {
 			headSha: record.head_sha,
 			number: record.number,
 		})
+		const semantic = (row: PullRequest) => {
+			const { id: _id, title: _title, ...state } = toPanelPullRequest(row)
+			return state
+		}
+		if (!previous || reviewDigest(semantic(previous)) !== reviewDigest(semantic(record))) {
+			yield* postgres.query(
+				postgres.client
+					.update(reviewProgression)
+					.set({ wake_revision: sql`${reviewProgression.wake_revision} + 1` })
+					.where(
+						and(
+							eq(reviewProgression.organization_id, input.organizationId),
+							sql`${reviewProgression.verified_pr_binding}->>'repository' = ${repoFullName}`,
+							sql`(${reviewProgression.verified_pr_binding}->>'pr')::integer = ${record.number}`,
+						),
+					),
+			)
+		}
 		const attributionMethod =
 			pullRequestTierRank(linked.attributionMethod) > pullRequestTierRank(record.attribution_method)
 				? linked.attributionMethod

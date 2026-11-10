@@ -11,6 +11,11 @@ import {
 	type WorkspaceSetupSession,
 	type WorkspaceSetupTask,
 } from '@/effects/services/daemon-collections/daemon-collections.service'
+import {
+	checkReviewSessionLaunch,
+	prepareReviewSessionArtifacts,
+	makeManagedReviewProgression,
+} from '@/effects/services/review-integration/review-integration'
 import { SessionLaunchExecutor } from '@/effects/services/session-runs/session-launch-executor.service'
 import { SessionRunRegistry } from '@/effects/services/session-runs/session-run-registry'
 import {
@@ -30,8 +35,9 @@ import { normalizePath } from '@/lib/utils'
 import { workspaceSetupStateAllowsSessionLaunch } from '@/lib/workspace/ledger'
 import logger from '@/logger'
 
-type CollectionRow<Name extends keyof DaemonServices['collections']> =
-	DaemonServices['collections'][Name]['toArray'][number]
+type CollectionRow<Name extends keyof DaemonServices['collections']> = NonNullable<
+	DaemonServices['collections'][Name]
+>['toArray'][number]
 
 type WorkspaceLaunchRow = {
 	readonly session: SessionChangeMessage['value']
@@ -100,7 +106,7 @@ const handleSessionFailure = async (services: DaemonServices, sessionId: string,
 	}
 }
 
-export const launchWorkspaceSession = (row: WorkspaceLaunchRow, services: DaemonServices) =>
+const launchWorkspaceSessionOnce = (row: WorkspaceLaunchRow, services: DaemonServices) =>
 	Effect.gen(function* () {
 		const { session, task, workspaceSetup } = row
 		if (
@@ -120,10 +126,60 @@ export const launchWorkspaceSession = (row: WorkspaceLaunchRow, services: Daemon
 			}
 			return
 		}
-		yield* Effect.promise(() =>
+		return yield* Effect.promise(() =>
 			handleLaunchSession({ type: 'update', value: session }, services, { workspaceSpec, workspaceSetupState }),
 		)
 	})
+
+const retryDeferredReviewLaunch = (
+	initial: SessionChangeMessage['value'],
+	services: DaemonServices,
+	firstAttempt: ReturnType<typeof launchWorkspaceSessionOnce>,
+) =>
+	Effect.gen(function* () {
+		const identity = {
+			sessionId: initial.id,
+			taskId: initial.task_id,
+			hostId: initial.host_id,
+			ownerUserId: initial.resource_owner_user_id,
+			organizationId: initial.organization_id,
+			createdBy: initial.created_by,
+		}
+		let attempt = firstAttempt
+		for (let index = 0; index < 30; index++) {
+			if ((yield* attempt) !== 'review_setup_unverified' || index === 29) return
+			// This sleep belongs to the existing registry-owned launch fiber, not a separate recovery worker.
+			yield* Effect.sleep(Duration.seconds(2))
+			const raw = services.collections.sessions.toArray.find((row) => row.id === identity.sessionId)
+			const session = raw === undefined ? undefined : parseSessionLaunchCandidate(structuredClone({ ...raw }))
+			if (
+				!session ||
+				session.archived ||
+				session.task_id === null ||
+				session.task_id !== identity.taskId ||
+				session.host_id !== identity.hostId ||
+				session.resource_owner_user_id !== identity.ownerUserId ||
+				session.organization_id !== identity.organizationId ||
+				session.created_by !== identity.createdBy ||
+				!shouldLaunchSession({ type: 'update', value: session })
+			)
+				return
+			const task = services.collections.tasks.toArray.find((row) => row.id === session.task_id)
+			if (!task || task.archived || task.is_draft || task.workspace_id != null) return
+			if (task.workspace_spec != null) {
+				const workspaceSetup = services.collections.workspaceSetup.toArray.find(
+					(row) => row.task_id === task.id && row.host_id === session.host_id,
+				)
+				if (!workspaceSetup) return
+				attempt = launchWorkspaceSessionOnce({ session, task, workspaceSetup }, services)
+			} else {
+				attempt = Effect.promise(() => handleLaunchSession({ type: 'update', value: session }, services))
+			}
+		}
+	})
+
+export const launchWorkspaceSession = (row: WorkspaceLaunchRow, services: DaemonServices) =>
+	retryDeferredReviewLaunch(row.session, services, launchWorkspaceSessionOnce(row, services))
 
 const observeDaemonChangeFailure = (
 	message: string,
@@ -200,7 +256,11 @@ export const processSessionChange = (
 			yield* forkSessionRun(
 				services,
 				session.id,
-				Effect.promise(() => handleLaunchSession(change, services)),
+				retryDeferredReviewLaunch(
+					session,
+					services,
+					Effect.promise(() => handleLaunchSession(change, services)),
+				),
 			)
 		else if (shouldContinueSession(change))
 			yield* forkSessionContinuation(
@@ -256,7 +316,11 @@ export const processTaskChange = (
 				yield* forkSessionRun(
 					services,
 					session.id,
-					Effect.promise(() => handleLaunchSession({ type: 'update', value: session }, services)),
+					retryDeferredReviewLaunch(
+						session,
+						services,
+						Effect.promise(() => handleLaunchSession({ type: 'update', value: session }, services)),
+					),
 				)
 				continue
 			}
@@ -314,8 +378,21 @@ export const makeLegacySessionLaunchExecutorLive = (services: DaemonServices) =>
 	Layer.succeed(
 		SessionLaunchExecutor,
 		SessionLaunchExecutor.of({
+			admitSessionLaunch: ({ session }) =>
+				Effect.promise(() =>
+					checkReviewSessionLaunch(
+						session.id,
+						services.orpc,
+						(snapshot) => prepareReviewSessionArtifacts(services, snapshot),
+						session,
+						services.reviewWriterObservations,
+					),
+				),
 			executeSessionLaunch: ({ session }) =>
-				Effect.promise(() => handleLaunchSession({ type: 'update', value: session }, services)).pipe(
+				Effect.promise(() =>
+					handleLaunchSession({ type: 'update', value: session }, services, undefined, true),
+				).pipe(
+					Effect.asVoid,
 					reportSessionRunFailure(services, session.id),
 					Effect.withSpan('session_launch_executor.execute_session_launch', {
 						attributes: { session_id: session.id },
@@ -359,6 +436,7 @@ export const superviseDaemonSubscriptionConsumer = <E, R>(
 
 /** Consume DaemonCollections domain streams. Collection ownership stays in the scoped service. */
 export function initializeSubscriptions(services: DaemonServices) {
+	const review = makeManagedReviewProgression(services)
 	const lifecycle = makeTaskDiffCollectionLifecycle({
 		collections: services.collections,
 		runtime: services.daemonRuntime,
@@ -381,9 +459,17 @@ export function initializeSubscriptions(services: DaemonServices) {
 				Stream.tap(() => markHealthy),
 				Stream.runDrain,
 			)
+			const reviews = (collections.reviewProgressionChanges ?? Stream.empty).pipe(
+				Stream.tap((change) =>
+					Effect.sync(() =>
+						change.type === 'delete' ? review.remove(change.value.task_id) : review.update(change.value),
+					),
+				),
+				Stream.runDrain,
+			)
 			// Both generations recover through initial-state replay and subsequent synced changes.
 			// Task changes revisit waiting sessions when the task arrives after the session.
-			yield* Effect.all([sessions, tasks, workspaceLaunches], {
+			yield* Effect.all([sessions, tasks, workspaceLaunches, reviews], {
 				concurrency: 'unbounded',
 				discard: true,
 			})
@@ -397,5 +483,8 @@ export function initializeSubscriptions(services: DaemonServices) {
 	)
 	const fiber = services.daemonRuntime.runFork(program.pipe(Effect.provide(SessionRunsLive), Effect.scoped))
 	lifecycle.reconcileAllTasks()
-	return () => services.daemonRuntime.runPromise(Fiber.interrupt(fiber))
+	return async () => {
+		await review.stop()
+		await services.daemonRuntime.runPromise(Fiber.interrupt(fiber))
+	}
 }

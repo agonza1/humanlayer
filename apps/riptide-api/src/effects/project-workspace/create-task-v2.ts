@@ -8,6 +8,7 @@ import { taskOrganizationAcl } from '@humanlayer/db/tables/task-organization-acl
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { userSettings } from '@humanlayer/db/tables/user-settings'
 import { workspaces } from '@humanlayer/db/tables/workspaces'
+import type { ReviewAcceptedArtifact } from '@humanlayer/db/zodschemas/review-progression'
 import type { CreateTaskV2Input } from '@humanlayer/riptide-api-contract/api/tasks/v2/create'
 import {
 	taskWorkspaceRoot,
@@ -20,6 +21,7 @@ import { and, eq } from 'drizzle-orm'
 import { Effect } from 'effect'
 import { hash } from 'ohash'
 
+import { acceptedReviewLaunch, retainReviewEnrollment, verifyReviewLaunchReplay } from '../../db/review-progression'
 import type { PreparedTicketArtifactBundle } from '../../lib/linear-ticket-artifacts'
 import { getTransactionId } from '../services/postgres/helpers'
 import { PostgresDb, type PostgresTransaction } from '../services/postgres/postgres-db.service'
@@ -42,6 +44,7 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 	input: CreateTaskV2Input & {
 		readonly actor: ProjectActorContext
 		readonly importedTicket?: PreparedTicketArtifactBundle
+		readonly preparedReviewArtifacts?: ReviewAcceptedArtifact[]
 	},
 ) {
 	const postgres = yield* PostgresDb
@@ -52,6 +55,7 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 	const sessionId = input.sessionId ?? (yield* generateProjectWorkspaceId())
 	const eventId = input.eventId ?? (yield* generateProjectWorkspaceId())
 	const requestedTitle = input.firstSession.title?.trim() ? input.firstSession.title : null
+	const acceptedLaunch = acceptedReviewLaunch({ ...input, sessionId, eventId })
 	// Match directory-based launches, keeping the model call outside the transaction.
 	const taskIntentClassifier = yield* TaskIntentClassifier
 	const intent =
@@ -170,8 +174,31 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 				existingTask.is_draft &&
 				!existingTask.archived
 			if (existingTask && !promotableDraft) {
+				if (input.reviewProgressionEnrollment && existingTask.resource_owner_user_id !== input.actor.userId)
+					return yield* new ProjectLocationInvalid({
+						message: 'The selected task is not owned by this user.',
+					})
+				yield* transaction.run(() =>
+					verifyReviewLaunchReplay(
+						transaction.client,
+						taskId,
+						input.reviewProgressionEnrollment,
+						acceptedLaunch,
+					),
+				)
 				const txId = yield* getTransactionId(transaction)
 				return { result: 'already-exists' as const, transactionId: txId, taskId, workspaceId, sessionId }
+			}
+			if (
+				input.reviewProgressionEnrollment &&
+				existingTask &&
+				((existingTask.project_id !== null && existingTask.project_id !== input.projectId) ||
+					existingTask.workspace_id !== null)
+			) {
+				return yield* new ProjectLocationInvalid({
+					message:
+						'Could not launch this draft. Its project or workspace conflicts with the selected placement.',
+				})
 			}
 
 			const [workspace] = yield* transaction.query(
@@ -250,6 +277,14 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 						.limit(1),
 				)
 				if (claimedTask) {
+					yield* transaction.run(() =>
+						verifyReviewLaunchReplay(
+							transaction.client,
+							taskId,
+							input.reviewProgressionEnrollment,
+							acceptedLaunch,
+						),
+					)
 					const txId = yield* getTransactionId(transaction)
 					return { result: 'already-exists' as const, transactionId: txId, taskId, workspaceId, sessionId }
 				}
@@ -395,6 +430,33 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 
 			if (!session) {
 				return yield* new ProjectPersistenceUnavailable({ operation: 'create_session' })
+			}
+			const enrollment = input.reviewProgressionEnrollment
+			if (enrollment) {
+				const projectId = task.project_id,
+					actualWorkspaceId = task.workspace_id
+				if (projectId !== input.projectId || actualWorkspaceId !== workspaceId) {
+					return yield* new ProjectLocationInvalid({
+						message: 'Could not enroll this launch. Its persisted project or workspace changed.',
+					})
+				}
+				yield* transaction.run(() =>
+					retainReviewEnrollment(transaction.client, {
+						taskId,
+						organizationId: input.actor.organizationId,
+						ownerUserId: input.actor.userId,
+						hostId,
+						sourceSessionId: sessionId,
+						enrollment,
+						placement: {
+							kind: 'project_workspace',
+							projectId,
+							workspaceId: actualWorkspaceId,
+							setupRowId: null,
+						},
+						acceptedLaunch,
+					}),
+				)
 			}
 
 			yield* transaction.query(

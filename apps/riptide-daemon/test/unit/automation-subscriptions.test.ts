@@ -21,6 +21,7 @@ function makeAutomationServices(targetSessionId: string) {
 	const services = createMockDaemonServices({
 		automationTargetSessionId: targetSessionId,
 		orpc: {
+			reviewProgression: { admission: async () => ({ kind: 'not_enrolled' }) },
 			sessions: {
 				update: async (input: unknown) => {
 					updates.push(input)

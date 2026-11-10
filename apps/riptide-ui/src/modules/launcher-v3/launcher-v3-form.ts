@@ -1,6 +1,7 @@
 import type { CreatedWithExperimentFlags } from '@humanlayer/riptide-api-contract/api/tasks/experiment-flags'
 import { CreatedWithExperimentFlagsSchema } from '@humanlayer/riptide-api-contract/api/tasks/experiment-flags'
 import { safeSubpathSchema } from '@humanlayer/riptide-api-contract/lib/filename-validation'
+import type { ReviewProgressionEnrollment } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import { LaunchableCodingAgentZodSchema } from '@humanlayer/schemas/coding-agent'
 import {
 	RESOLVED_TASK_WORKFLOW_TYPES,
@@ -16,6 +17,7 @@ import type { Content, JSONContent } from '@tiptap/core'
 import * as z from 'zod'
 
 import { describeHostLaunchBlocker, type HostLaunchTarget } from '@/lib/host-state'
+import { reviewDeliveryBlocker, reviewDeliveryEnrollment } from '@/lib/review-progression'
 import { truncateTaskSlug } from '@/lib/task-slug'
 import { getTextFromContent } from '@/utils/tiptap-content'
 
@@ -117,6 +119,9 @@ export const launcherV3FormSchema = z.object({
 	autoAdvance: z.boolean().default(DEFAULT_RESOLVED_TASK_WORKFLOW.autoAdvance),
 	workflowPresentation: z.enum(['named', 'task-size']).default('named'),
 	graphRevealed: z.boolean().default(false),
+	reviewDeliveryEnabled: z.boolean().default(false),
+	reviewEnrollmentId: z.string().default(''),
+	reviewReturnRouteRef: z.string().default(''),
 	worktreeTiming: z.enum(WORKTREE_TIMINGS).default('later'),
 	workspaceSnapshotDirectory: z.string().nullable().default(null),
 	excludedRepositoryLocalPaths: z.array(z.string()).default([]),
@@ -250,6 +255,7 @@ export type LauncherV3LaunchBlocker =
 	| { code: 'no-title'; label: string }
 	| { code: 'no-slug'; label: string }
 	| { code: 'no-model'; label: string }
+	| { code: 'delivery-setup'; label: string }
 
 export type LauncherV3LaunchReadiness =
 	| { canLaunch: true; blockedReason: null }
@@ -265,6 +271,12 @@ function getHostLaunchBlocker(
 }
 
 function getFormLaunchBlocker(values: LauncherV3FormValues): LauncherV3LaunchBlocker | null {
+	const reviewBlocker = reviewDeliveryBlocker({
+		enabled: values.reviewDeliveryEnabled,
+		enrollmentId: values.reviewEnrollmentId,
+		returnRouteRef: values.reviewReturnRouteRef,
+	})
+	if (reviewBlocker) return { code: 'delivery-setup', label: reviewBlocker }
 	if (!values.projectId && !nonBlank(values.directory)) {
 		return { code: 'no-directory', label: 'Choose a project or working directory' }
 	}
@@ -318,6 +330,7 @@ export interface LauncherV3Command {
 	autoAdvanceFlags: TaskAutoAdvanceFlags
 	/** A small task: it starts on implementation and asks to describe the PR when done. */
 	directImplementation?: boolean
+	reviewProgressionEnrollment?: ReviewProgressionEnrollment
 	workspaceSpec?: WorkspaceSpec
 	defaultWorkingDirectory?: string
 	project?: LauncherV3ProjectLaunch
@@ -332,6 +345,11 @@ export interface LauncherV3Command {
 }
 
 export function toLaunchCommand(values: LauncherV3FormValues, target?: LauncherV3LaunchTarget): LauncherV3Command {
+	const enrollment = reviewDeliveryEnrollment({
+		enabled: values.reviewDeliveryEnabled,
+		enrollmentId: values.reviewEnrollmentId,
+		returnRouteRef: values.reviewReturnRouteRef,
+	})
 	const effort = values.effort ?? undefined
 	const attachments = dedupeAttachments(values.attachments)
 	// Project workspaces materialize before launch on the chosen daemon, including
@@ -352,14 +370,18 @@ export function toLaunchCommand(values: LauncherV3FormValues, target?: LauncherV
 		slug: truncateTaskSlug(values.slug.trim()),
 		hostId: values.hostId?.trim() ?? '',
 		directory: values.directory.trim(),
-		workflowType: values.workflowType,
-		autoAdvance: values.autoAdvance,
+		workflowType: enrollment ? 'freeform' : values.workflowType,
+		autoAdvance: enrollment ? false : values.autoAdvance,
 		worktreeTiming: effectiveWorktreeTiming,
 		autoAdvanceFlags: projectTaskAutoAdvanceFlags(
-			{ workflowType: values.workflowType, autoAdvance: values.autoAdvance },
+			{
+				workflowType: enrollment ? 'freeform' : values.workflowType,
+				autoAdvance: enrollment ? false : values.autoAdvance,
+			},
 			effectiveWorktreeTiming,
 		),
-		directImplementation: values.workflowPresentation === 'task-size' && values.workflowType === 'freeform',
+		directImplementation:
+			Boolean(enrollment) || (values.workflowPresentation === 'task-size' && values.workflowType === 'freeform'),
 		permissionsMode: values.permissionsMode,
 		agent: values.agent,
 		provider: values.provider,
@@ -367,6 +389,7 @@ export function toLaunchCommand(values: LauncherV3FormValues, target?: LauncherV
 		fastMode: values.fastMode,
 		attachments,
 	}
+	if (enrollment) command.reviewProgressionEnrollment = enrollment
 	if (target?.kind === 'project') {
 		command.project = target.project
 	} else if (target?.kind === 'workspace') {

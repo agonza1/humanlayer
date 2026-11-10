@@ -11,6 +11,7 @@ import type { QuerySessionsCollection } from '@/collections/query/sessions'
 import type { QueryTaskOrganizationAclsCollection } from '@/collections/query/task-organization-acls'
 import type { QueryTasksCollection } from '@/collections/query/tasks'
 import type { ConfirmTxFn } from '@/components/providers/SyncProvider'
+import { workflowUpdateRequest } from '@/lib/review-progression'
 import type { RiptideApiClient } from '@/orpc/client'
 
 import { buildOptimisticSessionRow, insertOptimisticInitialUserEvent } from './sessions'
@@ -58,6 +59,7 @@ export function applyOptimisticTaskDraftLaunch({
 			...task,
 			created_at: BigInt(task.created_at),
 			updated_at: BigInt(task.updated_at),
+			workflow_revision: BigInt(task.workflow_revision ?? 0),
 		}
 		if (tasksCollection.state.get(task.id)) {
 			tasksCollection.update(task.id, (draft) => {
@@ -199,6 +201,7 @@ export function createTaskActions(
 				is_draft: false,
 				setup_status: setupStatus ?? null,
 				workflow_type: workflowType ?? 'rpi',
+				workflow_revision: 0n,
 				worktree_timing: worktreeTiming ?? 'later',
 				setup_details: null,
 				ticket_id: ticketId ?? null,
@@ -333,11 +336,12 @@ export function createTaskActions(
 			}
 		},
 		mutationFn: async ({ taskId, autoAdvanceQuestionsToResearch, autoAdvanceResearchToDesign }) => {
-			const response = await api.tasks.update({
+			const request = await workflowUpdateRequest(tasksCollection.state.get(taskId) ?? { id: taskId }, {
 				taskId,
 				autoAdvanceQuestionsToResearch,
 				autoAdvanceResearchToDesign,
 			})
+			const response = await api.tasks.update(request)
 			await tasksConfirmTx(response.transactionId)
 			return response
 		},
@@ -430,6 +434,7 @@ export function createTaskActions(
 				auto_advance_implementation_to_pr: false,
 				slack_notifications_muted: false,
 				workflow_type: 'rpi',
+				workflow_revision: 0n,
 				worktree_timing: 'later',
 				team_id: null,
 				project_id: null,

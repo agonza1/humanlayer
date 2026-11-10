@@ -1,4 +1,5 @@
 import type { Session } from '@humanlayer/db/tables/sessions'
+import type { WorkEntry } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import {
 	getContextWindowUsagePercentage,
 	resolveEffectiveContextWindow,
@@ -14,8 +15,15 @@ import { type RiptideApiClient, useRiptideApi } from '@/orpc/client'
 export type SendIntent = 'send' | 'queue' | 'interrupt_and_send'
 
 /** Post a message to a session as if the user typed it. */
-export async function sendToSession(api: RiptideApiClient, sessionId: string, text: string, intent: SendIntent) {
+export async function sendToSession(
+	api: RiptideApiClient,
+	sessionId: string,
+	text: string,
+	intent: SendIntent,
+	entry: WorkEntry = {},
+) {
 	const result = await api.sessions.v2.continue({
+		...entry,
 		sessionId,
 		messageId: uuidv7(),
 		eventId: uuidv7(),

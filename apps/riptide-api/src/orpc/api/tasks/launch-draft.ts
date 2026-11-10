@@ -2,6 +2,7 @@ import { Effect } from 'effect'
 import { hash } from 'ohash'
 import { uuidv7 } from 'uuidv7'
 
+import { prepareReviewArtifacts } from '../../../db/review-progression'
 import { GitHubService } from '../../../effects/services/github/github.service'
 import {
 	TaskLaunchConflict,
@@ -91,10 +92,26 @@ export const launchTaskDraftProcedure = effectOrpcBaseOrganizationRequired.tasks
 			}
 		}
 
+		const preparedReviewArtifacts = input.reviewProgressionEnrollment
+			? yield* Effect.tryPromise({
+					try: () =>
+						prepareReviewArtifacts(
+							{
+								...input,
+								taskId: input.draftId,
+								importedTicket,
+								organizationId: context.auth.organizationId,
+							},
+							context.services.s3,
+						),
+					catch: () => errors.SERVICE_UNAVAILABLE(),
+				})
+			: undefined
 		return yield* taskLaunch
 			.launchTaskDraft({
 				...input,
 				importedTicket,
+				preparedReviewArtifacts,
 				organizationId: context.auth.organizationId,
 				userId: context.auth.userId,
 			})

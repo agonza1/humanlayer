@@ -1,17 +1,21 @@
+import type { reviewProgressionSelectSchema } from '@humanlayer/db/tables/review-progression'
 import type { TaskWorkspaceSetupForHost } from '@humanlayer/db/tables/task-workspace-setup-for-host'
 import type { Task } from '@humanlayer/db/tables/tasks'
 import { Context, type Effect, type Stream } from 'effect'
+import type z from 'zod/v4'
 
 import type { DaemonServices } from '@/agents/claudecode/types'
 import type { SessionChangeMessage } from '@/collections/types'
 
-type CollectionRow<Name extends keyof DaemonServices['collections']> =
-	DaemonServices['collections'][Name]['toArray'][number]
+type CollectionRow<Name extends keyof DaemonServices['collections']> = NonNullable<
+	DaemonServices['collections'][Name]
+>['toArray'][number]
 
 export type ApprovalChangeMessage = CollectionChange<CollectionRow<'approvals'>>
 export type TaskChangeMessage = CollectionChange<CollectionRow<'tasks'>>
 export type WorkspaceSetupChangeMessage = CollectionChange<CollectionRow<'workspaceSetup'>>
 export type ProviderLoginChangeMessage = CollectionChange<CollectionRow<'providerLoginRequests'>>
+export type ReviewProgressionChangeMessage = CollectionChange<z.infer<typeof reviewProgressionSelectSchema>>
 
 export interface DaemonCollectionsService {
 	readonly current: Effect.Effect<DaemonServices['collections']>
@@ -20,6 +24,7 @@ export interface DaemonCollectionsService {
 	readonly approvalChanges: Stream.Stream<ApprovalChangeMessage>
 	readonly workspaceSetupChanges: Stream.Stream<WorkspaceSetupChangeMessage>
 	readonly providerLoginChanges: Stream.Stream<ProviderLoginChangeMessage>
+	readonly reviewProgressionChanges?: Stream.Stream<ReviewProgressionChangeMessage>
 	readonly workspaceSetups: Stream.Stream<WorkspaceSetupTask>
 	readonly workspaceSetupSessions: Stream.Stream<WorkspaceSetupSession>
 	readonly streamSessionChanges: (sessionId: string) => Stream.Stream<SessionChangeMessage>

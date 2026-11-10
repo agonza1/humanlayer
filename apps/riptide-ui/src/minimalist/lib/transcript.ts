@@ -1,3 +1,5 @@
+import { parseReviewProgressionNote, type ReviewProgressionNote } from '@humanlayer/ui/lib/review-progression'
+
 import { toMs } from '@/minimalist/lib/format'
 import { isSyntheticSkillPromptMessage } from '@/utils/sidebar-transforms'
 
@@ -44,6 +46,7 @@ export type Step =
 	| { kind: 'skill'; id: string; name: string | null; text: string }
 
 export type Turn =
+	| { kind: 'review_progression'; id: string; note: ReviewProgressionNote; at: number }
 	| { kind: 'user'; id: string; text: string; author: string | null; userId?: string | null; at: number }
 	| {
 			kind: 'agent'
@@ -174,6 +177,12 @@ export function buildTurns(rows: readonly EventRow[]): Turn[] {
 
 	for (const row of sorted) {
 		if (row.parent_tool_use_id || row.event_type === 'tool_result') continue
+		const note = parseReviewProgressionNote({ eventType: row.event_type, role: row.role, content: row.content })
+		if (note) {
+			closeAgentTurn()
+			turns.push({ kind: 'review_progression', id: row.id, note, at: toMs(row.created_at) })
+			continue
+		}
 		if (isCompaction(row)) {
 			closeAgentTurn()
 			turns.push({ kind: 'compaction', id: row.id, at: toMs(row.created_at) })

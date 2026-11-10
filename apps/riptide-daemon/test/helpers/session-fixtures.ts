@@ -46,6 +46,8 @@ export function createTestSession(overrides: Partial<Session> = {}): Session {
 		workflow_type: null,
 		prompt: 'test prompt',
 		labels: [],
+		execution_phase: null,
+		execution_phase_at: null,
 		next_step_suggestions: null,
 		resolved_model: null,
 		...overrides,

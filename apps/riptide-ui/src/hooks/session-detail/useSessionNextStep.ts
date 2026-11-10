@@ -12,6 +12,7 @@ import { useFocusStore } from '@/hooks/stores/focusStore'
 import { useEventInViewport } from '@/hooks/useEventInViewport'
 import { useNextStepIndicatorVisible } from '@/hooks/useNextStepIndicatorVisible'
 import { useSmartSessionEntryScroll } from '@/hooks/useSmartSessionEntryScroll'
+import { useTaskReviewEnrollment } from '@/hooks/useTaskSettings'
 
 import type { SessionDetailSession } from './useSessionDetailData'
 
@@ -57,6 +58,7 @@ export function useSessionNextStep({
 	jumpToBottom: () => void
 }) {
 	const navigate = useNavigate()
+	const enrolled = useTaskReviewEnrollment(session?.task_id)
 
 	// Most recent next-step event ID (chronological order; last is most recent)
 	const lastNextStepEventId = nextStepEventIds[nextStepEventIds.length - 1] ?? null
@@ -78,8 +80,14 @@ export function useSessionNextStep({
 	const lastNextStepSuggestion = useMemo(() => {
 		if (!lastNextStepEventId) return null
 		const ev = events.find((e) => e.id === lastNextStepEventId)
+		if (
+			enrolled &&
+			ev?.nextStepSuggestion?.extraction.type === 'next_step_found' &&
+			ev.nextStepSuggestion.extraction.nextStepType === 'describe-pr'
+		)
+			return null
 		return ev?.nextStepSuggestion ?? null
-	}, [events, lastNextStepEventId])
+	}, [events, lastNextStepEventId, enrolled])
 
 	// Scroll to and focus the given next-step event using the virtualizer.
 	// Uses the triple-rAF settle pattern to handle dynamic row measurement.
@@ -165,6 +173,7 @@ export function useSessionNextStep({
 			if (suggestion.extraction.type !== 'next_step_found') return
 
 			const { nextStepType, suggestedDirectory } = suggestion.extraction
+			if (enrolled && nextStepType === 'describe-pr') return
 
 			const slashCommand = SKILL_ID_TO_SLASH_COMMAND[nextStepType]
 			const workingDir = suggestedDirectory || session?.working_directory
@@ -179,7 +188,7 @@ export function useSessionNextStep({
 				search,
 			})
 		},
-		[session, navigate, dismissNextStep],
+		[session, enrolled, navigate, dismissNextStep],
 	)
 
 	// Check if a sibling session with the next-step target label already exists
@@ -214,6 +223,7 @@ export function useSessionNextStep({
 	// Mirror the indicator's render gate so paddingEnd only applies when the
 	// bar would actually render visibly (same condition as the indicator JSX).
 	const nextStepVisible =
+		!!lastNextStepSuggestion &&
 		nextStepIndicatorVisible &&
 		!isRunning &&
 		(!isAutoAdvanceEnabled || (isAutoAdvanceEnabled && !siblingSessionId && session?.status === 'ready_for_input'))

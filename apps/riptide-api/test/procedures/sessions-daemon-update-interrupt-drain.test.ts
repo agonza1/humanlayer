@@ -4,13 +4,16 @@ import { tmpdir } from 'node:os'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
+import { tasks } from '@humanlayer/db/tables/tasks'
 import { call } from '@orpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
+import { acceptedReviewLaunch, retainReviewEnrollment, reviewDigest } from '../../src/db/review-progression'
 import { updateSessionProcedure } from '../../src/orpc/daemon/sessions/update'
 import { createMockDaemonAuth, createMockDaemonContext } from '../mocks'
 import { requireExternalTestServices } from '../utils/external-test-services'
@@ -104,6 +107,153 @@ describe('daemon/sessions/update interrupt drain (deliver_on_interrupt)', async 
 		})
 		return id
 	}
+
+	test.each(['missing_receipt', 'content', 'task', 'author', 'active_action'] as const)(
+		'enrolled daemon drain rejects %s and rolls back status, events, queue and admission',
+		async (tampering) => {
+			const taskId = uuidv7()
+			await db.insert(tasks).values({
+				id: taskId,
+				organization_id: organizationId,
+				created_by: userId,
+				resource_owner_user_id: userId,
+				name: 'Enrolled drain',
+				slug: 'enrolled-drain',
+			})
+			const session = await createSession({ task_id: taskId, status: 'interrupt_requested' })
+			const messageId = await seedQueuedMessage(session.id, 'Admitted input', { deliverOnInterrupt: true })
+			await db.update(queuedMessages).set({ task_id: taskId }).where(eq(queuedMessages.id, messageId))
+			await db.transaction((tx) =>
+				retainReviewEnrollment(tx, {
+					taskId,
+					organizationId,
+					ownerUserId: userId,
+					hostId,
+					sourceSessionId: session.id,
+					enrollment: { enrollmentId: 'personal', returnRouteRef: 'origin' },
+					placement: {
+						kind: 'legacy_directory',
+						projectId: null,
+						workspaceId: null,
+						setupRowId: uuidv7(),
+						workspaceSpecDigest: null,
+					},
+					acceptedLaunch: acceptedReviewLaunch({ taskContent: 'Accepted task' }),
+				}),
+			)
+			if (tampering !== 'missing_receipt')
+				await db
+					.update(reviewProgression)
+					.set({
+						writer_receipts: [
+							{
+								key: 'v2.continue:fixture',
+								digest: 'a'.repeat(64),
+								inputDigest: reviewDigest('Admitted input'),
+								sessionId: session.id,
+								eventId: uuidv7(),
+								messageId,
+								executionDigest: 'b'.repeat(64),
+								result: { kind: 'continued', transactionId: 'fixture' },
+							},
+						],
+					})
+					.where(eq(reviewProgression.task_id, taskId))
+			if (tampering === 'content')
+				await db
+					.update(queuedMessages)
+					.set({ content: 'Changed input' })
+					.where(eq(queuedMessages.id, messageId))
+			if (tampering === 'task')
+				await db.update(queuedMessages).set({ task_id: null }).where(eq(queuedMessages.id, messageId))
+			if (tampering === 'author')
+				await db.update(queuedMessages).set({ user_id: 'collaborator' }).where(eq(queuedMessages.id, messageId))
+			if (tampering === 'active_action')
+				await db
+					.update(reviewProgression)
+					.set({ action_id: uuidv7() })
+					.where(eq(reviewProgression.task_id, taskId))
+			const beforeSession = await db.select().from(sessions).where(eq(sessions.id, session.id))
+			const beforeQueue = await db.select().from(queuedMessages).where(eq(queuedMessages.id, messageId))
+			const beforeReview = await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))
+			await expect(
+				call(updateSessionProcedure, { sessionId: session.id, status: 'interrupted' }, createDaemonContext()),
+			).rejects.toMatchObject({ code: 'FORBIDDEN' })
+			expect(await db.select().from(sessions).where(eq(sessions.id, session.id))).toEqual(beforeSession)
+			expect(await db.select().from(queuedMessages).where(eq(queuedMessages.id, messageId))).toEqual(beforeQueue)
+			expect(await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))).toEqual(
+				beforeReview,
+			)
+			expect(
+				await db.select().from(conversationEvents).where(eq(conversationEvents.session_id, session.id)),
+			).toEqual([])
+		},
+	)
+
+	test.each(['interrupted', 'ready_for_input'] as const)(
+		'stock %s cycles drain eligible input without a running handshake even with a retained usage key',
+		async (status) => {
+			const session = await createSession()
+			const firstId = await seedQueuedMessage(session.id, 'First retained prompt', { deliverOnInterrupt: true })
+			const report = { sessionId: session.id, status, usageReportKey: uuidv7(), totalCostUsd: 1 }
+			await call(updateSessionProcedure, report, createDaemonContext())
+			const laterId = await seedQueuedMessage(session.id, 'Later queued prompt')
+			const snapshot = async () => ({
+				session: await db.select().from(sessions).where(eq(sessions.id, session.id)),
+				queue: await db
+					.select()
+					.from(queuedMessages)
+					.where(eq(queuedMessages.session_id, session.id))
+					.orderBy(queuedMessages.id),
+				events: await db
+					.select()
+					.from(conversationEvents)
+					.where(eq(conversationEvents.session_id, session.id))
+					.orderBy(conversationEvents.id),
+			})
+			const before = await snapshot()
+			expect(before.session[0]).toMatchObject({
+				status: 'resuming',
+				prompt: 'First retained prompt',
+				num_events: 6,
+				total_cost_usd: 1,
+			})
+			expect(before.events).toEqual([expect.objectContaining({ id: firstId })])
+			await call(updateSessionProcedure, report, createDaemonContext())
+			if (status === 'interrupted') {
+				const interrupted = await snapshot()
+				expect(interrupted.session[0]).toMatchObject({
+					status: 'interrupted',
+					prompt: 'First retained prompt',
+					num_events: 6,
+					total_cost_usd: 1,
+				})
+				expect(interrupted.queue).toEqual(before.queue)
+				expect(interrupted.events).toEqual(before.events)
+				expect(interrupted.queue.find((item) => item.id === laterId)?.status).toBe('pending')
+				await db
+					.update(queuedMessages)
+					.set({ deliver_on_interrupt: true })
+					.where(eq(queuedMessages.id, laterId))
+				await call(updateSessionProcedure, report, createDaemonContext())
+			}
+			const drained = await snapshot()
+			expect(drained.session[0]).toMatchObject({
+				status: 'resuming',
+				prompt: 'Later queued prompt',
+				num_events: 7,
+				total_cost_usd: 1,
+			})
+			expect(drained.events.map((item) => item.id).sort()).toEqual([firstId, laterId].sort())
+			expect(drained.queue.every((item) => item.status === 'delivered')).toBe(true)
+			await call(updateSessionProcedure, report, createDaemonContext())
+			const completed = await snapshot()
+			expect(completed.session[0]).toMatchObject({ status, num_events: 7, total_cost_usd: 1 })
+			expect(completed.events).toEqual(drained.events)
+			expect(completed.queue).toEqual(drained.queue)
+		},
+		15_000,
+	)
 
 	test('interrupted with flagged rows: attributed conv events + resuming', async () => {
 		const session = await createSession({ num_events: 10 })

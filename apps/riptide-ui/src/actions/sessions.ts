@@ -1,6 +1,7 @@
 import type { conversationEventSelectSchema } from '@humanlayer/db/tables/conversation-events'
 import type { PermissionsMode, sessionSelectSchema } from '@humanlayer/db/tables/sessions'
 import type { RiptideApiInputs } from '@humanlayer/riptide-api-contract/contract-router'
+import type { WorkEntry } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import type { CodingAgent } from '@humanlayer/schemas/coding-agent'
 import { resolveEffectiveContextWindow } from '@humanlayer/schemas/effect/model-context'
 import { createOptimisticAction } from '@tanstack/react-db'
@@ -142,6 +143,8 @@ interface UpdateSessionFastModeParams {
 
 // Default values for fields that are always null/zero on optimistic insert
 const SESSION_INSERT_DEFAULTS = {
+	execution_phase: null,
+	execution_phase_at: null,
 	archived: false,
 	context_window_tokens: 0,
 	is_compacting: false,
@@ -606,6 +609,8 @@ export function createSessionActions(
 					throw new Error('A project-backed session requires a task')
 				}
 				const request: RiptideApiInputs['sessions']['v2']['create'] = {
+					executionPhase: params.executionPhase,
+					planningSkill: params.planningSkill,
 					sessionId: params.draftId ?? params.id,
 					eventId: params.eventId,
 					taskId: params.taskId,
@@ -626,6 +631,8 @@ export function createSessionActions(
 				return response
 			}
 			const response = await launchApi.launch({
+				executionPhase: params.executionPhase,
+				planningSkill: params.planningSkill,
 				id: params.draftId ? undefined : params.id,
 				eventId: params.eventId,
 				draftId: params.draftId,
@@ -807,14 +814,16 @@ export function createSessionV2Actions(
 	sessionsConfirmTx: ConfirmTxFn,
 	queuedMessagesConfirmTx: ConfirmTxFn,
 ) {
-	const continueV2 = createOptimisticAction<{
-		sessionId: string
-		messageId: string
-		eventId: string
-		text: string
-		intent: 'queue' | 'send' | 'interrupt_and_send'
-		sharedSubmission?: ResponseEditorSubmission
-	}>({
+	const continueV2 = createOptimisticAction<
+		{
+			sessionId: string
+			messageId: string
+			eventId: string
+			text: string
+			intent: 'queue' | 'send' | 'interrupt_and_send'
+			sharedSubmission?: ResponseEditorSubmission
+		} & WorkEntry
+	>({
 		onMutate: ({ sessionId, messageId, eventId, text, intent }) => {
 			// onMutate MUST register at least one collection write — TanStack DB's commit()
 			// short-circuits without calling mutationFn when mutations.length === 0.
@@ -856,11 +865,20 @@ export function createSessionV2Actions(
 				updated_at: BigInt(Date.now()),
 			})
 		},
-		mutationFn: async ({ sessionId, messageId, eventId, text, intent, sharedSubmission }) => {
+		mutationFn: async ({
+			sessionId,
+			messageId,
+			eventId,
+			text,
+			intent,
+			sharedSubmission,
+			executionPhase,
+			planningSkill,
+		}) => {
 			const previousDraft = useDraftsStore.getState().drafts[sessionId]
 			try {
 				const response = await requestResponseContinuation({
-					input: { sessionId, messageId, eventId, text, intent },
+					input: { sessionId, messageId, eventId, text, intent, executionPhase, planningSkill },
 					request: api.continue,
 					sharedSubmission,
 				})

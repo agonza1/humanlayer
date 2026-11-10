@@ -2,8 +2,10 @@ import { permissionsModeSchema } from '@humanlayer/db/tables/sessions'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
+import { WorkEntryFields } from '../../lib/review-progression'
 
 export const ContinueSessionInputSchema = z.object({
+	...WorkEntryFields,
 	sessionId: z.uuid(),
 	eventId: z.uuidv7().optional().describe('Client-generated event ID for optimistic inserts'),
 	text: z.string().min(1, 'Message is required'),

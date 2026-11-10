@@ -34,6 +34,10 @@ export function LauncherWorkflowControlWired({
 	const { field: autoAdvance } = useController({ control, name: 'autoAdvance' })
 	const { field: presentation } = useController({ control, name: 'workflowPresentation' })
 	const { field: graphRevealed } = useController({ control, name: 'graphRevealed' })
+	const { field: delivery } = useController({ control, name: 'reviewDeliveryEnabled' })
+	const { field: enrollment } = useController({ control, name: 'reviewEnrollmentId' })
+	const { field: route } = useController({ control, name: 'reviewReturnRouteRef' })
+	const { field: host } = useController({ control, name: 'hostId' })
 	const openedRef = useRef(false)
 	const memoryRef = useRef<WorkflowAutoAdvanceMemory>({ [workflowType.value]: autoAdvance.value })
 	const workflow = { workflowType: workflowType.value, autoAdvance: autoAdvance.value }
@@ -42,6 +46,7 @@ export function LauncherWorkflowControlWired({
 	const selectedLabel = options.find((option) => option.value === selectedChoice)?.label ?? workflowLabel(workflow)
 
 	const select = (choice: string) => {
+		delivery.onChange(false)
 		const next = selectTaskWorkflow(workflow, choice as WorkflowSelectorChoice, memoryRef.current)
 		memoryRef.current = next.memory
 		workflowType.onChange(next.workflow.workflowType)
@@ -49,43 +54,95 @@ export function LauncherWorkflowControlWired({
 	}
 
 	return (
-		<DropdownMenu
-			onOpenChange={(open) => {
-				if (open) openedRef.current = true
-				else if (openedRef.current) graphRevealed.onChange(true)
-			}}
-		>
-			<DropdownMenuTrigger asChild>
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					disabled={disabled}
-					aria-label={`Workflow: ${selectedLabel}`}
-					className="h-7 gap-1.5 px-2 text-xs text-foreground hover:text-accent data-[state=open]:border-accent data-[state=open]:bg-accent/10 data-[state=open]:text-accent"
-				>
-					<Route aria-hidden className="size-3.5" />
-					<span className="group-data-[density=minimal]/tray:hidden">{selectedLabel}</span>
-					<ChevronDown aria-hidden className="size-3 opacity-50" />
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="start" className="w-80">
-				<DropdownMenuLabel className="font-mono text-[10px] font-normal uppercase tracking-wider text-muted-foreground">
-					{presentation.value === 'task-size'
-						? 'How big is this task?'
-						: 'How should HumanLayer run this task?'}
-				</DropdownMenuLabel>
-				<DropdownMenuRadioGroup value={selectedChoice} onValueChange={select}>
-					{options.map((option) => (
-						<DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2">
-							<span className="flex min-w-0 flex-col">
-								<span>{option.label}</span>
-								<span className="text-xs font-normal text-muted-foreground">{option.description}</span>
-							</span>
-						</DropdownMenuRadioItem>
-					))}
-				</DropdownMenuRadioGroup>
-			</DropdownMenuContent>
-		</DropdownMenu>
+		<>
+			<DropdownMenu
+				onOpenChange={(open) => {
+					if (open) openedRef.current = true
+					else if (openedRef.current) graphRevealed.onChange(true)
+				}}
+			>
+				<DropdownMenuTrigger asChild>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						disabled={disabled}
+						aria-label={`Workflow: ${selectedLabel}`}
+						className="h-7 gap-1.5 px-2 text-xs text-foreground hover:text-accent data-[state=open]:border-accent data-[state=open]:bg-accent/10 data-[state=open]:text-accent"
+					>
+						<Route aria-hidden className="size-3.5" />
+						<span className="group-data-[density=minimal]/tray:hidden">{selectedLabel}</span>
+						<ChevronDown aria-hidden className="size-3 opacity-50" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="start" className="w-80">
+					<DropdownMenuLabel className="font-mono text-[10px] font-normal uppercase tracking-wider text-muted-foreground">
+						{presentation.value === 'task-size'
+							? 'How big is this task?'
+							: 'How should HumanLayer run this task?'}
+					</DropdownMenuLabel>
+					<DropdownMenuRadioGroup value={selectedChoice} onValueChange={select}>
+						{options.map((option) => (
+							<DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2">
+								<span className="flex min-w-0 flex-col">
+									<span>{option.label}</span>
+									<span className="text-xs font-normal text-muted-foreground">
+										{option.description}
+									</span>
+								</span>
+							</DropdownMenuRadioItem>
+						))}
+					</DropdownMenuRadioGroup>
+				</DropdownMenuContent>
+			</DropdownMenu>
+			<details className="max-w-sm text-xs">
+				<summary>Delivery setup</summary>
+				<label className="flex gap-2 py-2">
+					<input
+						type="checkbox"
+						checked={delivery.value}
+						disabled={disabled}
+						onChange={(event) => {
+							delivery.onChange(event.target.checked)
+							if (event.target.checked) {
+								workflowType.onChange('freeform')
+								autoAdvance.onChange(false)
+							}
+						}}
+					/>{' '}
+					Same-session delivery with review enrollment
+				</label>
+				{delivery.value && (
+					<div className="space-y-2">
+						<p>
+							The same Coder implements, checks, self-reviews and publishes the PR. Independent review
+							stays separate. This does not approve a merge.
+						</p>
+						<label className="block">
+							Enrollment reference{' '}
+							<input
+								{...enrollment}
+								disabled={disabled}
+								maxLength={80}
+								className="w-full rounded border bg-transparent p-1"
+							/>
+						</label>
+						<label className="block">
+							Return-route reference{' '}
+							<input
+								{...route}
+								disabled={disabled}
+								maxLength={80}
+								className="w-full rounded border bg-transparent p-1"
+							/>
+						</label>
+						<p>
+							Host: {host.value ?? 'not selected'}. Enrollment: {enrollment.value || 'not selected'}.
+							Route: {route.value || 'not selected'}. The host must verify this setup before work starts.
+						</p>
+					</div>
+				)}
+			</details>
+		</>
 	)
 }

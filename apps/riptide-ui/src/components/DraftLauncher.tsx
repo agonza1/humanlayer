@@ -85,6 +85,7 @@ import {
 	setLastSessionWorkingDir,
 } from '@/lib/preferences'
 import { resolveNewCodexBackend } from '@/lib/resolve-new-codex-backend'
+import { workEntryForLabel } from '@/lib/review-progression'
 import { isDesktop } from '@/lib/utils'
 import {
 	deriveWorkspaceLaunchChoices,
@@ -1246,6 +1247,7 @@ export function DraftLauncher({
 		const sessionId = draftId ?? uuidv7()
 		const eventId = uuidv7()
 		const launchParams = {
+			...workEntryForLabel(RPI_SKILLS.find((skill) => `/${skill.name}` === initialSlashCommand)?.label.name),
 			id: sessionId,
 			eventId,
 			draftId: draftId ?? undefined,

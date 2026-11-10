@@ -26,6 +26,40 @@ function session(overrides: Partial<KanbanSessionInput> = {}): KanbanSessionInpu
 const resolveOwner = () => ({ initials: 'DW', avatarUrl: undefined })
 
 describe('assignColumn', () => {
+	test('projects implementation, review, deliberate planning and resumed implementation on one task', () => {
+		const implementation = session({
+			id: 'a',
+			execution_phase: 'implementation',
+			execution_phase_at: 1n,
+			status: 'ready_for_input',
+		})
+		const review = session({
+			id: 'b',
+			execution_phase: 'review',
+			execution_phase_at: 2n,
+			status: 'ready_for_input',
+		})
+		const planning = session({
+			id: 'c',
+			execution_phase: null,
+			execution_phase_at: 3n,
+			labels: [label('rpi:design-prd')],
+			status: 'ready_for_input',
+		})
+		const resumed = session({
+			id: 'd',
+			execution_phase: 'implementation',
+			execution_phase_at: 4n,
+			status: 'ready_for_input',
+		})
+		expect(assignColumn({}, [implementation])).toBe('implementation')
+		expect(assignColumn({}, [implementation, review])).toBe('in-review')
+		expect(assignColumn({}, [{ ...review, last_activity_at: 999n }, planning])).toBe('research-design')
+		expect(assignColumn({}, [implementation, review, planning, resumed])).toBe('implementation')
+		expect(assignColumn({}, [review, planning, { ...resumed, archived: true }])).toBe('research-design')
+		expect(assignColumn({}, [{ ...review, execution_phase_at: 3n }, planning])).toBe('research-design')
+		expect(assignColumn({}, [planning, { ...review, id: 'z', execution_phase_at: 3n }])).toBe('in-review')
+	})
 	test.each([
 		'ready_for_launch',
 		'waiting_for_workspace',

@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm'
 import {
 	type AnyPgColumn,
 	bigint,
+	check,
 	boolean,
 	index,
 	integer,
@@ -178,6 +179,8 @@ export const sessions = pgTable(
 		prompt: text(), // used for the session launcher state
 
 		labels: jsonb().$type<SessionLabel[]>().default([]),
+		execution_phase: text().$type<'implementation' | 'review'>(),
+		execution_phase_at: bigint({ mode: 'bigint' }),
 
 		/**
 		 * AI-extracted next step suggestions from sessions that reached ready_for_input
@@ -192,6 +195,10 @@ export const sessions = pgTable(
 		structured_summary: jsonb().$type<SessionSummary>(),
 	},
 	(t) => [
+		check(
+			'sessions_execution_phase',
+			sql`${t.execution_phase} is null or ${t.execution_phase} in ('implementation', 'review')`,
+		),
 		index('sessions_org_owner_host_idx').on(t.organization_id, t.resource_owner_user_id, t.host_id),
 		index('sessions_org_creator_host_idx').on(t.organization_id, t.created_by, t.host_id),
 		index('sessions_org_task_idx').on(t.organization_id, t.task_id),
@@ -202,6 +209,8 @@ export const sessions = pgTable(
 )
 
 export const sessionSelectSchema = createSelectSchema(sessions, {
+	execution_phase: z.enum(['implementation', 'review']).nullable().default(null),
+	execution_phase_at: z.bigint().nullable().default(null),
 	coding_agent: CodingAgentZodSchema,
 	status: SessionStatusSchema,
 	error_reason: SessionErrorReasonSchema.nullable(),

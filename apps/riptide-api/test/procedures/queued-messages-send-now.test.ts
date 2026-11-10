@@ -6,6 +6,7 @@ import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import type { SessionStatus } from '@humanlayer/db/tables/sessions'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskUserAcl } from '@humanlayer/db/tables/task-user-acl'
@@ -17,6 +18,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
+import { acceptedReviewLaunch, retainReviewEnrollment } from '../../src/db/review-progression'
 import { sendNowQueuedMessageEffectProcedure as liveSendNowQueuedMessageEffectProcedure } from '../../src/orpc/api/sessions/queued-messages.send-now.effect'
 import { updateSessionProcedure } from '../../src/orpc/daemon/sessions/update'
 import { createMockApiAuth, createMockApiContext, createMockDaemonAuth, createMockDaemonContext } from '../mocks'
@@ -188,6 +190,53 @@ describe('sendNowQueuedMessageEffectProcedure', () => {
 			.where(and(eq(conversationEvents.session_id, sessionId), eq(conversationEvents.role, 'user')))
 			.orderBy(asc(conversationEvents.id))
 	}
+
+	test.each(['running', 'interrupted'] as const)(
+		'enrolled sendNow cannot interrupt or resume a %s session or consume retained input',
+		async (status) => {
+			const taskId = uuidv7()
+			await db.insert(tasks).values({
+				id: taskId,
+				organization_id: organizationId,
+				created_by: userId,
+				resource_owner_user_id: userId,
+				name: 'Enrolled delivery',
+				slug: 'enrolled-delivery',
+			})
+			const sessionId = await createSessionWithStatus(status, { task_id: taskId })
+			const queuedMessageId = await insertQueuedMessage(sessionId, 'Retained input')
+			await db.transaction((tx) =>
+				retainReviewEnrollment(tx, {
+					taskId,
+					organizationId,
+					ownerUserId: userId,
+					hostId,
+					sourceSessionId: sessionId,
+					enrollment: { enrollmentId: 'personal', returnRouteRef: 'origin' },
+					placement: {
+						kind: 'legacy_directory',
+						projectId: null,
+						workspaceId: null,
+						setupRowId: uuidv7(),
+						workspaceSpecDigest: null,
+					},
+					acceptedLaunch: acceptedReviewLaunch({ taskContent: 'Accepted task' }),
+				}),
+			)
+			const beforeSession = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+			const beforeQueue = await getQueuedRows([queuedMessageId])
+			const beforeReview = await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))
+			await expect(
+				call(sendNowQueuedMessageEffectProcedure, { sessionId, queuedMessageId }, { context: makeContext() }),
+			).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+			expect(await db.select().from(sessions).where(eq(sessions.id, sessionId))).toEqual(beforeSession)
+			expect(await getQueuedRows([queuedMessageId])).toEqual(beforeQueue)
+			expect(await getUserEvents(sessionId)).toEqual([])
+			expect(await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, taskId))).toEqual(
+				beforeReview,
+			)
+		},
+	)
 
 	test('incident case: sends one queued message on an interrupted session', async () => {
 		const sessionId = await createSessionWithStatus('interrupted')

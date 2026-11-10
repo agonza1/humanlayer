@@ -17,6 +17,7 @@ const querySessionsCollectionBuilder = createBrowserQueryCollection({
 		'created_at',
 		'updated_at',
 		'last_activity_at',
+		'execution_phase_at',
 		'multiplayer_prompting_started_at',
 		'multiplayer_prompting_expires_at',
 	],

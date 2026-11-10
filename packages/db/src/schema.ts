@@ -33,6 +33,7 @@ import { pullRequestSessions } from './tables/pull-request-sessions'
 import { pullRequests } from './tables/pull-requests'
 import { queuedMessages } from './tables/queued-messages'
 import { repositoryLocationsForUserForHost } from './tables/repository-locations-for-user-for-host'
+import { reviewProgression } from './tables/review-progression'
 import { sessionRepositories } from './tables/session-repositories'
 import { sessionUsageEvents } from './tables/session-usage-events'
 import { sessions } from './tables/sessions'
@@ -88,6 +89,7 @@ export * from './tables/repository-locations-for-user-for-host'
 export * from './tables/pull-requests'
 export * from './tables/public-comment-undo-authorizations'
 export * from './tables/queued-messages'
+export * from './tables/review-progression'
 export * from './tables/session-repositories'
 export * from './tables/session-usage-events'
 export * from './tables/sessions'
@@ -136,6 +138,7 @@ export const applicationTables = [
 	taskUserAcl,
 	taskOrganizationAcl,
 	taskLaunches,
+	reviewProgression,
 	taskUserSettings,
 	taskWorkspaceSetupForHost,
 	onlineHosts,
