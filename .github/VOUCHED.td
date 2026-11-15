@@ -17,6 +17,9 @@ aaronvg
 alabamamike
 allisoneer
 balanceiskey
+breadstick-crumbs
+dannomayernotabot LGTM :)
+emjames lgtm
 hellovai
 pepijnsenders
 smorin
