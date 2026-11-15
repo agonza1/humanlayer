@@ -132,6 +132,7 @@ describe('WorkspaceSetupExecutor', () => {
 			} as const
 			const preflight = yield* executor.preflightRepo(operation)
 			expect(preflight.resolvedSourceCommit).toMatch(/^[0-9a-f]{40}$/)
+
 			const worktree = yield* executor.createOrAdoptWorktree({
 				...operation,
 				resolvedSourceCommit: preflight.resolvedSourceCommit,
@@ -403,6 +404,57 @@ describe('WorkspaceSetupExecutor', () => {
 				resolvedSourceCommit: first.resolvedSourceCommit,
 			})
 			expect(adoptedWithStaleCommit.adopted).toBe(true)
+		}).pipe(Effect.provide(executorRuntimeLayer), Effect.scoped),
+	)
+
+	it.effect('preflights an unborn branch without committing or changing the user index and files', () =>
+		Effect.gen(function* () {
+			const fileSystem = yield* FileSystem.FileSystem
+			const path = yield* Path.Path
+			const fixture = yield* fileSystem.makeTempDirectoryScoped({ prefix: 'workspace-executor-unborn-' })
+			const source = path.join(fixture, 'source')
+			const target = path.join(fixture, 'target')
+			yield* runProcess('git', ['init', '--initial-branch=main', source])
+			yield* runProcess('git', ['-C', source, 'config', 'user.email', 'test@example.com'])
+			yield* runProcess('git', ['-C', source, 'config', 'user.name', 'Test User'])
+
+			yield* fileSystem.writeFileString(path.join(source, 'staged.txt'), 'staged contents\n')
+			yield* runProcess('git', ['-C', source, 'add', 'staged.txt'])
+			yield* fileSystem.writeFileString(path.join(source, 'staged.txt'), 'unstaged edits\n')
+			yield* fileSystem.writeFileString(path.join(source, 'untracked.txt'), 'untracked contents\n')
+
+			const executor = yield* WorkspaceSetupExecutor
+			const operation = {
+				taskId: 'task-unborn',
+				hostId: 'host-unborn',
+				directory: source,
+				repo: {
+					localPath: '.',
+					targetPath: target,
+					branch: 'unborn-task-branch',
+					sourceRef: 'HEAD',
+					setupCommand: 'true',
+					copyGlobs: [],
+					primary: true,
+				},
+			} as const
+			const preflight = yield* executor.preflightRepo(operation)
+			expect(preflight.resolvedSourceCommit).toMatch(/^[0-9a-f]{40}$/)
+			expect(yield* runProcess('git', ['-C', source, 'ls-tree', '--name-only', 'HEAD'])).toBe('')
+			expect(yield* runProcess('git', ['-C', source, 'diff', '--cached', '--name-only'])).toBe('staged.txt\n')
+			expect(yield* runProcess('git', ['-C', source, 'show', ':staged.txt'])).toBe('staged contents\n')
+			expect(yield* fileSystem.readFileString(path.join(source, 'staged.txt'))).toBe('unstaged edits\n')
+			expect(yield* fileSystem.readFileString(path.join(source, 'untracked.txt'))).toBe('untracked contents\n')
+
+			const worktree = yield* executor.createOrAdoptWorktree({
+				...operation,
+				resolvedSourceCommit: preflight.resolvedSourceCommit,
+			})
+			expect(worktree.targetPath).toBe(target)
+			expect(worktree.adopted).toBe(false)
+			expect((yield* runProcess('git', ['-C', target, 'branch', '--show-current'])).trim()).toBe(
+				'unborn-task-branch',
+			)
 		}).pipe(Effect.provide(executorRuntimeLayer), Effect.scoped),
 	)
 
