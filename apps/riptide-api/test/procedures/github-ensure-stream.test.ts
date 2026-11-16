@@ -12,6 +12,7 @@ import { Effect, Layer } from 'effect'
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest'
 
 import { GitHubService } from '../../src/effects/services/github/github.service'
+import type { GitHubPullRequestWire } from '../../src/effects/services/github/pull-requests/github-api'
 import { parseGitHubRemoteUrl } from '../../src/effects/services/github/repo-name'
 import { PrStatusStream } from '../../src/effects/services/pr-status-stream/pr-status-stream.service'
 import { ensurePullRequestStreamProcedure as liveEnsureStreamProcedure } from '../../src/orpc/api/integrations/github/pull-requests/ensure-stream.effect'
@@ -105,6 +106,7 @@ describe('integrations.github.pullRequests.ensureStream', async () => {
 	const hydrationAppends: { branch: string; rowId: string | null; checkRowIds: string[]; headShas: string[] }[] = []
 	let streamExists = false
 	let pullRequestExists = true
+	let wireOverride: Partial<GitHubPullRequestWire> = {}
 
 	const userId = 'user_ensure_stream'
 	const hostId = randomUUID()
@@ -130,7 +132,11 @@ describe('integrations.github.pullRequests.ensureStream', async () => {
 					Effect.sync(() => {
 						fetchCalls.push(input)
 						return pullRequestExists
-							? { wire: wirePullRequest, moreReviewThreads: [], repository: repositorySettings }
+							? {
+									wire: { ...wirePullRequest, ...wireOverride },
+									moreReviewThreads: [],
+									repository: repositorySettings,
+								}
 							: null
 					}),
 				verifyWebhook: () => Effect.die('not used'),
@@ -260,6 +266,7 @@ describe('integrations.github.pullRequests.ensureStream', async () => {
 	beforeEach(() => {
 		streamExists = false
 		pullRequestExists = true
+		wireOverride = {}
 		fetchCalls.length = 0
 		createCalls.length = 0
 		hydrationAppends.length = 0
@@ -273,6 +280,7 @@ describe('integrations.github.pullRequests.ensureStream', async () => {
 		expect(result.repoFullName).toBe('humanlayer/syncopate')
 		expect(result.branch).toBe(BRANCH)
 		expect(result.hasPullRequest).toBe(true)
+		expect(result.delivery).toBeNull()
 		expect(result.streamPath).toBe(
 			`/organizations/${organizationId}/github/repos/humanlayer%2Fsyncopate/branches/feat%2Fpr-status/pr-status`,
 		)
@@ -285,6 +293,22 @@ describe('integrations.github.pullRequests.ensureStream', async () => {
 				headShas: [HEAD_SHA, HEAD_SHA, HEAD_SHA],
 			},
 		])
+	})
+
+	test('returns freshly fetched merge and current branch-head evidence for completion', async () => {
+		const sessionId = await observedSession(await createTask())
+		wireOverride = { state: 'MERGED', mergedAt: '2026-11-16T12:00:00Z', headRef: { target: { oid: HEAD_SHA } } }
+		const result = await call(ensureStreamProcedure, { sessionId }, { context: context() })
+		expect(result.delivery).toEqual({
+			number: 2261,
+			state: 'merged',
+			headSha: HEAD_SHA,
+			branchHeadSha: HEAD_SHA,
+			mergedAt: '2026-11-16T12:00:00Z',
+		})
+		wireOverride = { ...wireOverride, headRef: null }
+		const deleted = await call(ensureStreamProcedure, { sessionId }, { context: context() })
+		expect(deleted.delivery?.branchHeadSha).toBeNull()
 	})
 
 	test('records the fetched pull request against the session that observed the branch, with no task', async () => {

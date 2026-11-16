@@ -38,6 +38,12 @@ For faster local UI loading without Vite HMR, build with the existing API/sync/a
 
 A build from source sends nothing to us: Sentry, PostHog, and the WorkOS client ID come from env, and stay off when unset. `.env.example` lists them.
 
+## Task delivery
+
+The stock Small workflow can advance from implementation to PR preparation when its automatic PR step is enabled. It does not require the experimental review-progression draft.
+
+Both boards show **Done** for idle code tasks only after all tracked repository branches have freshly confirmed merged PRs. While a board is open, it checks eligible tasks every 30 seconds through the existing GitHub integration. Missing access, unmerged PRs, changed remote heads, later session activity or a failed refresh leave the task in its existing workflow column. Done is a board view, not task archival, automatic merge, or acceptance of non-code tasks. Unpushed changes outside observed session activity are not verified by this view.
+
 ## Self-hosting
 
 HumanLayer Cloud runs this code on AWS. [`.claude/skills/self-host-humanlayer/`](.claude/skills/self-host-humanlayer/SKILL.md) holds a reference copy of our Pulumi stacks and GitHub Actions workflows, with every secret and HumanLayer-specific value replaced by a placeholder. It also covers the services, the order to deploy them in, and what you must change. Open it in Claude Code, or another agent that reads skills, and ask it to help you self-host HumanLayer.

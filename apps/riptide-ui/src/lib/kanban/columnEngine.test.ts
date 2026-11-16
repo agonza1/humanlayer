@@ -26,6 +26,14 @@ function session(overrides: Partial<KanbanSessionInput> = {}): KanbanSessionInpu
 const resolveOwner = () => ({ initials: 'DW', avatarUrl: undefined })
 
 describe('assignColumn', () => {
+	test('places confirmed merged deliveries in Done and reopens resumed work', () => {
+		const sessions = [session({ status: 'ready_for_input', labels: [label('rpi:describe-pr')] })]
+		expect(assignColumn({ deliveryComplete: true }, sessions)).toBe('done')
+		sessions[0].status = 'running'
+		expect(assignColumn({ deliveryComplete: true }, sessions)).not.toBe('done')
+		expect(assignColumn({ is_draft: true, deliveryComplete: true }, sessions)).not.toBe('done')
+	})
+
 	test.each([
 		'ready_for_launch',
 		'waiting_for_workspace',
@@ -271,7 +279,14 @@ describe('buildKanbanColumns', () => {
 
 	test('produces the 5 ordered columns', () => {
 		const columns = buildKanbanColumns({ tasks: [], resolveOwner })
-		expect(columns.map((c) => c.id)).toEqual(['todo', 'research-design', 'planning', 'implementation', 'in-review'])
+		expect(columns.map((c) => c.id)).toEqual([
+			'todo',
+			'research-design',
+			'planning',
+			'implementation',
+			'in-review',
+			'done',
+		])
 	})
 
 	test('places tasks into their assigned columns with workflow badge', () => {

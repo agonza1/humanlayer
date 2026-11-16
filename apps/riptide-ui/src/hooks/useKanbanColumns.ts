@@ -8,6 +8,7 @@ import { useMemo } from 'react'
 import { useSync } from '@/components/providers/SyncProvider'
 import { useUnreadStore } from '@/hooks/stores/unreadStore'
 import { useOrgMembers } from '@/hooks/useOrgMembers'
+import { useTaskDeliveries } from '@/hooks/useTaskDeliveries'
 import { buildKanbanColumns, type KanbanSessionInput, type KanbanTaskInput } from '@/lib/kanban/columnEngine'
 import { isTaskEligibleForBoard, matchesTaskScope, type TaskScope } from '@/lib/tasks/taskScope'
 
@@ -117,21 +118,38 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 		[tasksCollection],
 	)
 
-	const columns = useMemo<KanbanColumns>(() => {
-		const visibleTaskRows = (taskRows ?? []).filter((task) => {
-			if (!isTaskEligibleForBoard(task, scope)) return false
-			return matchesTaskScope(
-				task,
-				(sessionsByTaskId.get(task.id) ?? []).map((session) => session.created_by),
-				scope,
-			)
-		})
+	const sessionsReady = visibleTaskIds.length === 0 || sessionsQuery.isReady
+	const visibleTaskRows = useMemo(
+		() =>
+			(taskRows ?? []).filter((task) => {
+				if (!isTaskEligibleForBoard(task, scope)) return false
+				return matchesTaskScope(
+					task,
+					(sessionsByTaskId.get(task.id) ?? []).map((session) => session.created_by),
+					scope,
+				)
+			}),
+		[taskRows, sessionsByTaskId, scope],
+	)
+	const completed = useTaskDeliveries(
+		tasksReady && sessionsReady
+			? visibleTaskRows.map((task) => ({
+					...task,
+					sessions: (sessionsByTaskId.get(task.id) ?? []).map((session) => ({
+						...session,
+						archived: session.archived ?? false,
+					})),
+				}))
+			: [],
+	)
 
+	const columns = useMemo<KanbanColumns>(() => {
 		const tasks: KanbanTaskInput[] = visibleTaskRows.map((task) => ({
 			id: task.id,
 			name: task.name,
 			created_at: task.created_at,
 			is_draft: task.is_draft ?? false,
+			deliveryComplete: completed.has(task.id),
 			resource_owner_user_id: task.resource_owner_user_id,
 			sessions: (sessionsByTaskId.get(task.id) ?? []).map(
 				(s): KanbanSessionInput => ({
@@ -159,7 +177,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 				}
 			},
 		})
-	}, [taskRows, sessionsByTaskId, membersMap, scope, unreadSessionIds])
+	}, [visibleTaskRows, sessionsByTaskId, membersMap, unreadSessionIds, completed])
 
 	const totalCards = useMemo(() => columns.reduce((sum, column) => sum + column.cards.length, 0), [columns])
 
@@ -218,7 +236,6 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 		return map
 	}, [taskRows, sessionsByTaskId])
 
-	const sessionsReady = visibleTaskIds.length === 0 || sessionsQuery.isReady
 	const isReady = tasksReady && sessionsReady && ownersReady
 
 	return { columns, userOptions, totalCards, totalTaskCount, isReady, ownerByTaskId, sessionIdsByTaskId }
