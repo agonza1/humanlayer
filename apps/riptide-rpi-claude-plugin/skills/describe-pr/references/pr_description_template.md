@@ -8,6 +8,10 @@
 
 - {List 1-3 reviewer-relevant warnings, migrations, constraints, deliberate omissions, or surprising decisions. Use "None." when there are no special considerations.}
 
+## Verification
+
+{Briefly record actual check commands and outcomes, the tested SHA, and known blockers or checks not run. Use implementation evidence when available; state when results are unavailable. Do not present planned or blocked checks as passed.}
+
 ## Change outline
 
 {Use the smallest combination of the following `/show-me`-style views that explains the implementation. Prefer `diff` blocks for changes to existing shapes and complete blocks for mostly new shapes. Do not include headings for views that are not relevant.}

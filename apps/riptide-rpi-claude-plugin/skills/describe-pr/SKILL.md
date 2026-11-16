@@ -21,7 +21,7 @@ Create or update the pull request for the current task with a concise descriptio
    - Ask the user to select a PR only when the current branch has no relevant work and there is no safe current-branch PR to create.
 
 3. Gather only the context needed to explain the change:
-   - Read the ticket and any relevant task artifacts.
+   - Read the ticket and relevant task artifacts, including implementation evidence: exact tested SHA, actual check results, and blocked or unperformed verification. Never infer a pass.
    - Read the complete PR diff and enough surrounding code to understand behavior and ownership.
    - Use `gh pr view` to collect PR metadata and changed files.
    - Read `{SKILLBASE}/references/show-me.md` for the visual-outline conventions used in the PR body.
@@ -37,7 +37,8 @@ Create or update the pull request for the current task with a concise descriptio
      - Call-tree, call-stack, control-flow, or data-flow changes.
    - Prefer `diff` blocks when showing changes to an existing shape. Show the complete target shape when most of it is new or diff notation would obscure ownership or order.
    - Keep each view focused on the calls, files, fields, components, and boundaries a reviewer needs. Omit categories that did not change.
-   - Do not add walkthrough artifacts, exhaustive implementation narratives, verification checklists, changelog text, or plan-deviation sections.
+   - Include the actual check commands and outcomes, tested SHA, and known verification blockers in **Verification**. State when evidence is unavailable; do not invent results.
+   - Do not add walkthrough artifacts, exhaustive implementation narratives, changelog text, or plan-deviation sections.
 
 5. Stamp the session trailer:
    - Read the session deep-link from the environment with `printf '%s' "$HUMANLAYER_SESSION_URL"`. The daemon sets it for every session it runs, the same way it feeds the `HumanLayer-Session` commit trailer.
@@ -51,29 +52,14 @@ Create or update the pull request for the current task with a concise descriptio
    - Update the PR with `gh pr edit {number} --body-file {output-path}`.
    - Confirm the update succeeded.
 
-7. Report completion:
-   - Read key task artifacts briefly to capture their cloud URLs.
-   - Read `{SKILLBASE}/references/describe_pr_final_answer.md`.
-   - Respond using that final answer template with the PR URL, saved description URL, and concise list of changed files.
-   - Send this report as a message, then keep working in the same turn. Do not end the turn here; step 8 runs after the report.
+7. Inspect the current head and findings immediately:
+   - Read the PR's exact remote head SHA, mergeability, and outstanding review findings. Honor the repository's required tests, reviews, merge limits, and other explicit gates.
+   - Recheck affected verification if the head changed since the evidence was gathered, or new findings arrived. Preserve material findings and report pending, failed, unavailable, or unknown required gates honestly.
+   - Do not add fixed waits, watch CI indefinitely, or repeat checks/reviews of an unchanged head without new evidence. Return any remaining blocker to the owning workflow; this handoff does not waive a required gate or authorize a merge.
 
-8. Watch CI until it passes:
-   - Wait 5 minutes so checks can start: `sleep 300` (set the Bash timeout above 300000 ms).
-   - Check for merge conflicts with `gh pr view {number} --json mergeable,mergeStateStatus`. If `mergeable` is `UNKNOWN`, wait 30 seconds and ask again.
-   - When `mergeable` is `CONFLICTING`:
-     - Do not merge, rebase, or edit any files to resolve the conflicts.
-     - Fetch the base branch from the base repo's remote (`git fetch {remote} {baseRefName}`) and list the conflicting files with `git merge-tree --write-tree --name-only HEAD {remote}/{baseRefName}`.
-     - For each conflicting file, compare both sides (`git log --oneline HEAD...{remote}/{baseRefName} -- {file}` and the diffs) to learn what each side changed.
-     - Offer the user a merge plan: which base commits conflict, how to resolve each file (keep ours, keep theirs, or combine, and why), and the checks to run after merging.
-     - Stop and wait for the user to approve the plan. Do not watch CI while the PR has conflicts, since many checks will not run until they are fixed.
-   - Check status with `gh pr checks {number}`. If it reports no checks yet, wait another 2 minutes and check again, at most 3 times. If there are still no checks, tell the user and stop.
-   - While checks are pending, watch them with `gh pr checks {number} --watch --fail-fast` (Bash timeout 600000 ms). If the command times out, run it again.
-   - When a check fails:
-     - Read the failed run's logs with `gh run view {run-id} --log-failed` and find the cause.
-     - If the failure comes from this PR's changes, fix it, run the matching local check, commit, push, and go back to watching.
-     - If the failure is flaky or unrelated to this PR, rerun it once with `gh run rerun {run-id} --failed`. If it fails again, stop and tell the user what failed and why.
-     - Stop and ask the user after 3 fix attempts on the same check.
-   - When all checks pass, send a short final message that says so, with the PR URL.
+8. Report completion:
+   - Read key task artifacts briefly to capture their cloud URLs and read `{SKILLBASE}/references/describe_pr_final_answer.md`.
+   - Return the existing PR URL, exact remote head SHA, saved description URL, concise changed files, and actual verification results or blockers. End the turn; do not start another polling loop.
 
 Always read and follow `{SKILLBASE}/references/pr_description_template.md`. Do not expand the PR body beyond that template.
 
