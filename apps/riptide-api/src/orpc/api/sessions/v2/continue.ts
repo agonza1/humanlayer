@@ -2,11 +2,20 @@ import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { userSettings } from '@humanlayer/db/tables/user-settings'
+import { ContinueV2OutputSchema } from '@humanlayer/riptide-api-contract/api/sessions/v2/continue'
+import { ORPCError } from '@orpc/server'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { Clock, Effect } from 'effect'
 import { uuidv7 } from 'uuidv7'
 
 import { getTxId } from '../../../../db/get-tx-id'
+import {
+	lockReviewSession,
+	beginReviewWriter,
+	finishReviewWriter,
+	reviewWorkEntry,
+	reviewQueueIsAdmitted,
+} from '../../../../db/review-progression'
 import { isSessionActive } from '../../../../db/session-statuses'
 import { mapPostgresErrorToResponse } from '../../../../effects/services/postgres/error-mapping'
 import { PostgresDb } from '../../../../effects/services/postgres/postgres-db.service'
@@ -19,6 +28,7 @@ import {
 } from '../../../../lib/session-multiplayer-prompting-auth'
 import { buildAttributedPrompt } from '../../../../lib/session-prompt-attribution'
 import { effectOrpcBaseOrganizationRequired, requiresBillingEffectMiddleware } from '../../../effect-base'
+import { ORPCBadRequestError } from '../../../effect-errors'
 
 export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.sessions.v2.continue
 	.use(requiresBillingEffectMiddleware)
@@ -33,6 +43,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 		return yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					const locked = yield* tx.run(() => lockReviewSession(tx.client, organizationId, sessionId))
 					const [session] = yield* tx.query(
 						tx.client
 							.select({
@@ -49,7 +60,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 							.for('no key update'),
 					)
 
-					if (!session) {
+					if (!session || !locked.session) {
 						yield* Effect.logInfo('sessions.v2.continue rejected').pipe(
 							Effect.annotateLogs({ ...observabilityContext, sessionStatus: null, reason: 'not_found' }),
 						)
@@ -72,6 +83,39 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 						return { kind: 'rejected' as const, reason: 'forbidden' as const }
 					}
 					const authorDisplayName = multiplayerPromptingActive ? yield* resolveUserDisplayName(userId) : null
+					const hostId = locked.session.host_id
+					const started = yield* tx.run(() =>
+						beginReviewWriter(tx.client, locked.boundary, {
+							userId,
+							hostId,
+							sessionId,
+							eventId,
+							messageId,
+							kind: 'v2.continue',
+							request: input,
+							entry: input,
+							continuing: true,
+						}),
+					)
+					if (started?.replay) return ContinueV2OutputSchema.parse(started.replay)
+					if (
+						input.executionPhase !== undefined &&
+						(intent !== 'send' || !['ready_for_input', 'interrupted'].includes(session.status))
+					)
+						return { kind: 'rejected' as const, reason: 'forbidden' as const }
+					const phase = yield* tx.run(async () =>
+						reviewWorkEntry(input, locked.boundary?.task?.workflow_type ?? 'freeform', locked.session),
+					)
+					const retain = (result: { kind: 'continued' | 'queued'; transactionId: string }) =>
+						tx.run(() =>
+							finishReviewWriter(tx.client, locked.boundary, started, {
+								sessionId,
+								eventId,
+								messageId,
+								entry: input,
+								result,
+							}),
+						)
 
 					// Active session with interrupt-and-send: insert a flagged queue row
 					// and flip status to interrupt_requested. The drain in daemon
@@ -104,6 +148,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 								.where(eq(sessions.id, sessionId)),
 						)
 						const txid = yield* tx.run(() => getTxId(tx.client))
+						yield* retain({ kind: 'continued', transactionId: txid })
 						yield* Effect.logInfo('sessions.v2.continue interrupt_and_send via queue').pipe(
 							Effect.annotateLogs(observabilityContext),
 						)
@@ -132,6 +177,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 							}),
 						)
 						const txid = yield* tx.run(() => getTxId(tx.client))
+						yield* retain({ kind: 'queued', transactionId: txid })
 						yield* Effect.logInfo('sessions.v2.continue queued').pipe(
 							Effect.annotateLogs(observabilityContext),
 						)
@@ -180,6 +226,16 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 									.orderBy(asc(queuedMessages.created_at)),
 							)
 						: []
+
+					const boundary = locked.boundary
+					if (
+						boundary?.row &&
+						pending.some((message) => !reviewQueueIsAdmitted(boundary, sessionId, message.id))
+					)
+						return yield* new ORPCBadRequestError({
+							message:
+								'Could not continue this session. Its queued input changed. Ask the task owner to reconcile queued work before continuing.',
+						})
 
 					// Event ids match the client's optimistic row and each drained queued row, so the
 					// UI can reconcile them before the sessions and queued-messages shapes catch up.
@@ -238,6 +294,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 							.update(sessions)
 							.set({
 								status: 'resuming',
+								...phase,
 								error_message: session.status === 'lost' ? null : sql`${sessions.error_message}`,
 								error_reason: session.status === 'lost' ? null : sql`${sessions.error_reason}`,
 								prompt: concatenatedPrompt,
@@ -249,6 +306,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 					)
 
 					const txid = yield* tx.run(() => getTxId(tx.client))
+					yield* retain({ kind: 'continued', transactionId: txid })
 					yield* Effect.logInfo('Auto-continuing session with queued messages').pipe(
 						Effect.annotateLogs({
 							...observabilityContext,
@@ -296,7 +354,12 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 					Effect.succeed({ kind: 'rejected' as const, reason: 'not_found' as const }),
 				),
 				Effect.catchTags({
-					PostgresDbQueryError: (error) => mapPostgresErrorToResponse(error, errors),
+					ORPCBadRequestError: (error) =>
+						Effect.fail(errors.BAD_REQUEST({ data: { message: error.message } })),
+					PostgresDbQueryError: (error) =>
+						error.cause instanceof ORPCError
+							? Effect.fail(error.cause)
+							: mapPostgresErrorToResponse(error, errors),
 					PostgresDbTransactionError: (error) => mapPostgresErrorToResponse(error, errors),
 				}),
 			)

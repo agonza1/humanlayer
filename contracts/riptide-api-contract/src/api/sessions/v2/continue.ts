@@ -1,8 +1,10 @@
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../../contract-builder'
+import { WorkEntryFields } from '../../../lib/review-progression'
 
 export const ContinueV2InputSchema = z.object({
+	...WorkEntryFields,
 	sessionId: z.uuid(),
 	messageId: z.uuid().optional().describe('Client-generated id for optimistic queued_messages row'),
 	eventId: z

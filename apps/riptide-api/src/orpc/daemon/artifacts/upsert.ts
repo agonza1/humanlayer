@@ -76,6 +76,24 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				let versionNumber: number | undefined
 
 				if (existingArtifact) {
+					if (input.ifExists === 'match') {
+						if (
+							existingArtifact.organization_id !== organizationId ||
+							existingArtifact.resource_owner_user_id !== resourceOwnerUserId ||
+							existingArtifact.is_deleted ||
+							existingArtifact.storage_type !== 'postgres' ||
+							existingArtifact.content !== content
+						)
+							throw errors.CONFLICT()
+						return {
+							artifactId: existingArtifact.id,
+							txid: await getTxId(tx),
+							created: false,
+							versionNumber: undefined,
+							resourceOwnerUserId,
+							taskSlug,
+						}
+					}
 					// UPDATE existing artifact
 					artifactId = existingArtifact.id
 

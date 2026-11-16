@@ -4,6 +4,7 @@ import { Effect, Layer, Queue, Stream } from 'effect'
 import type { DaemonServices } from '@/agents/claudecode/types'
 import { createApprovalsCollection } from '@/collections/electric/approvals'
 import { createProviderLoginRequestsCollection } from '@/collections/electric/provider-login-requests'
+import { createReviewProgressionCollection } from '@/collections/electric/review-progression'
 import { createSessionsCollection } from '@/collections/electric/sessions'
 import { createTasksCollection, loadHostTasks } from '@/collections/electric/tasks'
 import {
@@ -17,6 +18,7 @@ import {
 	type CollectionChange,
 	DaemonCollections,
 	type ProviderLoginChangeMessage,
+	type ReviewProgressionChangeMessage,
 	type TaskChangeMessage,
 	type WorkspaceSetupChangeMessage,
 	type WorkspaceSetupSession,
@@ -161,6 +163,9 @@ export function DaemonCollectionsLive(options: DaemonCollectionsOptions | Daemon
 			approvalChanges,
 			workspaceSetupChanges,
 			providerLoginChanges,
+			reviewProgressionChanges: options.reviewProgression
+				? subscribe<ReviewProgressionChangeMessage>(options.reviewProgression)
+				: Stream.empty,
 			workspaceSetups: makeWorkspaceSetupsStream(options, ''),
 			workspaceSetupSessions: makeWorkspaceSetupSessionsStream(options),
 			streamSessionChanges: (sessionId: string) =>
@@ -183,9 +188,17 @@ export function DaemonCollectionsLive(options: DaemonCollectionsOptions | Daemon
 				approvals: createApprovalsCollection(options.syncOrigin, options.token),
 				workspaceSetup,
 				providerLoginRequests: createProviderLoginRequestsCollection(options.syncOrigin, options.token),
+				reviewProgression:
+					options.targetSessionId === undefined
+						? createReviewProgressionCollection(options.syncOrigin, options.token)
+						: undefined,
 			}
 			yield* Effect.addFinalizer(() =>
-				Effect.forEach(Object.values(collections), disposeCollection, { discard: true }),
+				Effect.forEach(
+					Object.values(collections).filter((collection) => collection !== undefined),
+					disposeCollection,
+					{ discard: true },
+				),
 			)
 
 			yield* Effect.promise(() => awaitWorkspaceSetupCollectionReady(workspaceSetup))
@@ -216,6 +229,9 @@ export function DaemonCollectionsLive(options: DaemonCollectionsOptions | Daemon
 				approvalChanges,
 				workspaceSetupChanges,
 				providerLoginChanges,
+				reviewProgressionChanges: collections.reviewProgression
+					? subscribe<ReviewProgressionChangeMessage>(collections.reviewProgression)
+					: Stream.empty,
 				workspaceSetups,
 				workspaceSetupSessions,
 				streamSessionChanges: (sessionId: string) =>

@@ -7,6 +7,7 @@ export interface ExecuteSessionLaunchInput {
 }
 
 export interface SessionLaunchExecutorService {
+	readonly admitSessionLaunch: (input: ExecuteSessionLaunchInput) => Effect.Effect<boolean>
 	/**
 	 * Run the coding agent for a launch-ready session until it ends, reporting any failure to the
 	 * API as the session's failed status. Never fails; interruption ends the run silently.

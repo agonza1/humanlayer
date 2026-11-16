@@ -4,12 +4,16 @@ import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { userSettings } from '@humanlayer/db/tables/user-settings'
 import { workspaces, workspaceSelectSchema } from '@humanlayer/db/tables/workspaces'
-import type { CreateSessionV2Input } from '@humanlayer/riptide-api-contract/api/sessions/v2/create'
+import {
+	CreateSessionV2OutputSchema,
+	type CreateSessionV2Input,
+} from '@humanlayer/riptide-api-contract/api/sessions/v2/create'
 import { resolveTaskWorkspacePathSegment } from '@humanlayer/riptide-api-contract/lib/task-workspace-path'
 import * as Sentry from '@sentry/node'
 import { and, eq } from 'drizzle-orm'
 import { Effect } from 'effect'
 
+import { lockReviewTask, beginReviewWriter, finishReviewWriter, reviewWorkEntry } from '../../db/review-progression'
 import { canWriteSession, checkTaskWritePermission } from '../../db/task-auth'
 import { getTransactionId } from '../services/postgres/helpers'
 import { PostgresDb } from '../services/postgres/postgres-db.service'
@@ -43,6 +47,35 @@ export const createSessionV2 = Effect.fn('project_workspace.create_session_v2')(
 	const createdSession = yield* postgres
 		.transaction((transaction) =>
 			Effect.gen(function* () {
+				const [draftHint] = input.draftId
+					? yield* transaction.query(
+							transaction.client
+								.select({ taskId: sessions.task_id })
+								.from(sessions)
+								.where(
+									and(
+										eq(sessions.id, input.draftId),
+										eq(sessions.organization_id, input.actor.organizationId),
+									),
+								),
+						)
+					: []
+				const taskIds = [
+					...new Set([input.taskId, draftHint?.taskId].filter((id): id is string => Boolean(id))),
+				].sort()
+				const boundaries = []
+				for (const taskId of taskIds)
+					boundaries.push(
+						yield* transaction.run(() =>
+							lockReviewTask(transaction.client, input.actor.organizationId, taskId),
+						),
+					)
+				const boundary = boundaries.find((item) => item.task?.id === input.taskId)
+				if (!boundary) return yield* new ProjectNotFound({ projectId: input.taskId })
+				if (draftHint?.taskId && draftHint.taskId !== input.taskId && boundaries.some((item) => item.row))
+					return yield* new ProjectLocationInvalid({
+						message: 'Could not move this session. Keep enrolled work on its existing task.',
+					})
 				const [settings] = yield* transaction.query(
 					transaction.client
 						.select()
@@ -84,6 +117,24 @@ export const createSessionV2 = Effect.fn('project_workspace.create_session_v2')(
 				if (!task) {
 					return yield* Effect.fail(new ProjectNotFound({ projectId: input.taskId }))
 				}
+				if (boundary.row && ((!input.sessionId && !input.draftId) || !input.eventId))
+					return yield* new ProjectLocationInvalid({
+						message: 'Could not launch this session. Retain its session and event IDs before sending.',
+					})
+				const started = yield* transaction.run(() =>
+					beginReviewWriter(transaction.client, boundary, {
+						userId: input.actor.userId,
+						hostId: input.hostId,
+						sessionId,
+						eventId: input.eventId,
+						kind: 'v2.create',
+						request: { ...input, actor: undefined },
+						entry: input,
+					}),
+				)
+				if (started?.replay)
+					return { response: CreateSessionV2OutputSchema.parse(started.replay), titleGeneration: null }
+				const phase = yield* transaction.run(async () => reviewWorkEntry(input, task.workflow_type))
 
 				const [workspace] = yield* transaction.query(
 					transaction.client
@@ -155,6 +206,10 @@ export const createSessionV2 = Effect.fn('project_workspace.create_session_v2')(
 							.for('no key update'),
 					)
 					if (!draft) return yield* new ProjectNotFound({ projectId: input.taskId })
+					if (draft.task_id !== draftHint?.taskId)
+						return yield* new ProjectLocationInvalid({
+							message: 'Could not launch this session. Its task changed; refresh before retrying.',
+						})
 					// Moving a draft needs access to its source as well as the destination task.
 					const writable = yield* transaction.run(() =>
 						canWriteSession(transaction.client, draft, input.actor.userId, input.actor.organizationId),
@@ -187,6 +242,7 @@ export const createSessionV2 = Effect.fn('project_workspace.create_session_v2')(
 				})
 
 				const values = {
+					...phase,
 					id: sessionId,
 					task_id: input.taskId,
 					organization_id: input.actor.organizationId,
@@ -276,6 +332,14 @@ export const createSessionV2 = Effect.fn('project_workspace.create_session_v2')(
 				)
 
 				const txId = yield* getTransactionId(transaction)
+				yield* transaction.run(() =>
+					finishReviewWriter(transaction.client, boundary, started, {
+						sessionId,
+						eventId,
+						entry: input,
+						result: { result: 'created', transactionId: txId, sessionId },
+					}),
+				)
 				return {
 					response: { result: 'created' as const, transactionId: txId, sessionId },
 					titleGeneration: session.title

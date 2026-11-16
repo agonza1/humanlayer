@@ -2,6 +2,7 @@ import type { Task } from '@humanlayer/db/tables/tasks'
 import type { ResolvedTaskWorkflowType } from '@humanlayer/schemas/effect/taskconfiguration'
 
 import { useBrowserAuth } from '@/hooks/use-browser-auth'
+import { isReviewEnrolledTask, workflowUpdateRequest } from '@/lib/review-progression'
 import { useTaskAutoAdvance } from '@/minimalist/lib/auto-advance'
 import { useTask } from '@/minimalist/lib/data'
 import { useUi } from '@/minimalist/lib/ui-state'
@@ -52,23 +53,28 @@ export function useTaskWorkflow(taskId: string) {
 		current,
 		canChange: Boolean(task && user?.id && task.resource_owner_user_id === user.id),
 		change: async (workflowType: ResolvedTaskWorkflowType) => {
-			if (!task || workflowType === current) return
+			if (!task || task.resource_owner_user_id !== user?.id || workflowType === current) return
 			const flags = projectTaskAutoAdvanceFlags(
 				{ workflowType, autoAdvance: autoAdvance.on },
 				task.worktree_timing,
 			)
 			try {
-				await api.tasks.update({
-					taskId: task.id,
-					workflowType,
-					autoAdvanceQuestionsToResearch: flags.autoAdvanceQuestionsToResearch,
-					autoAdvanceResearchToDesign: flags.autoAdvanceResearchToDesign,
-					autoAdvancePlanToWorktree: flags.autoAdvancePlanToWorktree,
-					autoAdvanceWorktreeToImplementation: flags.autoAdvanceWorktreeToImplementation,
-					autoAdvanceImplementationToPr: flags.autoAdvanceImplementationToPr,
-				})
+				await api.tasks.update(
+					await workflowUpdateRequest(task, {
+						taskId: task.id,
+						workflowType,
+						autoAdvanceQuestionsToResearch: flags.autoAdvanceQuestionsToResearch,
+						autoAdvanceResearchToDesign: flags.autoAdvanceResearchToDesign,
+						autoAdvancePlanToWorktree: flags.autoAdvancePlanToWorktree,
+						autoAdvanceWorktreeToImplementation: flags.autoAdvanceWorktreeToImplementation,
+						autoAdvanceImplementationToPr:
+							!isReviewEnrolledTask(task) && flags.autoAdvanceImplementationToPr,
+					}),
+				)
 			} catch {
-				showToast('Could not change the workflow. The task keeps its current one. Try again.')
+				showToast(
+					'Could not change the workflow. Refresh the task and review its current settings before making a new request.',
+				)
 			}
 		},
 	}

@@ -1,4 +1,6 @@
 import { cn } from '@humanlayer/ui/lib/utils'
+import { parseReviewProgressionNote } from '../../lib/review-progression'
+import { ReviewProgressionNoteContent } from './review-progression-note'
 import type { FC, ReactNode } from 'react'
 import { Copy } from 'lucide-react'
 import { Button } from '@humanlayer/ui/components/button'
@@ -121,6 +123,8 @@ export const ConversationEventRow: FC<ConversationEventRowProps> = ({
 	isApprovalActionsHidden = false,
 	onCopy,
 }) => {
+	const reviewNote = parseReviewProgressionNote(event)
+	if (reviewNote) return <ReviewProgressionNoteContent note={reviewNote} />
 	const isThinking = Boolean(
 		event.eventType === 'thinking' || (event.role === 'assistant' && event.content?.startsWith('<thinking>')),
 	)

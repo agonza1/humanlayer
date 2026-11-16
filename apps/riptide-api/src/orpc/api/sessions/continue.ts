@@ -1,10 +1,17 @@
 import { isEffortSupported, isFastModeSupported } from '@humanlayer/ai/config'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { sessions } from '@humanlayer/db/tables/sessions'
+import { ContinueSessionOutputSchema } from '@humanlayer/riptide-api-contract/api/sessions/continue'
 import { ORPCError } from '@orpc/server'
 import { and, eq, sql } from 'drizzle-orm'
 
 import { getTxId } from '../../../db/get-tx-id'
+import {
+	lockReviewSession,
+	beginReviewWriter,
+	finishReviewWriter,
+	reviewWorkEntry,
+} from '../../../db/review-progression'
 import { tryEnsureSessionStreamHydrated } from '../../../effects/services/durable-streams/streams'
 import {
 	getSessionAccessControlLevelForClassicProcedure,
@@ -30,6 +37,7 @@ export const continueSessionProcedure = apiBaseOrgRequired.sessions.continue
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				const locked = await lockReviewSession(tx, context.auth.organizationId, sessionId)
 				// Fetch the session first to check authorization
 				const [session] = await tx
 					.select({
@@ -49,14 +57,8 @@ export const continueSessionProcedure = apiBaseOrgRequired.sessions.continue
 					.limit(1)
 					.for('no key update')
 
-				if (!session) {
+				if (!session || !locked.session) {
 					throw errors.NOT_FOUND({ data: { message: 'Session not found' } })
-				}
-
-				// Check status precondition
-				const validStatuses = ['ready_for_input', 'interrupted', 'failed', 'lost']
-				if (!validStatuses.includes(session.status)) {
-					throw errors.BAD_REQUEST({ data: { message: 'Session is not ready for input' } })
 				}
 
 				// Check write permission: user must be session creator AND have task ACL edit (or own standalone session)
@@ -72,6 +74,29 @@ export const continueSessionProcedure = apiBaseOrgRequired.sessions.continue
 				if (!hasRequiredSessionAccess(accessLevel, SessionAccessControl.prompt)) {
 					throw errors.FORBIDDEN({ data: { message: 'Write permission required on session' } })
 				}
+				const started = await beginReviewWriter(tx, locked.boundary, {
+					userId: context.auth.userId,
+					hostId: locked.session.host_id,
+					sessionId,
+					eventId,
+					kind: 'legacy.continue',
+					request: input,
+					entry: input,
+					continuing: true,
+				})
+				if (started?.replay) {
+					const retained = ContinueSessionOutputSchema.parse(started.replay)
+					return { success: retained.success, txid: retained.transactionId }
+				}
+				if (!['ready_for_input', 'interrupted', 'failed', 'lost'].includes(session.status))
+					throw errors.BAD_REQUEST({ data: { message: 'Session is not ready for input' } })
+				if (input.executionPhase !== undefined && !['ready_for_input', 'interrupted'].includes(session.status))
+					throw errors.BAD_REQUEST({
+						data: {
+							message: 'Could not change phase. Reconcile this session and wait for it to become idle.',
+						},
+					})
+				const phase = reviewWorkEntry(input, locked.boundary?.task?.workflow_type ?? 'freeform', locked.session)
 
 				const effectiveModel = model ?? session.model
 				const effectiveEffort = effort !== undefined ? effort : session.effort
@@ -98,6 +123,7 @@ export const continueSessionProcedure = apiBaseOrgRequired.sessions.continue
 				await tx
 					.update(sessions)
 					.set({
+						...phase,
 						status: 'resuming',
 						error_message: null,
 						error_reason: null,
@@ -128,6 +154,12 @@ export const continueSessionProcedure = apiBaseOrgRequired.sessions.continue
 				await tx.insert(conversationEvents).values(conversationEventValues)
 
 				const txid = await getTxId(tx)
+				await finishReviewWriter(tx, locked.boundary, started, {
+					sessionId,
+					eventId,
+					entry: input,
+					result: { transactionId: txid, success: true },
+				})
 				return { success: true, txid }
 			})
 

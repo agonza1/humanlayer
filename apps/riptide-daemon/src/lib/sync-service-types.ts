@@ -28,6 +28,7 @@ export interface ITaskSyncContext {
 	createSessionManager(sessionId: string): ISyncManager
 	getCollection(): ArtifactCollectionLike | undefined
 	getTaskSlug(): string | null
+	flushArtifactWrites?(expected: readonly { fileName: string; contentHash: string }[]): Promise<void>
 }
 
 export interface SyncServiceDebugState {

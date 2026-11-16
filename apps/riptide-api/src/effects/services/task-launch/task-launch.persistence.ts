@@ -9,6 +9,12 @@ import { hash } from 'ohash'
 
 import { createSessionForLaunch } from '../../../db/create-session-for-launch'
 import { resolveOrgDefaultTaskShareLevel } from '../../../db/organization-settings'
+import {
+	acceptedReviewLaunch,
+	retainReviewEnrollment,
+	reviewDigest,
+	verifyReviewLaunchReplay,
+} from '../../../db/review-progression'
 import { activeTaskSlugIsAllocated, lockActiveTaskSlugAllocation } from '../../../db/task-slug-allocation'
 import { upsertWorkspaceSetupRowForTaskSession } from '../../../db/upsert-workspace-setup-row-for-task-session'
 import { getTransactionId } from '../postgres/helpers'
@@ -79,6 +85,7 @@ export const launchTaskDraftPersistence = Effect.fn('task_launch.persistence.lau
 	input: LaunchTaskDraftInput,
 ) {
 	const postgres = yield* PostgresDb
+	const acceptedLaunch = acceptedReviewLaunch(input)
 	return yield* postgres.transaction((tx) =>
 		Effect.gen(function* () {
 			const [existing] = yield* tx.query(
@@ -105,6 +112,14 @@ export const launchTaskDraftPersistence = Effect.fn('task_launch.persistence.lau
 					tx.client.select().from(taskLaunches).where(eq(taskLaunches.task_id, input.draftId)).limit(1),
 				)
 				if (launch) {
+					yield* tx.run(() =>
+						verifyReviewLaunchReplay(
+							tx.client,
+							input.draftId,
+							input.reviewProgressionEnrollment,
+							acceptedLaunch,
+						),
+					)
 					return toResult({
 						outcome: 'already-launched',
 						task: existing,
@@ -113,6 +128,14 @@ export const launchTaskDraftPersistence = Effect.fn('task_launch.persistence.lau
 					})
 				}
 				if (!existing.is_draft || existing.archived) {
+					return yield* Effect.fail(
+						new TaskLaunchConflict({ draftId: input.draftId, reason: 'task-id-in-use' }),
+					)
+				}
+				if (
+					input.reviewProgressionEnrollment &&
+					(existing.project_id !== null || existing.workspace_id !== null)
+				) {
 					return yield* Effect.fail(
 						new TaskLaunchConflict({ draftId: input.draftId, reason: 'task-id-in-use' }),
 					)
@@ -182,6 +205,14 @@ export const launchTaskDraftPersistence = Effect.fn('task_launch.persistence.lau
 						tx.client.select().from(taskLaunches).where(eq(taskLaunches.task_id, input.draftId)).limit(1),
 					)
 					if (launch) {
+						yield* tx.run(() =>
+							verifyReviewLaunchReplay(
+								tx.client,
+								input.draftId,
+								input.reviewProgressionEnrollment,
+								acceptedLaunch,
+							),
+						)
 						return toResult({
 							outcome: 'already-launched',
 							task: claimed,
@@ -317,7 +348,7 @@ export const launchTaskDraftPersistence = Effect.fn('task_launch.persistence.lau
 				)
 			}
 
-			yield* tx.run(() =>
+			const setup = yield* tx.run(() =>
 				upsertWorkspaceSetupRowForTaskSession(tx.client, {
 					organizationId: input.organizationId,
 					taskId: task.id,
@@ -347,6 +378,36 @@ export const launchTaskDraftPersistence = Effect.fn('task_launch.persistence.lau
 				}),
 			)
 			const transactionId = yield* getTransactionId(tx)
+			const enrollment = input.reviewProgressionEnrollment
+			if (enrollment) {
+				if (
+					task.project_id !== null ||
+					task.workspace_id !== null ||
+					reviewDigest(setup.effectiveWorkspaceSpec) !== reviewDigest(input.workspaceSpec ?? null)
+				) {
+					return yield* Effect.fail(
+						new TaskLaunchConflict({ draftId: input.draftId, reason: 'task-id-in-use' }),
+					)
+				}
+				yield* tx.run(() =>
+					retainReviewEnrollment(tx.client, {
+						taskId: task.id,
+						organizationId: input.organizationId,
+						ownerUserId: input.userId,
+						hostId: input.firstSession.hostId,
+						sourceSessionId: session.id,
+						enrollment,
+						placement: {
+							kind: 'legacy_directory',
+							projectId: null,
+							workspaceId: null,
+							setupRowId: setup.row.id,
+							workspaceSpecDigest: input.workspaceSpec ? reviewDigest(input.workspaceSpec) : null,
+						},
+						acceptedLaunch,
+					}),
+				)
+			}
 			yield* tx.query(
 				tx.client.insert(taskLaunches).values({
 					task_id: task.id,

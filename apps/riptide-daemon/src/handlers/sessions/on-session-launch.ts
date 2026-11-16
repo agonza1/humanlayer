@@ -21,6 +21,10 @@ import {
 	type SessionExecutor,
 } from '@/agents/shared/run-session'
 import type { SessionChangeMessage } from '@/collections/types'
+import {
+	checkReviewSessionLaunch,
+	prepareReviewSessionArtifacts,
+} from '@/effects/services/review-integration/review-integration'
 import { workspaceSetupStateAllowsSessionLaunch } from '@/lib/workspace/ledger'
 import logger from '@/logger'
 
@@ -97,8 +101,9 @@ export async function handleLaunchSession(
 	change: SessionLaunchChange,
 	services: DaemonServices,
 	workspaceLaunchGate?: WorkspaceLaunchGate,
+	reviewLaunchAlreadyAdmitted = false,
 ) {
-	const session = change.value
+	const session = structuredClone({ ...change.value })
 	if (!shouldLaunchSession(change)) return
 	if (services.automationTargetSessionId !== undefined && session.id !== services.automationTargetSessionId) return
 	if (session.task_id !== null) {
@@ -120,6 +125,19 @@ export async function handleLaunchSession(
 		)
 		return
 	}
+
+	// The V2 runner admits before registry handoff; a second deferral here would strand its final actor.
+	if (
+		!reviewLaunchAlreadyAdmitted &&
+		!(await checkReviewSessionLaunch(
+			session.id,
+			services.orpc,
+			(snapshot) => prepareReviewSessionArtifacts(services, snapshot),
+			session,
+			services.reviewWriterObservations,
+		))
+	)
+		return 'review_setup_unverified' as const
 
 	// Parse the agent against the set the daemon can actually run. Anything outside it — opencode
 	// today — is rejected here until its execution path lands. See

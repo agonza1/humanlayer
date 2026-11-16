@@ -87,6 +87,7 @@ export function createMockDaemonServices(overrides: Partial<DaemonServices> = {}
 				).pipe(Layer.provideMerge(BunServices.layer)),
 			) as unknown as DaemonRuntime),
 		orpc,
+		reviewWriterObservations: { runs: new Map() },
 		collections,
 		shutdown: new ShutdownCoordinator(),
 		syncService: failFastCapability<DaemonServices['syncService']>('syncService'),

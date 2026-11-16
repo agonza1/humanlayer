@@ -1,14 +1,16 @@
 import { isEffortSupported, isFastModeSupported } from '@humanlayer/ai/config'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
-import { sessions } from '@humanlayer/db/tables/sessions'
+import { sessions, sessionSelectSchema } from '@humanlayer/db/tables/sessions'
 import { taskWorkspaceSetupForHost } from '@humanlayer/db/tables/task-workspace-setup-for-host'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { ORPCError } from '@orpc/server'
 import { and, eq } from 'drizzle-orm'
+import z from 'zod/v4'
 
 import { createSessionForLaunch } from '../../../db/create-session-for-launch'
 import { getTxId } from '../../../db/get-tx-id'
 import { validateHostOwnership } from '../../../db/host-auth'
+import { lockReviewTask, beginReviewWriter, finishReviewWriter, reviewWorkEntry } from '../../../db/review-progression'
 import { canWriteSession, checkTaskWritePermission } from '../../../db/task-auth'
 import { upsertTaskUserSettingsForSession } from '../../../db/upsert-task-user-settings-for-session'
 import { upsertWorkspaceSetupRowForTaskSession } from '../../../db/upsert-workspace-setup-row-for-task-session'
@@ -20,6 +22,16 @@ import {
 } from '../../../lib/workspace-setup/resolve-workspace-spec-for-host'
 import logger from '../../../logger'
 import { apiBaseOrgRequired, requiresBillingMiddleware } from '../../base'
+
+const replaySessionSchema = sessionSelectSchema.extend({
+	created_at: z.coerce.bigint(),
+	updated_at: z.coerce.bigint(),
+	last_activity_at: z.coerce.bigint(),
+	execution_phase_at: z.coerce.bigint().nullable(),
+	multiplayer_prompting_started_at: z.coerce.bigint().nullable(),
+	multiplayer_prompting_expires_at: z.coerce.bigint().nullable(),
+})
+const replayLaunchSchema = z.object({ transactionId: z.string(), session: replaySessionSchema })
 
 /**
  * Launch a new session or launch an existing draft
@@ -68,6 +80,53 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				const [hint] = draftId
+					? await tx
+							.select({ taskId: sessions.task_id })
+							.from(sessions)
+							.where(and(eq(sessions.id, draftId), eq(sessions.organization_id, organizationId)))
+					: []
+				const taskIds = [
+					...new Set([taskId, hint?.taskId].filter((value): value is string => Boolean(value))),
+				].sort()
+				const boundaries = []
+				for (const task of taskIds) boundaries.push(await lockReviewTask(tx, organizationId, task))
+				if (
+					hint?.taskId &&
+					taskId !== undefined &&
+					taskId !== hint.taskId &&
+					boundaries.some((item) => item.row)
+				)
+					throw errors.BAD_REQUEST({
+						data: { message: 'Could not move this session. Keep enrolled work on its existing task.' },
+					})
+				const boundary = boundaries.find((item) => item.task?.id === (taskId ?? hint?.taskId)) ?? null
+				if (boundary?.row && ((!id && !draftId) || !eventId))
+					throw errors.BAD_REQUEST({
+						data: {
+							message: 'Could not launch this session. Retain its session and event IDs before sending.',
+						},
+					})
+				const started = await beginReviewWriter(tx, boundary, {
+					userId: context.auth.userId,
+					hostId,
+					sessionId: draftId ?? id ?? '',
+					eventId,
+					kind: 'legacy.launch',
+					request: input,
+					entry: input,
+				})
+				if (started?.replay) {
+					const retained = replayLaunchSchema.parse(started.replay)
+					return {
+						session: retained.session,
+						txid: retained.transactionId,
+						ticketId: null,
+						taskName: null,
+						replay: true,
+					}
+				}
+				const phase = reviewWorkEntry(input, boundary?.task?.workflow_type ?? 'freeform')
 				let result: typeof sessions.$inferSelect | undefined
 				let forceTaskUserWorkingDirectoryUpdate = false
 
@@ -90,6 +149,12 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 					if (!existing) {
 						throw errors.NOT_FOUND({ data: { message: 'Draft session not found' } })
 					}
+					if (existing.task_id !== hint?.taskId)
+						throw errors.BAD_REQUEST({
+							data: {
+								message: 'Could not launch this session. Its task changed; refresh before retrying.',
+							},
+						})
 
 					if (existing.status !== 'draft') {
 						throw errors.BAD_REQUEST({ data: { message: 'Session is not a draft' } })
@@ -134,6 +199,7 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 					const [updated] = await tx
 						.update(sessions)
 						.set({
+							...phase,
 							task_id: taskId ?? existing.task_id,
 							resource_owner_user_id: resourceOwnerUserId,
 							status: 'ready_for_launch',
@@ -197,6 +263,9 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 					}
 
 					result = await createSessionForLaunch(tx, {
+						...input,
+						reviewAdmission: started?.admission,
+						workflowType: boundary?.task?.workflow_type,
 						id: id ?? undefined,
 						eventId: eventId ?? undefined,
 						taskId: taskId ?? null,
@@ -322,6 +391,12 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 				}
 
 				const txid = await getTxId(tx)
+				await finishReviewWriter(tx, boundary, started, {
+					sessionId: result.id,
+					eventId,
+					entry: input,
+					result: { transactionId: txid, session: result },
+				})
 
 				return {
 					session: result,
@@ -332,7 +407,7 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 			})
 
 			// Fire-and-forget AI title generation after transaction commits
-			if (!txResult.session.title && text) {
+			if (!('replay' in txResult) && !txResult.session.title && text) {
 				void runSessionTitleGenerationAsync(db, {
 					sessionId: txResult.session.id,
 					organizationId,

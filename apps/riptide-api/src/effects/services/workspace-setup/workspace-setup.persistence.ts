@@ -16,6 +16,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { Effect, Layer, Predicate } from 'effect'
 
+import { reviewDigest, wakeReviewTask } from '../../../db/review-progression'
 import { Sentry } from '../../../instrument'
 import {
 	applyDaemonProgressUpdateToWorkspaceSetupState,
@@ -145,6 +146,8 @@ const persistTransition = (
 				}),
 			)
 		}
+		if (row.status !== deriveWorkspaceSetupStatus(state) || reviewDigest(row.error) !== reviewDigest(error))
+			yield* tx.query(wakeReviewTask(tx.client, row.organizationId, row.taskId, row.hostId))
 		return yield* parseSetupRow(updated)
 	})
 
@@ -594,6 +597,7 @@ export const WorkspaceSetupPersistenceLive = Layer.effect(
 								}),
 							)
 						}
+						yield* tx.query(wakeReviewTask(tx.client, input.organizationId, input.taskId, input.hostId))
 						return { transactionId: yield* getTransactionId(tx), row: yield* parseSetupRow(updated) }
 					}),
 				)

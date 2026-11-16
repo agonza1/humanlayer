@@ -11,6 +11,7 @@ import { and, count, eq, inArray } from 'drizzle-orm'
 
 import { getTxId } from '../../../db/get-tx-id'
 import { validateHostOwnership } from '../../../db/host-auth'
+import { assertReviewIdle, lockReviewTask } from '../../../db/review-progression'
 import { ACTIVE_SESSION_STATUSES } from '../../../db/session-statuses'
 import { checkTaskWritePermission } from '../../../db/task-auth'
 import {
@@ -26,7 +27,8 @@ import { apiBaseOrgRequired, requiresBillingMiddleware } from '../../base'
  * Update a session (user-facing endpoint)
  *
  * Authorization:
- * - User must be session creator AND have edit access (via task ACL or session ownership if no task)
+ * - Owner fields require the session creator with edit access; unenrolled prompt settings allow multiplayer grants
+ * - Enrolled execution settings additionally require task ownership and current task admission
  * - If changing task_id to a new task, user must have write permission on target task
  * - When task changes, resource_owner_user_id is cascaded from new task to session + sub-resources
  */
@@ -39,6 +41,24 @@ export const updateSessionApiProcedure = apiBaseOrgRequired.sessions.update
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				const [hint] = await tx
+					.select({ taskId: sessions.task_id })
+					.from(sessions)
+					.where(
+						and(
+							eq(sessions.id, input.sessionId),
+							eq(sessions.organization_id, context.auth.organizationId),
+						),
+					)
+				const boundaries = []
+				for (const taskId of [
+					...new Set([hint?.taskId, input.taskId].filter((value): value is string => Boolean(value))),
+				].sort())
+					boundaries.push(await lockReviewTask(tx, context.auth.organizationId, taskId))
+				if (input.taskId !== undefined && input.taskId !== hint?.taskId && boundaries.some((item) => item.row))
+					throw errors.BAD_REQUEST({
+						data: { message: 'Could not move this session. Keep enrolled work on its existing task.' },
+					})
 				if (input.taskId) {
 					await tx
 						.select({ id: tasks.id })
@@ -59,6 +79,7 @@ export const updateSessionApiProcedure = apiBaseOrgRequired.sessions.update
 						provider: sessions.provider,
 						model: sessions.model,
 						effort: sessions.effort,
+						execution_phase: sessions.execution_phase,
 						fast_mode: sessions.fast_mode,
 						permissions_mode: sessions.permissions_mode,
 						title: sessions.title,
@@ -80,6 +101,10 @@ export const updateSessionApiProcedure = apiBaseOrgRequired.sessions.update
 				if (!session) {
 					throw errors.NOT_FOUND({ data: { message: 'Session not found' } })
 				}
+				if (session.task_id !== hint?.taskId)
+					throw errors.BAD_REQUEST({
+						data: { message: 'Could not change this session. Its task changed; refresh before retrying.' },
+					})
 
 				const requestedValues = {
 					title: input.title,
@@ -135,6 +160,36 @@ export const updateSessionApiProcedure = apiBaseOrgRequired.sessions.update
 				if (changedFields.length === 0) {
 					const txid = await getTxId(tx)
 					return { success: true, txid }
+				}
+				const boundary = boundaries.find((item) => item.task?.id === session.task_id)
+				if (boundary?.row && changedFields.some((field) => promptFields.has(field))) {
+					if (
+						boundary.task?.resource_owner_user_id !== context.auth.userId ||
+						boundary.row.resource_owner_user_id !== context.auth.userId ||
+						session.resource_owner_user_id !== context.auth.userId ||
+						session.created_by !== context.auth.userId
+					)
+						throw errors.FORBIDDEN({
+							data: {
+								message:
+									'Could not change execution settings. Ask the task owner to manage enrolled work.',
+							},
+						})
+					assertReviewIdle(boundary, session.id)
+					if (
+						boundary.task.archived ||
+						boundary.task.is_draft ||
+						!boundary.row.verified_binding ||
+						boundary.row.host_id !== session.host_id ||
+						['ready_for_launch', 'waiting_for_workspace', 'launching', 'resuming'].includes(
+							session.status,
+						) ||
+						(boundary.row.planning_suspended && session.execution_phase !== null)
+					)
+						throw new ORPCError('CONFLICT', {
+							message:
+								"Could not change execution settings. Reconcile the task's host, active work and authorized phase before retrying.",
+						})
 				}
 
 				// These fields describe how a session will be launched and only make sense before it

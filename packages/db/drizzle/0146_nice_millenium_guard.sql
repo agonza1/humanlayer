@@ -1,0 +1,1 @@
+ALTER TABLE "review_progression" ADD COLUMN "report_receipts" jsonb DEFAULT '[]'::jsonb NOT NULL;

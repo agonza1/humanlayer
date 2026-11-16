@@ -1,6 +1,7 @@
 import { describe, it } from '@effect/vitest'
 import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Queue, type Scope, Stream } from 'effect'
 import { TestClock } from 'effect/testing'
+import { vi } from 'vitest'
 
 import type { DaemonServices } from '@/agents/claudecode/types'
 import type { DaemonRuntime } from '@/effects/runtime'
@@ -9,6 +10,7 @@ import { SessionRunRegistry } from '@/effects/services/session-runs/session-run-
 import type { TaskDiffCollectionLifecycle } from '@/effects/services/task-diff/task-diff-collection-lifecycle'
 import {
 	processSessionChange,
+	processTaskChange,
 	processWorkspaceSessionChange,
 	superviseDaemonSubscriptionConsumer,
 } from '@/subscriptions'
@@ -16,12 +18,104 @@ import {
 import { createMockDaemonServices } from '../helpers/create-mock-daemon-services'
 import { makeSessionChange } from '../helpers/session-fixtures'
 import { UnusedWorkspaceSessionLaunchActorsLive } from '../helpers/unused-workspace-session-launch-actors'
+import { createMockORPCClient } from '../mocks/orpc-client.mock'
 
 /** None of these tests routes a V2 session, so the launch-actor dependency is satisfied by a dying stub. */
 const scopedWithoutV2Routing = <A, E, R>(effect: Effect.Effect<A, E, R | Scope.Scope>) =>
 	Effect.scoped(effect).pipe(Effect.provide(UnusedWorkspaceSessionLaunchActorsLive))
 
 describe('daemon subscriptions', () => {
+	for (const specBacked of [false, true]) {
+		it.effect(
+			`bounds deferred legacy spec=${specBacked} recovery to 30 attempts without fabricating task updates`,
+			({ expect }) =>
+				scopedWithoutV2Routing(
+					Effect.gen(function* () {
+						const sessionId = specBacked
+							? '019f8ce8-7dfa-7a30-a834-bf6189842c01'
+							: '019f8ce8-7dfa-7a30-a834-bf6189842c02'
+						const taskId = '019f8ce8-7dfa-7a30-a834-bf62bbeb7196'
+						const workspaceSpec = specBacked
+							? {
+									specVersion: 1,
+									directory: '/fictional/task',
+									workspaceBaseDirectory: '/fictional',
+									setupBlocksFirstSession: true,
+									repos: [
+										{
+											localPath: '/fictional/source',
+											targetPath: '/fictional/task',
+											branch: 'codex/test',
+											sourceRef: 'HEAD',
+											primary: true,
+										},
+									],
+								}
+							: null
+						const task = { id: taskId, workspace_id: null, workspace_spec: workspaceSpec, is_draft: false }
+						const session = makeSessionChange({
+							type: 'update',
+							value: {
+								id: sessionId,
+								task_id: taskId,
+								status: 'waiting_for_workspace',
+								coding_agent: 'opencode',
+							},
+						}).value
+						const admission = vi
+							.fn<DaemonServices['orpc']['reviewProgression']['admission']>()
+							.mockResolvedValue({ kind: 'blocked', reason: 'setup_not_verified' })
+						const update = vi
+							.fn<DaemonServices['orpc']['sessions']['update']>()
+							.mockResolvedValue({ success: true, transactionId: 'fixture-tx' })
+						const services = createMockDaemonServices({
+							orpc: createMockORPCClient({ reviewProgression: { admission }, sessions: { update } }),
+							collections: {
+								tasks: { toArray: [task] },
+								sessions: { toArray: [session] },
+								workspaceSetup: {
+									toArray: [
+										{
+											id: 'setup',
+											task_id: taskId,
+											host_id: session.host_id,
+											workspace_setup_state: {
+												specVersion: 1,
+												repos: [{ localPath: '/fictional/source', status: 'done' }],
+											},
+										},
+									],
+								},
+							} as unknown as DaemonServices['collections'],
+						})
+						const lifecycle: TaskDiffCollectionLifecycle = {
+							reconcileSessionChanges: () => undefined,
+							reconcileTaskChanges: () => undefined,
+							reconcileAllTasks: () => undefined,
+						}
+						const change = { type: 'update', key: taskId, value: task } as unknown as Parameters<
+							typeof processTaskChange
+						>[0]
+						const registry = yield* SessionRunRegistry
+						yield* processTaskChange(change, services, lifecycle)
+						yield* Effect.promise(() => vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(1)))
+						expect(yield* registry.isSessionRunInFlight({ sessionId })).toBe(true)
+						expect(update.mock.calls.every(([input]) => input.status === undefined)).toBe(true)
+						for (let attempt = 2; attempt <= 30; attempt++) {
+							yield* TestClock.adjust('2 seconds')
+							yield* Effect.promise(() =>
+								vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(attempt)),
+							)
+						}
+						while (yield* registry.isSessionRunInFlight({ sessionId })) yield* Effect.yieldNow
+						yield* TestClock.adjust('1 minute')
+						expect(admission).toHaveBeenCalledTimes(30)
+						expect(update).toHaveBeenCalledTimes(1)
+						yield* Effect.promise(() => services.daemonRuntime.dispose())
+					}),
+				),
+		)
+	}
 	it.effect('stops live Claude sessions when their rows are archived or deleted', ({ expect }) =>
 		scopedWithoutV2Routing(
 			Effect.gen(function* () {
@@ -225,6 +319,7 @@ describe('daemon subscriptions', () => {
 						} as unknown as DaemonServices['collections']['tasks'],
 					} as DaemonServices['collections'],
 					orpc: {
+						reviewProgression: createMockORPCClient().reviewProgression,
 						sessions: {
 							update: async ({ status }: Parameters<DaemonServices['orpc']['sessions']['update']>[0]) => {
 								if (status !== 'launching') return

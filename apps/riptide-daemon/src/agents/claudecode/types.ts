@@ -3,10 +3,12 @@ import type { ContractRouterClient } from '@orpc/contract'
 
 import type { ApprovalsCollection } from '@/collections/electric/approvals'
 import type { ProviderLoginRequestsCollection } from '@/collections/electric/provider-login-requests'
+import type { ReviewProgressionCollection } from '@/collections/electric/review-progression'
 import type { SessionsCollection } from '@/collections/electric/sessions'
 import type { TasksCollection } from '@/collections/electric/tasks'
 import type { WorkspaceSetupCollection } from '@/collections/electric/workspace-setup'
 import type { DaemonRuntime } from '@/effects/runtime'
+import type { ReviewWriterObservations } from '@/effects/services/review-integration/review-integration'
 import type { RepositoryObserver } from '@/lib/git/repository-observer'
 import type { ISyncService } from '@/lib/sync-service'
 import type { AutomationLifecycleCoordinator } from '@/lifecycle/automation-lifecycle'
@@ -46,6 +48,7 @@ export interface DaemonServices {
 
 	/** Coordinates bounded activity and completion for the automation target. */
 	automationLifecycle?: AutomationLifecycleCoordinator
+	reviewWriterObservations?: ReviewWriterObservations
 
 	/** TanStack DB collections for session and approval data */
 	collections: {
@@ -54,6 +57,7 @@ export interface DaemonServices {
 		tasks: TasksCollection
 		workspaceSetup: WorkspaceSetupCollection
 		providerLoginRequests: ProviderLoginRequestsCollection
+		reviewProgression?: ReviewProgressionCollection
 	}
 
 	/** Shutdown coordination for graceful termination */

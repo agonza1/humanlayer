@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import { uuidv7 } from 'uuidv7'
 
 import { missingRepositorySources } from '@/lib/repository-sources'
+import { emptyReviewDelivery, reviewDeliveryBlocker, reviewDeliveryEnrollment } from '@/lib/review-progression'
 import { Composer } from '@/minimalist/components/Composer'
 import { IssueDialog } from '@/minimalist/components/IssueDialog'
 import { HostIcon, HostMenu, TargetMenu } from '@/minimalist/components/LaunchMenus'
@@ -116,6 +117,7 @@ export function NewTask({
 	const settings = fitSettings(picked, catalog)
 	const [menu, setMenu] = useState<'target' | 'host' | null>(null)
 	const [taskSize, setTaskSize] = useTaskSize()
+	const [reviewDelivery, setReviewDelivery] = useState(emptyReviewDelivery)
 	const [smallAutoAdvance] = useSmallTaskAutoAdvance()
 	const targetAnchor = useRef<HTMLButtonElement>(null)
 	useEffect(() => {
@@ -220,6 +222,7 @@ export function NewTask({
 		!existing.task?.default_working_directory
 	)
 		blocker = 'Choose a task with a workspace or directory'
+	if (!existingTaskId) blocker ??= reviewDeliveryBlocker(reviewDelivery)
 
 	const launch = async () => {
 		if (
@@ -266,6 +269,7 @@ export function NewTask({
 				settings,
 				workflow: taskSizeWorkflow(taskSize, smallAutoAdvance),
 				directImplementation: taskSize === 'small',
+				reviewProgressionEnrollment: reviewDeliveryEnrollment(reviewDelivery),
 			})
 			rememberSettings(settings)
 			setDraft('')
@@ -318,7 +322,11 @@ export function NewTask({
 				</span>
 			) : null}
 			{ticket && !existingTaskId ? <IssueChip ticket={ticket} onRemove={() => setTicket(null)} /> : null}
-			{existingTaskId ? null : <TaskSizePicker size={taskSize} onPick={setTaskSize} />}
+			{existingTaskId ? null : reviewDelivery.enabled ? (
+				<span>Same-session delivery</span>
+			) : (
+				<TaskSizePicker size={taskSize} onPick={setTaskSize} />
+			)}
 		</div>
 	)
 
@@ -336,6 +344,58 @@ export function NewTask({
 			)}
 			<div className="col">
 				{hostsReady && hosts.length === 0 ? <NoHostsNotice /> : null}
+				{!existingTaskId && (
+					<details>
+						<summary>Delivery setup</summary>
+						<label>
+							<input
+								type="checkbox"
+								checked={reviewDelivery.enabled}
+								disabled={launching}
+								onChange={(event) =>
+									setReviewDelivery({ ...reviewDelivery, enabled: event.target.checked })
+								}
+							/>{' '}
+							Same-session delivery with review enrollment
+						</label>
+						{reviewDelivery.enabled && (
+							<div>
+								<p>
+									The same Coder implements, checks, self-reviews and publishes the PR. Independent
+									review stays separate. This does not approve a merge.
+								</p>
+								<label>
+									Enrollment reference{' '}
+									<input
+										value={reviewDelivery.enrollmentId}
+										disabled={launching}
+										maxLength={80}
+										onChange={(event) =>
+											setReviewDelivery({ ...reviewDelivery, enrollmentId: event.target.value })
+										}
+									/>
+								</label>
+								<label>
+									Return-route reference{' '}
+									<input
+										value={reviewDelivery.returnRouteRef}
+										disabled={launching}
+										maxLength={80}
+										onChange={(event) =>
+											setReviewDelivery({ ...reviewDelivery, returnRouteRef: event.target.value })
+										}
+									/>
+								</label>
+								<p>
+									Host: {host?.name ?? 'Choose a host'} ({host?.host.host_id ?? 'not selected'}).
+									Enrollment: {reviewDelivery.enrollmentId || 'not selected'}. Route:{' '}
+									{reviewDelivery.returnRouteRef || 'not selected'}. The host must verify this setup
+									before work starts.
+								</p>
+							</div>
+						)}
+					</details>
+				)}
 				<Composer
 					value={draft}
 					onChange={setDraft}

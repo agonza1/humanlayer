@@ -1,16 +1,13 @@
 import type { RiptideApiInputs, RiptideApiOutputs } from '@humanlayer/riptide-api-contract/contract-router'
 
 import { getFirstSessionParams, withDescribePrNextStep } from '@/lib/auto-advance'
+import { withSameSessionDelivery } from '@/lib/review-progression'
+import type { RiptideApiClient } from '@/orpc/client'
 
 import type { LauncherV3Command, LauncherV3TicketAttachment } from './launcher-v3-form'
 
 type LaunchTaskDraftInput = RiptideApiInputs['tasks']['launchDraft']
-type LaunchTaskDraftResult = Omit<RiptideApiOutputs['tasks']['launchDraft'], 'task'> & {
-	task: Omit<RiptideApiOutputs['tasks']['launchDraft']['task'], 'created_at' | 'updated_at'> & {
-		created_at: string
-		updated_at: string
-	}
-}
+type LaunchTaskDraftResult = Awaited<ReturnType<RiptideApiClient['tasks']['launchDraft']>>
 type CreateTaskV2Input = RiptideApiInputs['tasks']['v2']['create']
 type CreateTaskV2Result = RiptideApiOutputs['tasks']['v2']['create']
 
@@ -115,7 +112,11 @@ function buildFirstSessionContent(command: LauncherV3Command) {
 	const ticket = command.ticket
 	const ticketReference = ticket ? `See @.humanlayer/tasks/${command.slug}/${ticketArtifactFileName(ticket)}` : null
 	const fileReferences = command.attachments.map(({ fileName }) => `@.humanlayer/tasks/${command.slug}/${fileName}`)
-	const prompt = command.directImplementation ? withDescribePrNextStep(command.promptText) : command.promptText
+	const prompt = command.reviewProgressionEnrollment
+		? withSameSessionDelivery(command.promptText)
+		: command.directImplementation
+			? withDescribePrNextStep(command.promptText)
+			: command.promptText
 	const promptWithFileRefs = [prompt, ...fileReferences].filter(Boolean).join('\n\n')
 	const promptWithFileAndTicketRefs = [promptWithFileRefs, ticketReference].filter(Boolean).join('\n\n')
 	const workflowSession =
@@ -199,6 +200,7 @@ export function buildLaunchTaskDraftInput({
 		autoAdvanceWorktreeToImplementation: command.autoAdvanceFlags.autoAdvanceWorktreeToImplementation,
 		autoAdvanceImplementationToPr: command.autoAdvanceFlags.autoAdvanceImplementationToPr,
 	}
+	if (command.reviewProgressionEnrollment) input.reviewProgressionEnrollment = command.reviewProgressionEnrollment
 	applyTicketFields(command, input)
 	if (command.worktreeTiming === 'now' && command.workspaceSpec) {
 		input.workspaceSpec = command.workspaceSpec
@@ -256,6 +258,7 @@ export function buildCreateTaskV2Input({
 		autoAdvanceImplementationToPr: command.autoAdvanceFlags.autoAdvanceImplementationToPr,
 		attachments: command.attachments,
 	}
+	if (command.reviewProgressionEnrollment) input.reviewProgressionEnrollment = command.reviewProgressionEnrollment
 	applyTicketFields(command, input)
 	if (command.createdWithExperimentFlags) {
 		input.createdWithExperimentFlags = command.createdWithExperimentFlags

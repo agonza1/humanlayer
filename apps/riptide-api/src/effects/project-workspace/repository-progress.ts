@@ -10,6 +10,7 @@ import type {
 import { and, eq } from 'drizzle-orm'
 import { Clock, Effect, Match, Predicate } from 'effect'
 
+import { reviewDigest, wakeReviewWorkspace } from '../../db/review-progression'
 import { PostgresDb } from '../services/postgres/postgres-db.service'
 import {
 	WorkspaceRepositoryProgressInvalid,
@@ -147,6 +148,14 @@ export const advanceRepositorySetupStage = Effect.fn('project_workspace.advance_
 			}
 
 			// Automatic sources belong to this workspace status, never the user configuration.
+			if (
+				('status' in transition.update &&
+					transition.update.status !== undefined &&
+					transition.update.status !== current.status.status) ||
+				(transition.update.error !== undefined &&
+					reviewDigest(transition.update.error) !== reviewDigest(current.status.error))
+			)
+				yield* transaction.run(() => wakeReviewWorkspace(transaction.client, identity))
 
 			return yield* readWorkspaceRepositoryActorSnapshotWithExecutor(transaction, identity)
 		}),

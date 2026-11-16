@@ -1,3 +1,4 @@
+import { ORPCError } from '@orpc/server'
 import { Effect } from 'effect'
 
 import { createSessionV2 } from '../../../../effects/project-workspace/create-session-v2'
@@ -25,6 +26,8 @@ export const createSessionV2Procedure = effectOrpcBaseOrganizationRequired.sessi
 		fastMode: input.fastMode,
 		permissionsMode: input.permissionsMode,
 		defaultRepositoryIdentity: input.defaultRepositoryIdentity,
+		executionPhase: input.executionPhase,
+		planningSkill: input.planningSkill,
 	}).pipe(
 		Effect.catchTags({
 			ProjectsV2Disabled: () =>
@@ -46,7 +49,8 @@ export const createSessionV2Procedure = effectOrpcBaseOrganizationRequired.sessi
 						},
 					}),
 				),
-			PostgresDbQueryError: () => Effect.fail(errors.SERVICE_UNAVAILABLE()),
+			PostgresDbQueryError: (error) =>
+				error.cause instanceof ORPCError ? Effect.fail(error.cause) : Effect.fail(errors.SERVICE_UNAVAILABLE()),
 			PostgresDbTransactionError: () => Effect.fail(errors.SERVICE_UNAVAILABLE()),
 		}),
 	)

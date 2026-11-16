@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useCallback } from 'react'
 
 import { useExistingSessionForNextStep } from '@/hooks/live-queries/useExistingSessionForNextStep'
+import { useTaskReviewEnrollment } from '@/hooks/useTaskSettings'
 
 interface EventRowNextStepInput {
 	event: ConversationEvent | null
@@ -22,6 +23,8 @@ interface EventRowNextStepInput {
  */
 export function useEventRowNextStep(input: EventRowNextStepInput) {
 	const navigate = useNavigate()
+	const enrolled = useTaskReviewEnrollment(input.taskId)
+	const suppressed = enrolled && input.targetLabel === 'rpi:describe-pr'
 	const hasNextStepSuggestion = input.event?.nextStepSuggestion?.extraction.type === 'next_step_found'
 	const { siblingSessionId } = useExistingSessionForNextStep(
 		hasNextStepSuggestion ? (input.taskId ?? null) : null,
@@ -33,13 +36,20 @@ export function useEventRowNextStep(input: EventRowNextStepInput) {
 	const onProceed = input.onProceedToNextStep
 	const handleProceedToNextStep = useCallback(
 		(nextStepEventId: string, suggestion: NextStepSuggestion) => {
+			if (
+				suppressed ||
+				(enrolled &&
+					suggestion.extraction.type === 'next_step_found' &&
+					suggestion.extraction.nextStepType === 'describe-pr')
+			)
+				return
 			if (siblingSessionId) {
 				navigate({ to: '/sessions/$sessionId', params: { sessionId: siblingSessionId } })
 				return
 			}
 			onProceed(nextStepEventId, suggestion)
 		},
-		[siblingSessionId, navigate, onProceed],
+		[suppressed, enrolled, siblingSessionId, navigate, onProceed],
 	)
 
 	const nextStepLabelOverride = siblingSessionId
@@ -51,7 +61,7 @@ export function useEventRowNextStep(input: EventRowNextStepInput) {
 			: undefined
 
 	const nextStepVariant = siblingSessionId || input.isAutoAdvanceEnabled ? ('outline' as const) : undefined
-	const nextStepDisabled = siblingSessionId ? false : input.isAutoAdvanceEnabled
+	const nextStepDisabled = suppressed || (siblingSessionId ? false : input.isAutoAdvanceEnabled)
 
 	return { handleProceedToNextStep, nextStepLabelOverride, nextStepVariant, nextStepDisabled }
 }

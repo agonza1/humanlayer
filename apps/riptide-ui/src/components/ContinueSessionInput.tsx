@@ -85,7 +85,7 @@ import { useIsNarrow } from '@/hooks/useIsNarrow'
 import { useKeybindingDisplays } from '@/hooks/useKeybindingDisplays'
 import { useMountEffect } from '@/hooks/useMountEffect'
 import { useOrgMembers } from '@/hooks/useOrgMembers'
-import { useSessionActions } from '@/hooks/useSessionActions'
+import { useDevelopmentResume, useSessionActions } from '@/hooks/useSessionActions'
 import { useViewportFileDrop } from '@/hooks/useViewportFileDrop'
 import { formatShortcut, shortcutKeycaps } from '@/hotkeysCatalog'
 import type { ArtifactViewerMode } from '@/lib/artifact-viewer-mode'
@@ -95,6 +95,7 @@ import { getContextWarningThreshold, isContextWarningShown } from '@/lib/context
 import { startDocumentRootScrollGuard } from '@/lib/document-root-scroll-guard'
 import { resolvePermissionsModeForSelectedModel } from '@/lib/model-permissions'
 import { BUNDLED_MODEL_REGISTRY, type ModelRegistry } from '@/lib/model-registry'
+import { canResumeDevelopment } from '@/lib/review-progression'
 import { recordSendScrollDiagnostic } from '@/lib/send-scroll-diagnostics'
 import { type SessionStatusHost, sessionStatusLabel } from '@/lib/session-status-label'
 import { navigateToSettings } from '@/lib/settings-navigation'
@@ -303,6 +304,9 @@ export interface ContinueSessionInputPureProps {
 	canPrompt: boolean
 	/** Structural controls remain owner-only. */
 	canManageSession: boolean
+	onResumeDevelopment?: () => void
+	resumeDevelopmentPending?: boolean
+	resumeDevelopmentError?: string | null
 	className?: string
 	/** Extra items appended to the model selector menu (e.g. hand off to another agent). */
 	children?: React.ReactNode
@@ -523,6 +527,9 @@ export function ContinueSessionInputPure({
 	disabled = false,
 	canPrompt,
 	canManageSession,
+	onResumeDevelopment,
+	resumeDevelopmentPending = false,
+	resumeDevelopmentError,
 	className,
 	children,
 	sessionId,
@@ -1487,6 +1494,24 @@ export function ContinueSessionInputPure({
 										Uploading {pendingUploadCount} {pendingUploadCount === 1 ? 'file' : 'files'}...
 									</div>
 								)}
+								{canManageSession && onResumeDevelopment && !isDenying && !isForkMode && (
+									<Button
+										variant="outline"
+										size="sm"
+										disabled={
+											!canPrompt ||
+											disabled ||
+											isSubmitting ||
+											resumeDevelopmentPending ||
+											isHostOffline ||
+											!sharedWritable
+										}
+										onClick={onResumeDevelopment}
+									>
+										Resume development
+									</Button>
+								)}
+								{resumeDevelopmentError && <span role="alert">{resumeDevelopmentError}</span>}
 								{canManageSession && showIterateButton && onIterateInNewSession && (
 									<IterateInNewSessionButton
 										isNarrow={isIterateButtonNarrow}
@@ -1780,6 +1805,11 @@ export function ContinueSessionInput({
 				.from({ sessions: sessionsCollection })
 				.where(({ sessions }) => eq(sessions.id, sessionId))
 				.select(({ sessions }) => ({
+					id: sessions.id,
+					archived: sessions.archived,
+					status: sessions.status,
+					execution_phase: sessions.execution_phase,
+					execution_phase_at: sessions.execution_phase_at,
 					task_id: sessions.task_id,
 					working_directory: sessions.working_directory,
 					effort: sessions.effort,
@@ -1787,6 +1817,7 @@ export function ContinueSessionInput({
 				})),
 		[sessionsCollection, sessionId],
 	)
+	const developmentResume = useDevelopmentResume(sessionData?.[0], canManageSession)
 	const taskId = sessionData?.[0]?.task_id ?? null
 	const workingDirectory = sessionData?.[0]?.working_directory ?? null
 	const sessionEffort = sessionData?.[0]?.effort ?? null
@@ -1861,6 +1892,15 @@ export function ContinueSessionInput({
 				disabled={!isReadyForInput || !canSendPrompt}
 				canPrompt={canSendPrompt}
 				canManageSession={canManageSession}
+				onResumeDevelopment={
+					canResumeDevelopment(sessionData?.[0], canManageSession)
+						? () => {
+								void developmentResume.resume()
+							}
+						: undefined
+				}
+				resumeDevelopmentPending={developmentResume.pending}
+				resumeDevelopmentError={developmentResume.error}
 				onFocusChange={setIsEditorFocused}
 				editorRef={continueEditorRef}
 				permissionsMode={session.permissions_mode as PermissionsMode}

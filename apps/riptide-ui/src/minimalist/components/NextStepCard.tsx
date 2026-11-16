@@ -8,6 +8,7 @@ import { uuidv7 } from 'uuidv7'
 
 import { useExistingSessionForNextStep } from '@/hooks/live-queries/useExistingSessionForNextStep'
 import { useMountEffect } from '@/hooks/useMountEffect'
+import { isReviewEnrolledTask, workEntryForLabel } from '@/lib/review-progression'
 import type { HostView } from '@/minimalist/lib/data'
 import { launchInTask } from '@/minimalist/lib/launch'
 import { sessionSettings } from '@/minimalist/lib/models'
@@ -28,7 +29,7 @@ export function NextStepCard({
 	host,
 }: {
 	session: Session
-	task: Pick<Task, 'id' | 'workspace_id'>
+	task: Pick<Task, 'id' | 'workspace_id'> & { workflow_revision?: bigint }
 	host: HostView | null
 }) {
 	const { client: api } = useRiptideApi()
@@ -45,7 +46,7 @@ export function NextStepCard({
 	const [hidden, setHidden] = useLocalStorage<boolean>(`hl-min-next-step-hidden-${session.id}`, false)
 
 	const proceed = async () => {
-		if (!step || action.pending) return
+		if (!step || action.pending || (isReviewEnrolledTask(task) && step.targetLabel === 'rpi:describe-pr')) return
 		if (siblingSessionId) {
 			await navigate({ to: '/tasks/$taskId', params: { taskId: task.id }, search: { session: siblingSessionId } })
 			return
@@ -55,6 +56,7 @@ export function NextStepCard({
 		const started = await action.run(
 			() =>
 				launchInTask(api, task, {
+					...workEntryForLabel(step.targetLabel),
 					sessionId,
 					eventId: uuidv7(),
 					text: step.prompt,
@@ -80,7 +82,7 @@ export function NextStepCard({
 		return () => window.removeEventListener('keydown', onKey)
 	})
 
-	if (!step) return null
+	if (!step || (isReviewEnrolledTask(task) && step.targetLabel === 'rpi:describe-pr')) return null
 	const existing = siblingSessionId !== null
 	const phase = step.targetLabel ? phaseOf({ labels: [{ name: step.targetLabel }] }) : null
 	if (hidden)

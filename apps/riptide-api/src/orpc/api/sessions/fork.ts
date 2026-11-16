@@ -19,6 +19,7 @@ import { uuidv7 } from 'uuidv7'
 import { createSessionForLaunch } from '../../../db/create-session-for-launch'
 import { getTxId } from '../../../db/get-tx-id'
 import { validateHostOwnership } from '../../../db/host-auth'
+import { lockReviewSession } from '../../../db/review-progression'
 import { checkSessionWritePermission } from '../../../db/task-auth'
 import { tryEnsureSessionStreamHydrated } from '../../../effects/services/durable-streams/streams'
 import { Sentry } from '../../../instrument'
@@ -136,6 +137,11 @@ async function validateSourceSession(
 	context: ForkContext,
 	errors: ForkErrors,
 ): Promise<SessionRow> {
+	const locked = await lockReviewSession(tx, context.auth.organizationId, input.sourceSessionId)
+	if (locked.boundary?.row)
+		throw errors.FORBIDDEN({
+			data: { message: 'Could not fork enrolled work. Start an authorized session on the same task.' },
+		})
 	const [sourceSessionTask] = await tx
 		.select({ taskId: sessions.task_id })
 		.from(sessions)

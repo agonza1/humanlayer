@@ -14,6 +14,10 @@ import { DaemonInstanceAlreadyRunning, DaemonInstanceLeaseState } from './effect
 import { createFoldSessionExecutor } from './effects/services/fold-sessions/fold-session-executor'
 import { HostModelCatalogSource } from './effects/services/host-model-catalog/host-model-catalog.service'
 import { ProviderLogin } from './effects/services/provider-login/provider-login.service'
+import {
+	observeReviewExecutor,
+	type ReviewWriterObservations,
+} from './effects/services/review-integration/review-integration'
 import { SelfUpdateProcessesLive } from './effects/services/self-update/self-update-processes.layer'
 import { runRequestedSelfUpdates } from './effects/services/self-update/self-update-requests'
 import { DaemonAlreadyShuttingDown, SelfUpdateReportError } from './effects/services/self-update/self-update.errors'
@@ -196,6 +200,7 @@ async function startDaemonInitialized(
 				? undefined
 				: await daemonRuntime.runPromise(makeAutomationLifecycleCoordinator(config.automation.lifecycle))
 		// Construct services object - this is the ONLY place this happens in production
+		const reviewWriterObservations: ReviewWriterObservations = { runs: new Map() }
 		const services: DaemonServices = {
 			daemonRuntime,
 			orpc,
@@ -203,13 +208,14 @@ async function startDaemonInitialized(
 			daemonToken: identity.token,
 			automationTargetSessionId: config.automation?.targetSessionId,
 			automationLifecycle,
+			reviewWriterObservations,
 			collections,
 			shutdown: defaultShutdownCoordinator,
 			syncService,
 			executors: {
-				claude: claudeExecutor,
-				codelayer: executeCodelayer,
-				fold: foldExecutor,
+				claude: observeReviewExecutor(claudeExecutor, reviewWriterObservations, true),
+				codelayer: observeReviewExecutor(executeCodelayer, reviewWriterObservations),
+				fold: observeReviewExecutor(foldExecutor, reviewWriterObservations),
 			},
 		}
 

@@ -2,6 +2,7 @@ import { Effect } from 'effect'
 import { hash } from 'ohash'
 import { uuidv7 } from 'uuidv7'
 
+import { prepareReviewArtifacts } from '../../../../db/review-progression'
 import { createTaskV2 } from '../../../../effects/project-workspace/create-task-v2'
 import { GitHubService } from '../../../../effects/services/github/github.service'
 import { formatJiraTicketMd } from '../../../../lib/format-jira-ticket'
@@ -80,10 +81,21 @@ export const createTaskV2Procedure = effectOrpcBaseOrganizationRequired.tasks.v2
 			}
 		}
 
+		const preparedReviewArtifacts = input.reviewProgressionEnrollment
+			? yield* Effect.tryPromise({
+					try: () =>
+						prepareReviewArtifacts(
+							{ ...input, importedTicket, organizationId: context.auth.organizationId },
+							context.services.s3,
+						),
+					catch: () => errors.SERVICE_UNAVAILABLE(),
+				})
+			: undefined
 		return yield* createTaskV2({
 			...input,
 			actor: { organizationId: context.auth.organizationId, userId: context.auth.userId },
 			importedTicket,
+			preparedReviewArtifacts,
 		}).pipe(
 			Effect.catchTags({
 				ProjectsV2Disabled: () => Effect.fail(errors.FORBIDDEN()),

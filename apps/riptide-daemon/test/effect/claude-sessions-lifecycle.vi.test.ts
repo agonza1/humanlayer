@@ -159,19 +159,32 @@ const makeControls = Effect.gen(function* () {
 })
 
 describe('ClaudeSessionsLive lifecycle', () => {
-	it.effect('closes the actual SDK resource when the completed session reaches its idle TTL', ({ expect }) =>
+	it.effect('retains cleanup uncertainty after idle interruption even when mailbox close succeeds', ({ expect }) =>
 		Effect.gen(function* () {
 			const controls = yield* makeControls
 			const session = makeBasicEffectSession()
+			const finished = yield* Queue.unbounded<void>()
+			const observation = { taskId: 'task', identity: 'retained', running: true, uncertain: false }
+			const context = makeSessionContext(session)
+			context.services.reviewWriterObservations = {
+				runs: new Map([[session.id, observation]]),
+				finished: () => {
+					Queue.offerUnsafe(finished, undefined)
+				},
+			}
 			yield* Effect.gen(function* () {
 				const sessions = yield* ClaudeSessions
 				yield* sessions.executeClaudeSession({
-					context: makeSessionContext(session),
+					context,
 					setupArtifactPaths: () => Promise.reject('unused'),
 				})
 				yield* Queue.take(controls.readyForInput)
+				expect(observation.running).toBe(true)
+				expect(yield* Queue.size(finished)).toBe(0)
 				yield* TestClock.adjust('10 minutes')
 				yield* Queue.take(controls.closes)
+				yield* Queue.take(finished)
+				expect(observation).toMatchObject({ running: false, uncertain: true })
 				expect(yield* Queue.size(controls.closes)).toBe(0)
 				expect(yield* sessions.stopClaudeSession({ sessionId: session.id })).toBe('not-active')
 			}).pipe(Effect.provide(makeClaudeSessionsTestLayer(controls)), Effect.scoped)
@@ -240,12 +253,99 @@ describe('ClaudeSessionsLive lifecycle', () => {
 		}),
 	)
 
+	it.effect('retains uncertainty when an SDK finalizer fails even if stop reports a terminated fiber', ({ expect }) =>
+		Effect.gen(function* () {
+			const controls = yield* makeControls
+			const session = makeBasicEffectSession()
+			const finished = yield* Queue.unbounded<void>()
+			const observation = { taskId: 'task', identity: 'retained', running: true, uncertain: false }
+			const context = makeSessionContext(session)
+			context.services.reviewWriterObservations = {
+				runs: new Map([[session.id, observation]]),
+				finished: () => {
+					Queue.offerUnsafe(finished, undefined)
+				},
+			}
+			yield* Effect.gen(function* () {
+				const sessions = yield* ClaudeSessions
+				yield* sessions.executeClaudeSession({ context, setupArtifactPaths: () => Promise.reject('unused') })
+				yield* Queue.take(controls.readyForInput)
+				expect(yield* sessions.stopClaudeSession({ sessionId: session.id })).toBe('stopped')
+				yield* Queue.take(finished)
+				expect(observation).toMatchObject({ running: false, uncertain: true })
+			}).pipe(
+				Effect.provide(makeClaudeSessionsTestLayer(controls, () => Effect.die('close state unknown'))),
+				Effect.scoped,
+			)
+		}),
+	)
+
+	it.effect('does not let an older SDK generation finish a replacement observation', ({ expect }) =>
+		Effect.gen(function* () {
+			const controls = yield* makeControls
+			const session = makeBasicEffectSession()
+			const finished = yield* Queue.unbounded<void>()
+			const original = { taskId: 'task', identity: 'original', running: true, uncertain: false }
+			const replacement = { taskId: 'task', identity: 'replacement', running: true, uncertain: true }
+			const context = makeSessionContext(session)
+			const observations = {
+				runs: new Map([[session.id, original]]),
+				finished: () => {
+					Queue.offerUnsafe(finished, undefined)
+				},
+			}
+			context.services.reviewWriterObservations = observations
+			yield* Effect.gen(function* () {
+				const sessions = yield* ClaudeSessions
+				yield* sessions.executeClaudeSession({ context, setupArtifactPaths: () => Promise.reject('unused') })
+				yield* Queue.take(controls.readyForInput)
+				observations.runs.set(session.id, replacement)
+				expect(yield* sessions.stopClaudeSession({ sessionId: session.id })).toBe('stopped')
+				expect(replacement).toMatchObject({ running: true, uncertain: true })
+				expect(yield* Queue.size(finished)).toBe(0)
+			}).pipe(Effect.provide(makeClaudeSessionsTestLayer(controls)), Effect.scoped)
+		}),
+	)
+
+	it.effect('attributes a late SDK close failure to its captured observation, not its replacement', ({ expect }) =>
+		Effect.gen(function* () {
+			const controls = yield* makeControls
+			const session = makeBasicEffectSession()
+			const original = { taskId: 'task', identity: 'original', running: true, uncertain: false }
+			const replacement = { taskId: 'task', identity: 'replacement', running: true, uncertain: false }
+			const context = makeSessionContext(session)
+			const observations = { runs: new Map([[session.id, original]]) }
+			context.services.reviewWriterObservations = observations
+			yield* Effect.gen(function* () {
+				const sessions = yield* ClaudeSessions
+				yield* sessions.executeClaudeSession({ context, setupArtifactPaths: () => Promise.reject('unused') })
+				yield* Queue.take(controls.readyForInput)
+				observations.runs.set(session.id, replacement)
+				expect(yield* sessions.stopClaudeSession({ sessionId: session.id })).toBe('stopped')
+				expect(original.uncertain).toBe(true)
+				expect(replacement).toMatchObject({ running: true, uncertain: false })
+			}).pipe(
+				Effect.provide(makeClaudeSessionsTestLayer(controls, () => Effect.die('close state unknown'))),
+				Effect.scoped,
+			)
+		}),
+	)
+
 	it.effect('releases lifecycle admission when a Claude run fiber cannot finish cleanup', ({ expect }) =>
 		Effect.gen(function* () {
 			const controls = yield* makeControls
 			const stuckCloseRelease = yield* Deferred.make<void>()
 			const first = makeBasicEffectSession({ id: 'stuck-session' })
 			const second = makeBasicEffectSession({ id: 'replacement-session' })
+			const finished = yield* Queue.unbounded<void>()
+			const observation = { taskId: 'task', identity: 'retained', running: true, uncertain: false }
+			const context = makeSessionContext(first)
+			context.services.reviewWriterObservations = {
+				runs: new Map([[first.id, observation]]),
+				finished: () => {
+					Queue.offerUnsafe(finished, undefined)
+				},
+			}
 			const closeSession = (sessionId: string) =>
 				sessionId === first.id
 					? Deferred.await(stuckCloseRelease)
@@ -254,7 +354,7 @@ describe('ClaudeSessionsLive lifecycle', () => {
 			yield* Effect.gen(function* () {
 				const sessions = yield* ClaudeSessions
 				yield* sessions.executeClaudeSession({
-					context: makeSessionContext(first),
+					context,
 					setupArtifactPaths: () => Promise.reject('unused'),
 				})
 				yield* Queue.take(controls.readyForInput)
@@ -262,6 +362,8 @@ describe('ClaudeSessionsLive lifecycle', () => {
 				yield* Effect.yieldNow
 				yield* TestClock.adjust('15 seconds')
 				expect(yield* Fiber.join(stopFiber)).toBe('timed-out')
+				yield* Queue.take(finished)
+				expect(observation).toMatchObject({ running: true, uncertain: true })
 
 				yield* sessions.executeClaudeSession({
 					context: makeSessionContext(second),
@@ -271,6 +373,8 @@ describe('ClaudeSessionsLive lifecycle', () => {
 				expect(yield* sessions.stopClaudeSession({ sessionId: second.id })).toBe('stopped')
 				yield* Queue.take(controls.closes)
 				yield* Deferred.succeed(stuckCloseRelease, undefined)
+				yield* Queue.take(finished)
+				expect(observation).toMatchObject({ running: false, uncertain: true })
 			}).pipe(Effect.provide(makeClaudeSessionsTestLayer(controls, closeSession)), Effect.scoped)
 		}),
 	)

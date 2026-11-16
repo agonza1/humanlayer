@@ -3,6 +3,7 @@ import { ORPCError } from '@orpc/server'
 
 import { getTxId } from '../../../db/get-tx-id'
 import { validateHostOwnership } from '../../../db/host-auth'
+import { lockReviewTask } from '../../../db/review-progression'
 import { checkTaskWritePermission } from '../../../db/task-auth'
 import { upsertTaskUserSettingsForSession } from '../../../db/upsert-task-user-settings-for-session'
 import { tryEnsureSessionStreamHydrated } from '../../../effects/services/durable-streams/streams'
@@ -39,6 +40,14 @@ export const createSessionProcedure = apiBaseOrgRequired.sessions.create
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				const boundary = taskId ? await lockReviewTask(tx, organizationId, taskId) : null
+				if (boundary?.row && status !== 'draft')
+					throw errors.BAD_REQUEST({
+						data: {
+							message:
+								'Could not create a runnable session. Use the enrolled task launch or continuation.',
+						},
+					})
 				// If taskId is provided, verify write permission and get task's resource_owner
 				let resourceOwnerUserId = context.auth.userId
 				if (taskId) {

@@ -3,10 +3,12 @@ import { artifactVersions } from '@humanlayer/db/tables/artifact-versions'
 import { artifacts } from '@humanlayer/db/tables/artifacts'
 import { taskUserSettings } from '@humanlayer/db/tables/task-user-settings'
 import { tasks } from '@humanlayer/db/tables/tasks'
+import { workflowPatch } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import { ORPCError } from '@orpc/server'
 import { and, eq } from 'drizzle-orm'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { lockReviewTask, beginReviewWorkflow, finishReviewWorkflow } from '../../../db/review-progression'
 import { checkTaskWritePermission, type TaskWithAuth } from '../../../db/task-auth'
 import logger from '../../../logger'
 import { apiBaseOrgRequired, requiresBillingMiddleware } from '../../base'
@@ -71,6 +73,7 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				const boundary = await lockReviewTask(tx, organizationId, taskId)
 				// 1. Verify write permission on task (via ownership or ACL)
 				const taskCheck = await checkTaskWritePermission(tx, taskId, context.auth.userId, organizationId)
 
@@ -113,6 +116,9 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 				} else {
 					effectiveTask = taskCheck.task
 				}
+
+				const workflow = await beginReviewWorkflow(tx, boundary, context.auth.userId, input)
+				if (workflow?.replay) return { txid: workflow.replay.transactionId }
 
 				// IMMUTABILITY: Once slug is non-null, it cannot be changed
 				if (effectiveTask.slug && slug !== undefined && slug !== effectiveTask.slug) {
@@ -295,7 +301,15 @@ export const updateTaskProcedure = apiBaseOrgRequired.tasks.update
 						.where(eq(artifactOperationsLog.task_id, taskId))
 				}
 
-				return { txid: await getTxId(tx) }
+				const txid = await getTxId(tx)
+				await finishReviewWorkflow(
+					tx,
+					boundary,
+					workflow,
+					{ transactionId: txid, success: true },
+					workflowPatch(input),
+				)
+				return { txid }
 			})
 			return {
 				transactionId: txResult.txid,

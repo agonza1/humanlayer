@@ -44,6 +44,9 @@ describe('launcherV3FormSchema', () => {
 			autoAdvance: true,
 			workflowPresentation: 'named',
 			graphRevealed: false,
+			reviewDeliveryEnabled: false,
+			reviewEnrollmentId: '',
+			reviewReturnRouteRef: '',
 			worktreeTiming: 'later',
 			workspaceSnapshotDirectory: null,
 			excludedRepositoryLocalPaths: [],
@@ -192,6 +195,9 @@ describe('draft projection', () => {
 				autoAdvance: true,
 				workflowPresentation: 'named',
 				graphRevealed: false,
+				reviewDeliveryEnabled: false,
+				reviewEnrollmentId: '',
+				reviewReturnRouteRef: '',
 				worktreeTiming: 'later',
 				workspaceSnapshotDirectory: null,
 				excludedRepositoryLocalPaths: [],
@@ -243,6 +249,24 @@ describe('draft projection', () => {
 })
 
 describe('toLaunchCommand', () => {
+	it('keeps stock drafts and commands unenrolled without an implicit phase even with saved references', () => {
+		const values = launchable({ reviewEnrollmentId: 'personal', reviewReturnRouteRef: 'origin_1' })
+		expect(values.reviewDeliveryEnabled).toBe(false)
+		const persisted = toPersistedLauncherV3Draft(values)
+		expect(persisted.local).toMatchObject({
+			reviewDeliveryEnabled: false,
+			reviewEnrollmentId: 'personal',
+			reviewReturnRouteRef: 'origin_1',
+		})
+		const command = toLaunchCommand(values)
+		expect(command).toMatchObject({ workflowType: 'outline_only', autoAdvance: true, directImplementation: false })
+		for (const projection of [values, persisted.local, persisted.durable, command]) {
+			expect(projection).not.toHaveProperty('executionPhase')
+			expect(projection).not.toHaveProperty('planningSkill')
+			expect(projection).not.toHaveProperty('reviewProgressionEnrollment')
+		}
+	})
+
 	it('materializes project workspaces immediately without changing directory-backed browser timing', () => {
 		const values = launchable({ projectId: 'project-1', directory: '', worktreeTiming: 'later' })
 		const project = { projectId: 'project-1', defaultRepositoryIdentity: 'github.com/acme/repo', repositories: [] }

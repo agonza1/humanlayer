@@ -1,6 +1,8 @@
 import { taskUserSettings } from '@humanlayer/db/tables/task-user-settings'
+import { workflowPatch } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import { Effect } from 'effect'
 
+import { lockReviewTask } from '../../../db/review-progression'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
 import { getTransactionId, requireTaskReadPermission } from '../../../effects/services/postgres/helpers'
 import { PostgresDb } from '../../../effects/services/postgres/postgres-db.service'
@@ -50,6 +52,16 @@ export const upsertTaskUserSettingsProcedure = effectOrpcBaseOrganizationRequire
 			.transaction((tx) =>
 				Effect.gen(function* () {
 					yield* requireTaskReadPermission(tx, { taskId, userId, organizationId })
+					const boundary = yield* tx.run(() => lockReviewTask(tx.client, organizationId, taskId))
+					if (boundary.row && Object.keys(workflowPatch(input)).length)
+						return yield* Effect.fail(
+							errors.FORBIDDEN({
+								data: {
+									message:
+										'Could not change execution controls. Ask the task owner to update the enrolled workflow.',
+								},
+							}),
+						)
 
 					const [settings] = yield* tx.query(
 						tx.client

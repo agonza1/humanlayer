@@ -26,6 +26,7 @@ import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { providerLoginRequests } from '@humanlayer/db/tables/provider-login-requests'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskOrganizationAcl } from '@humanlayer/db/tables/task-organization-acl'
 import { taskUserAcl } from '@humanlayer/db/tables/task-user-acl'
@@ -474,6 +475,14 @@ export function buildProviderLoginRequestsSyncWhereV2(auth: SyncAuthParams): SQL
 
 type DaemonSyncAuthParams = SyncAuthParams & {
 	hostId: string
+}
+
+export function buildDaemonReviewProgressionSyncWhere(auth: DaemonSyncAuthParams): SQL {
+	return and(
+		eq(reviewProgression.organization_id, auth.organizationId),
+		eq(reviewProgression.resource_owner_user_id, auth.userId),
+		eq(reviewProgression.host_id, auth.hostId),
+	) as SQL
 }
 
 /**

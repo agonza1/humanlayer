@@ -8,6 +8,7 @@ import { useCallback, useMemo } from 'react'
 import { HOTKEY_SCOPES } from '@/hooks/hotkeys/scopes'
 import { useExistingSessionForNextStep } from '@/hooks/live-queries/useExistingSessionForNextStep'
 import { useTaskHasNextStep } from '@/hooks/live-queries/useTaskHasNextStep'
+import { useTaskReviewEnrollment } from '@/hooks/useTaskSettings'
 
 type DraftSearch = (typeof import('@/routes/_app/sessions/draft').Route)['types']['fullSearchSchema']
 
@@ -29,13 +30,15 @@ export function useTaskNextStep({
 	editingSessionId: string | null
 }) {
 	const navigate = useNavigate()
+	const enrolled = useTaskReviewEnrollment(taskId)
 
 	// Check if task has a next step suggestion (from most recent session)
 	const {
-		nextStepData,
+		nextStepData: suggestedNextStep,
 		sessionId: nextStepSourceSessionId,
 		sessionCreatedAt: nextStepSourceCreatedAt,
 	} = useTaskHasNextStep(taskId)
+	const nextStepData = enrolled && suggestedNextStep?.nextStepType === 'describe-pr' ? null : suggestedNextStep
 
 	// Resolve the next step's skill ID to its RPI skill, whose label names the
 	// target session, e.g. 'create-research' → 'rpi:research'
@@ -57,6 +60,7 @@ export function useTaskNextStep({
 
 	// Handler to proceed to next step (navigate to draft with pre-filled slash command)
 	const handleProceedToNextStep = useCallback(() => {
+		if (!canCreateSession || !nextStepData) return
 		// If a sibling session with the target label exists, navigate to it
 		if (siblingSessionId) {
 			navigate({ to: '/sessions/$sessionId', params: { sessionId: siblingSessionId } })
@@ -79,7 +83,7 @@ export function useTaskNextStep({
 			to: '/sessions/draft',
 			search,
 		})
-	}, [nextStepData, navigate, siblingSessionId])
+	}, [canCreateSession, nextStepData, navigate, siblingSessionId])
 
 	// When the sibling session already exists, the TaskSummary button becomes a
 	// "View <phase> session" outline link instead of a launch action.

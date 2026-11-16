@@ -13,7 +13,7 @@ const queryTasksCollectionBuilder = createBrowserQueryCollection({
 		const client = apiClient as RiptideApiClient
 		return syncVersion === 2 ? client.sync.v2.tasks : client.sync.tasks
 	},
-	bigIntFields: ['created_at', 'updated_at'],
+	bigIntFields: ['created_at', 'updated_at', 'workflow_revision'],
 	indexes: [{ field: (row) => row.updated_at, name: 'updated_at', indexType: BTreeIndex }],
 })
 

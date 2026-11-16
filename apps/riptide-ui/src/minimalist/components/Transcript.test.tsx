@@ -26,6 +26,36 @@ const turn: Turn = {
 }
 
 describe('minimalist end-of-turn edits summary', () => {
+	it('renders review evidence without agent or approval controls', () => {
+		const outcomeKey = 'a'.repeat(64)
+		const { container } = render(
+			<Transcript
+				turns={[
+					{
+						kind: 'review_progression',
+						id: 'review',
+						at: 1000,
+						note: {
+							kind: 'review_progression',
+							version: 1,
+							outcomeKey,
+							status: 'needs_decision',
+							repository: 'fixture/project',
+							pr: null,
+							headSha: null,
+							reportArtifact: `review-report-${outcomeKey}.md`,
+						},
+					},
+				]}
+				running={false}
+			/>,
+		)
+		expect(screen.getByLabelText('Review update')).toHaveTextContent('Review needs your attention')
+		expect(screen.getByText(`review-report-${outcomeKey}.md`)).toBeInTheDocument()
+		expect(container.querySelector('button')).toBeNull()
+		expect(screen.getByText(/does not start the agent/)).toBeInTheDocument()
+	})
+
 	it.each([1, 2])('hides the card when all %i files have zero line counts', (count) => {
 		turnWrites.mockReturnValue({
 			docs: [],

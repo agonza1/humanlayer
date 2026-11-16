@@ -5,6 +5,7 @@ import { StatusCodes } from 'http-status-codes'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../../contract-builder'
+import { hasSameSessionDelivery, ReviewProgressionEnrollmentSchema } from '../../../lib/review-progression'
 import { isSafeTaskWorkspacePathSegment } from '../../../lib/task-workspace-path'
 import { TicketProviderSchema } from '../../../lib/ticket-provider'
 import { CodingAgentSchema, PermissionsModeSchema } from '../../sessions/launch'
@@ -71,6 +72,7 @@ export const CreateTaskV2InputSchema = z
 		createdWithExperimentFlags: CreatedWithExperimentFlagsSchema.optional(),
 		attachments: z.array(LaunchTaskDraftAttachmentInputSchema).max(50).default([]),
 		firstSession: CreateTaskV2FirstSessionInputSchema,
+		reviewProgressionEnrollment: ReviewProgressionEnrollmentSchema.optional(),
 	})
 	.refine(
 		(input) => {
@@ -85,6 +87,34 @@ export const CreateTaskV2InputSchema = z
 		},
 	)
 	.superRefine((input, context) => {
+		if (
+			input.reviewProgressionEnrollment &&
+			(!input.sessionId ||
+				!input.eventId ||
+				(input.firstSession.id !== undefined && input.firstSession.id !== input.sessionId) ||
+				(input.firstSession.eventId !== undefined && input.firstSession.eventId !== input.eventId))
+		) {
+			context.addIssue({
+				code: 'custom',
+				path: ['sessionId'],
+				message: 'Keep the same session and event IDs when launching enrolled delivery.',
+			})
+		}
+		if (
+			input.reviewProgressionEnrollment &&
+			(input.workflowType !== 'freeform' ||
+				input.firstSession.intent !== 'implementation' ||
+				input.autoAdvanceImplementationToPr ||
+				input.repositories.length !== 1 ||
+				!hasSameSessionDelivery(input.taskContent) ||
+				!hasSameSessionDelivery(input.firstSession.text))
+		) {
+			context.addIssue({
+				code: 'custom',
+				path: ['reviewProgressionEnrollment'],
+				message: 'Choose same-session delivery with one repository and automatic PR handoff turned off.',
+			})
+		}
 		if (input.ticketProvider && !input.ticketId?.trim()) {
 			context.addIssue({
 				code: 'custom',

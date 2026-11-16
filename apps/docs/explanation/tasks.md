@@ -61,6 +61,16 @@ A task can contain several sessions. Each session stays separate, while the task
 
 ## Share and review a task
 
+### Opt-in review progression source
+
+The paired review-progression changes are source-only, default off and not accepted as an installed integration. Ordinary unenrolled tasks keep their existing workflow. An explicitly enrolled task binds its owner, host, verified working directory and accepted scope before execution; collaborator prompt access does not grant enrolled execution-control authority.
+
+The selected delivery session owns implementation, verification, self-review and publication, including its separate `DeliveryReportV1`. Independent review stays separate. Continuations and repairs reuse the same task and shared review allowance, not a new task or budget. Switching to PRD/TDD planning suspends implicit implementation; explicit authorized implementation resumes on the same task. New work-entry markers take precedence over historical review labels. A board column, completed turn or report is not acceptance or execution authority.
+
+Passive review notes and artifacts use independently verified receipts and never resume an agent. Later merge results are separate immutable outcomes bound to readiness, exact head and scope; earlier acknowledgements cannot satisfy them. Native foreground work has no guaranteed asynchronous return channel: absent a verified supported sender, native-origin delivery is an explicit limitation, not a delivered receipt. PR-only and manual-merge restrictions remain vetoes.
+
+Automatic progression remains incomplete while generation-bound SDK child-cleanup evidence is unresolved. Successful executor promises, mailbox closure, fiber termination, idle rows and lease expiry cannot authorize replacement. Controller-owned root/static/services/API/concurrency verification, Phase 6/7 technical/manual gates and original human acceptance remain open. Focused offline fixtures do not establish deployment, live Slack delivery or task acceptance. See [same-host rollout and rollback prerequisites](/guide/local-daemon#review-progression-source-boundary).
+
 HumanLayer shares access at the task level. When a task is shared:
 
 - Teammates can see its related work according to their task access

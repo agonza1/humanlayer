@@ -1,9 +1,11 @@
 import { extractNextStepEffect } from '@humanlayer/ai/extract-next-step/effect'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { userSettings } from '@humanlayer/db/tables/user-settings'
+import { reviewExecutionPayload } from '@humanlayer/riptide-api-contract/lib/review-progression'
 import { resolveEffectiveContextWindow } from '@humanlayer/schemas/effect/model-context'
 import { isStructuredTaskWorkflow } from '@humanlayer/schemas/effect/taskconfiguration'
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
@@ -12,6 +14,13 @@ import { Clock, Effect } from 'effect'
 
 import { getTxId } from '../../../db/get-tx-id'
 import { rejectPendingApprovals } from '../../../db/reject-pending-approvals'
+import {
+	lockReviewSession,
+	reviewDigest,
+	reviewIsIdle,
+	reviewQueueIsAdmitted,
+	wakeReviewTask,
+} from '../../../db/review-progression'
 import { canWriteTaskForSession } from '../../../db/task-auth'
 import { ExperimentAnalyticsService } from '../../../effects/services/experiment-analytics/experiment-analytics.service'
 import { Sentry } from '../../../instrument'
@@ -51,6 +60,7 @@ export const updateSessionProcedure = daemonBase.sessions.update
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				const locked = await lockReviewSession(tx, organizationId, input.sessionId)
 				// 1. Fetch session with auth-relevant fields (and fields needed for model/usage updates)
 				const [session] = await tx
 					.select({
@@ -84,6 +94,27 @@ export const updateSessionProcedure = daemonBase.sessions.update
 				const canWrite = await canWriteTaskForSession(tx, session, userId, organizationId)
 				if (!canWrite) {
 					throw errors.FORBIDDEN()
+				}
+				const completionReport = input.status === 'ready_for_input' || input.status === 'interrupted'
+				const replayedUsageReport =
+					input.usageReportKey !== undefined &&
+					session.applied_usage_report_keys?.includes(input.usageReportKey)
+				// Enrolled prompts wait in resuming until the daemon acknowledges running. Completion
+				// retries must not consume another admitted input; stock sessions retain their drain cycles.
+				if (
+					locked.boundary?.row &&
+					completionReport &&
+					(session.status === 'resuming' || replayedUsageReport)
+				) {
+					const conversationEventsResult: ConversationEventInputWithId[] = []
+					return {
+						success: true,
+						txid: await getTxId(tx),
+						conversationEventsResult,
+						session,
+						firstTaskCompletedAt: null,
+						startedFromLaunchQueue: false,
+					}
 				}
 
 				// Build update object with only provided fields
@@ -236,6 +267,20 @@ export const updateSessionProcedure = daemonBase.sessions.update
 								: 'Interrupt drain skipped — no flagged messages',
 						)
 					} else {
+						const boundary = locked.boundary
+						const progression = boundary?.row
+						if (
+							boundary &&
+							progression &&
+							(progression.action_id ||
+								boundary.siblings.some(
+									(item) => item.id !== session.id && !reviewIsIdle(item.status),
+								) ||
+								pendingQueuedMessages.some(
+									(message) => !reviewQueueIsAdmitted(boundary, session.id, message.id),
+								))
+						)
+							throw errors.FORBIDDEN()
 						const concatenatedPrompt = buildAttributedPrompt(
 							pendingQueuedMessages.map((m) => ({
 								content: m.content,
@@ -296,6 +341,27 @@ export const updateSessionProcedure = daemonBase.sessions.update
 				if (Object.keys(updateFields).length > 0) {
 					await tx.update(sessions).set(updateFields).where(eq(sessions.id, input.sessionId))
 				}
+				if (locked.boundary?.row && updateFields.status === 'resuming' && updateFields.prompt !== undefined) {
+					const [resuming] = await tx.select().from(sessions).where(eq(sessions.id, input.sessionId))
+					if (!resuming) throw errors.FORBIDDEN()
+					await tx
+						.update(reviewProgression)
+						.set({
+							admitted_execution: {
+								sessionId: input.sessionId,
+								digest: reviewDigest(reviewExecutionPayload(resuming)),
+							},
+						})
+						.where(eq(reviewProgression.task_id, locked.boundary.row.task_id))
+				}
+				if (
+					locked.boundary?.row &&
+					((updateFields.status !== undefined && updateFields.status !== session.status) ||
+						(completionReport && input.usageReportKey !== undefined && !replayedUsageReport) ||
+						(input.codingAgentSessionId !== undefined &&
+							input.codingAgentSessionId !== locked.session?.coding_agent_session_id))
+				)
+					await wakeReviewTask(tx, organizationId, locked.boundary.row.task_id, hostId)
 
 				// If transitioning to interrupted, deny all pending approvals
 				if (input.status === 'interrupted') {

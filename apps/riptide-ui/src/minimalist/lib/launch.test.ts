@@ -153,6 +153,39 @@ describe('startTask', () => {
 		return { api, client: api as unknown as RiptideApiClient }
 	}
 
+	it.each(['project', 'directory'] as const)(
+		'uses explicit enrollment for %s without the ordinary Small footer',
+		async (destination) => {
+			const { api, client } = fakeApi()
+			await startTask(client, {
+				ids,
+				target:
+					destination === 'project'
+						? { kind: 'project', project: { id: 'p1', repositories: [repository] } }
+						: { kind: 'directory', path: '/code/app' },
+				hostId: 'h1',
+				draft: 'Implement accepted criteria',
+				ticket: null,
+				attachments: [],
+				settings,
+				workflow: { workflowType: 'outline_only', autoAdvance: true },
+				directImplementation: true,
+				reviewProgressionEnrollment: { enrollmentId: 'personal', returnRouteRef: 'origin' },
+			})
+			const [request] = (destination === 'project' ? api.tasks.v2.create : api.tasks.launchDraft).mock
+				.calls[0]! as unknown as [{ taskContent: string; firstSession: { text: string } }]
+			expect(request).toMatchObject({
+				workflowType: 'freeform',
+				autoAdvanceImplementationToPr: false,
+				reviewProgressionEnrollment: { enrollmentId: 'personal', returnRouteRef: 'origin' },
+				firstSession: { intent: 'implementation' },
+			})
+			expect(request.taskContent).toContain('DeliveryReportV1')
+			expect(request.firstSession.text).toContain('DeliveryReportV1')
+			expect(request.firstSession.text).not.toContain(DESCRIBE_PR_NEXT_STEP_PROMPT)
+		},
+	)
+
 	it('creates a project task on a branch named after it, then asks for a title', async () => {
 		const { api, client } = fakeApi()
 		await startTask(client, {

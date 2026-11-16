@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import type { TaskDetailTask } from '@/hooks/task-detail/useTaskDetailData'
 import type { useTaskSettings } from '@/hooks/useTaskSettings'
 import { captureException } from '@/integrations/sentry/sentry'
+import { isReviewEnrolledTask } from '@/lib/review-progression'
 
 type UpdateAutoAdvance = ReturnType<typeof useTaskSettings>['updateAutoAdvance']
 
@@ -24,6 +25,7 @@ export function useTaskAutoAdvanceToggles({
 	return useMemo(() => {
 		const makeToggle = (field: AutoAdvanceField) => (checked: boolean) => {
 			if (!task) return
+			if (isReviewEnrolledTask(task) && field === 'autoAdvanceImplementationToPr') return
 			const transaction = updateAutoAdvance({
 				taskId: task.id,
 				[field]: checked,

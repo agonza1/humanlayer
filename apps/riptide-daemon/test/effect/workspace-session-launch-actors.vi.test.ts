@@ -114,6 +114,30 @@ const makeHarness = Effect.gen(function* () {
 })
 
 describe('WorkspaceSessionLaunchActors', () => {
+	it.effect('retains review-admission deferral and retries once on an existing valid-update wake', ({ expect }) =>
+		Effect.gen(function* () {
+			const harness = yield* makeHarness
+			const sessionId = 'session-review-setup-unverified'
+			yield* harness.setAuthoritative(sessionId, setup({ ready: true, sessionStatus: 'ready_for_launch' }))
+			yield* Ref.set(
+				harness.nextHandoff,
+				WorkspaceSessionLaunchHandoff.Deferred({ reason: 'review_setup_unverified' }),
+			)
+			yield* Effect.gen(function* () {
+				const actors = yield* WorkspaceSessionLaunchActors
+				yield* actors.ensureLaunchActor(identity(sessionId))
+				expect(yield* Queue.take(harness.handoffAttempts)).toEqual({ sessionId, outcome: 'Deferred' })
+				yield* actors.waitForLaunchActorState({ sessionId, state: 'Waiting' })
+				yield* Ref.set(harness.nextHandoff, WorkspaceSessionLaunchHandoff.HandedOff())
+				yield* actors.ensureLaunchActor(identity(sessionId))
+				expect(yield* Queue.take(harness.handoffAttempts)).toEqual({ sessionId, outcome: 'HandedOff' })
+				yield* actors.waitForLaunchActorExit({ sessionId })
+				yield* actors.ensureLaunchActor(identity(sessionId))
+				yield* actors.waitForLaunchActorExit({ sessionId })
+				expect(yield* Queue.size(harness.handoffAttempts)).toBe(0)
+			}).pipe(Effect.provide(harness.layer))
+		}),
+	)
 	it.effect('marks a session waiting once and hands it off exactly once across duplicate hints', ({ expect }) =>
 		Effect.gen(function* () {
 			const harness = yield* makeHarness

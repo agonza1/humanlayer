@@ -6,6 +6,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { Clock, Effect } from 'effect'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { lockReviewSession } from '../../../db/review-progression'
 import { isSessionActive } from '../../../db/session-statuses'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
 import { PostgresDb } from '../../../effects/services/postgres/postgres-db.service'
@@ -17,7 +18,12 @@ import {
 } from '../../../lib/session-multiplayer-prompting-auth'
 import { buildAttributedPrompt } from '../../../lib/session-prompt-attribution'
 import { effectOrpcBaseOrganizationRequired, requiresBillingEffectMiddleware } from '../../effect-base'
-import { ORPCForbiddenError, ORPCNotFoundError, ORPCQueuedMessageSendFailedError } from '../../effect-errors'
+import {
+	ORPCBadRequestError,
+	ORPCForbiddenError,
+	ORPCNotFoundError,
+	ORPCQueuedMessageSendFailedError,
+} from '../../effect-errors'
 
 export const sendNowQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequired.sessions.queuedMessages.sendNow
 	.use(requiresBillingEffectMiddleware)
@@ -36,6 +42,7 @@ export const sendNowQueuedMessageEffectProcedure = effectOrpcBaseOrganizationReq
 		const sendNowResult = yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					const locked = yield* tx.run(() => lockReviewSession(tx.client, organizationId, input.sessionId))
 					// pull the session so we can ensure that it exists & the user has access
 					const [sessionToSendQueuedMessagesInto] = yield* tx.query(
 						tx.client
@@ -68,6 +75,11 @@ export const sendNowQueuedMessageEffectProcedure = effectOrpcBaseOrganizationReq
 					if (!hasRequiredSessionAccess(accessLevel, SessionAccessControl.prompt)) {
 						return yield* new ORPCForbiddenError()
 					}
+					if (locked.boundary?.row)
+						return yield* new ORPCBadRequestError({
+							message:
+								'Could not send this queued message. Ask the task owner to reconcile retained input, then continue through the session composer with retained message and event IDs.',
+						})
 
 					// pull user settings so we can respect the user's batch-delivery preferences
 					const [userSettingsRow] = yield* tx.query(
@@ -243,6 +255,8 @@ export const sendNowQueuedMessageEffectProcedure = effectOrpcBaseOrganizationReq
 						),
 				}),
 				Effect.catchTags({
+					ORPCBadRequestError: (error) =>
+						Effect.fail(errors.BAD_REQUEST({ data: { message: error.message } })),
 					SessionDoesNotExistError: () => Effect.fail(new ORPCNotFoundError()),
 					PostgresDbQueryError: (error) => mapPostgresErrorToResponse(error, errors),
 					PostgresDbTransactionError: (error) => mapPostgresErrorToResponse(error, errors),

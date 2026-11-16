@@ -1,0 +1,48 @@
+{
+  "fixtureVersion": 1,
+  "provenance": {
+    "kind": "fictional_offline_contract",
+    "outline": "06-structure-outline-lightweight-development-routing.md#phase-8",
+    "openclawHead": "49e87097e4a8ccacde8d5435f247d279152ada2a",
+    "humanlayerHead": "d4e6a9d5f045c4d092c9130dbd926858cd142bb6",
+    "checkpoint": "18-phase-7-reporting-source-checkpoint.md",
+    "note": "Dirty-source provenance, not release pins or acceptance. Helper cases come from injected Fake/Managed adapters; handoffs and receipts are fictional, not delivery evidence."
+  },
+  "helperCases": [
+    {
+      "id": "unbound_blocker",
+      "adapter": "both",
+      "exitCode": 2,
+      "output": {"outputVersion": 1, "context": null, "result": {"status": "needs_decision", "reason": "workspace_not_clean_at_reviewed_sha"}, "continuation": {"kind": "stop"}}
+    },
+    {
+      "id": "managed_cloud_wait",
+      "adapter": "managed",
+      "exitCode": 0,
+      "output": {
+        "outputVersion": 1,
+        "context": {"repository": "example/product", "taskId": "01900000-0000-7000-8000-000000000001", "scopeSha256": "aa036335d7a5e952b361fcaf771f963361b4937ad959c8b905c917dcd4e2419e", "pr": 7, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        "result": {"status": "waiting_review", "reason": "bounded_cloud_review_wait", "repository": "example/product", "pr": 7, "issue": null, "task_id": "01900000-0000-7000-8000-000000000001", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope_sha256": "aa036335d7a5e952b361fcaf771f963361b4937ad959c8b905c917dcd4e2419e", "url": "https://github.com/example/product/pull/7", "passes": 1, "rounds": 0},
+        "continuation": {"kind": "wait", "nextWakeAt": "1970-01-01T00:21:40.125000Z"}
+      }
+    },
+    {
+      "id": "native_ready",
+      "adapter": "native",
+      "exitCode": 0,
+      "output": {
+        "outputVersion": 1,
+        "context": {"repository": "example/product", "taskId": "github:example/product#8", "scopeSha256": "ecf35dc6c38e90855ad63d3c00358864da3436783be29333c43dd159ab935d91", "pr": 7, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        "result": {"status": "ready_for_human_approval", "reason": "verified_approval_readiness", "repository": "example/product", "pr": 7, "issue": 8, "task_id": "github:example/product#8", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope_sha256": "ecf35dc6c38e90855ad63d3c00358864da3436783be29333c43dd159ab935d91", "url": "https://github.com/example/product/pull/7", "passes": 1, "rounds": 0, "verified": true, "readiness": {"acceptance": "satisfied", "checks": "satisfied", "qa": "satisfied"}, "remaining_findings": []},
+        "continuation": {"kind": "stop"}
+      }
+    }
+  ],
+  "handoffs": [
+    {"version": 1, "kind": "readiness", "enrollmentId": "fixture", "outcomeKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "repository": "example/product", "pr": 7, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scopeSha256": "ecf35dc6c38e90855ad63d3c00358864da3436783be29333c43dd159ab935d91", "evidenceRef": "report", "requestId": "8cc955c1742ae6c5ae77e6ef4a2ac99569563c1107dc061525c3f6dbdcbc14d6"},
+    {"version": 1, "kind": "merge_result", "enrollmentId": "fixture", "outcomeKey": "01bc852fa397d0b397114c15f437c7531c90f2c152439c7edef25a3582ff90bd", "repository": "example/product", "pr": 7, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scopeSha256": "ecf35dc6c38e90855ad63d3c00358864da3436783be29333c43dd159ab935d91", "evidenceRef": "01bc852fa397d0b397114c15f437c7531c90f2c152439c7edef25a3582ff90bd", "requestId": "dd9d43a05bf9f1e384896a97e297092a2d69037cf81acc8cb3df915960f498ac", "parentRequestId": "8cc955c1742ae6c5ae77e6ef4a2ac99569563c1107dc061525c3f6dbdcbc14d6", "mergeResult": {"status": "merge_unknown", "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "response_uncertain"}}
+  ],
+  "returnAcks": [
+    {"version": 1, "kind": "return_ack", "enrollmentId": "fixture", "requestId": "8cc955c1742ae6c5ae77e6ef4a2ac99569563c1107dc061525c3f6dbdcbc14d6", "outcomeKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "destinationSlot": "artifact", "receiptIdentity": "01900000-0000-7000-8000-000000000002", "contentDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "acknowledgementDigest": "c7cfe493734d2fbd69d6d8ddd1bcf4af239b599fa0fe248c2f12cdf46fff9484"}
+  ]
+}

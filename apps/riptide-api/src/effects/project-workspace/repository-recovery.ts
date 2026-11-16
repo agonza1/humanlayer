@@ -5,6 +5,7 @@ import type { RepositorySourcePreference } from '@humanlayer/schemas/effect/proj
 import { and, eq } from 'drizzle-orm'
 import { Clock, Effect } from 'effect'
 
+import { wakeReviewWorkspace } from '../../db/review-progression'
 import { requireTaskEditPermission } from '../services/postgres/helpers'
 import { PostgresDb, type PostgresTransaction } from '../services/postgres/postgres-db.service'
 import {
@@ -104,6 +105,7 @@ const updateCurrentStatus = Effect.fn('project_workspace.update_recovery_status'
 			snapshot: yield* readWorkspaceRepositoryActorSnapshotWithExecutor(transaction, identity),
 		})
 	}
+	yield* transaction.run(() => wakeReviewWorkspace(transaction.client, identity))
 	return yield* readWorkspaceRepositoryActorSnapshotWithExecutor(transaction, identity)
 })
 

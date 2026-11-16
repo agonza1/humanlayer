@@ -28,6 +28,15 @@ function deepMerge<T extends Record<string, unknown>>(base: T, overrides: DeepPa
 
 export function createMockORPCClient(overrides?: DeepPartial<ORPCClient>): ORPCClient {
 	const base = {
+		reviewProgression: {
+			claim: notImplemented('reviewProgression.claim'),
+			renew: notImplemented('reviewProgression.renew'),
+			ack: notImplemented('reviewProgression.ack'),
+			recordDelivery: notImplemented('reviewProgression.recordDelivery'),
+			reports: notImplemented('reviewProgression.reports'),
+			admission: async () => ({ kind: 'not_enrolled' as const }),
+			confirmPlacement: notImplemented('reviewProgression.confirmPlacement'),
+		},
 		hosts: {
 			heartbeat: notImplemented('hosts.heartbeat'),
 			shutdown: notImplemented('hosts.shutdown'),
@@ -119,6 +128,7 @@ export function createMockORPCClient(overrides?: DeepPartial<ORPCClient>): ORPCC
 			update: notImplemented('providerLogin.update'),
 		},
 		sync: {
+			reviewProgression: notImplemented('sync.reviewProgression'),
 			sessions: notImplemented('sync.sessions'),
 			approvals: notImplemented('sync.approvals'),
 			tasks: notImplemented('sync.tasks'),

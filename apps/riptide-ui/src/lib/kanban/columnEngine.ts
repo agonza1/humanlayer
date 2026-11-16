@@ -3,6 +3,7 @@ import { RPI_LABELS, type SessionLabel } from '@humanlayer/ui/components/session
 import { Option, Schema } from 'effect'
 
 import { activityMinute } from '@/lib/activitySorting'
+import { latestWorkEntry, workEntryLabel } from '@/lib/review-progression'
 import { aggregateTaskStatus } from '@/lib/taskStatus'
 
 /** Fixed kanban column ids, left-to-right workflow order. */
@@ -62,6 +63,8 @@ export interface KanbanSessionInput {
 	resource_owner_user_id?: string | null
 	/** Raw session status string; aggregated into the card's live status indicator. */
 	status?: string | null
+	execution_phase?: 'implementation' | 'review' | null
+	execution_phase_at?: bigint | null
 }
 
 /**
@@ -136,6 +139,20 @@ function assignStatusColumn(sessions: KanbanSessionInput[]): AssignResult | null
  * session lifecycle state places started work; only drafts / not-yet-started fall to `todo`.
  */
 function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | null {
+	const marker = latestWorkEntry(sessions)
+	if (marker) {
+		const label = workEntryLabel(marker)
+		const columnLabel = label
+			? Option.getOrUndefined(Schema.decodeUnknownOption(ColumnLabelName)(label.name))
+			: undefined
+		return label
+			? {
+					columnId: columnLabel ? LABEL_TO_COLUMN[columnLabel] : 'todo',
+					activity: marker.last_activity_at ?? 0n,
+					label,
+				}
+			: null
+	}
 	let winner: KanbanSessionInput | null = null
 	let winnerActivity = -1n
 

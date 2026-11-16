@@ -2,9 +2,11 @@ import { RESOLVED_TASK_WORKFLOW_TYPES } from '@humanlayer/schemas/effect/taskcon
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
+import { WorkflowMutationSchema } from '../../lib/review-progression'
 import { TicketProviderSchema } from '../../lib/ticket-provider'
 
 export const UpdateTaskInputSchema = z.object({
+	workflowMutation: WorkflowMutationSchema.optional(),
 	taskId: z.uuidv7().describe('The task ID to update'),
 	name: z.string().min(1).optional().describe('New name for the task'),
 	slug: z.string().min(1).optional().describe('Task slug (immutable once set)'),

@@ -3,6 +3,7 @@ import { and, eq, not, useLiveQuery } from '@tanstack/react-db'
 import { useMemo } from 'react'
 
 import { useSync } from '@/components/providers/SyncProvider'
+import { latestWorkEntry, workEntryLabel } from '@/lib/review-progression'
 
 export interface TaskMostProgressedLabelResult {
 	label: SessionLabel | null
@@ -33,6 +34,9 @@ export function useTaskMostProgressedLabel(taskId: string | undefined): TaskMost
 				.from({ sessions: sessionsCollection })
 				.select(({ sessions }) => ({
 					labels: sessions.labels,
+					id: sessions.id,
+					execution_phase: sessions.execution_phase,
+					execution_phase_at: sessions.execution_phase_at,
 				}))
 				.where(({ sessions }) => and(eq(sessions.task_id, taskId), not(eq(sessions.archived, true))))
 		},
@@ -43,6 +47,8 @@ export function useTaskMostProgressedLabel(taskId: string | undefined): TaskMost
 	// TODO: Verify session.labels format - may need JSON.parse() if Electric sends as string
 	const label = useMemo(() => {
 		if (!sessions || sessions.length === 0) return null
+		const marker = latestWorkEntry(sessions)
+		if (marker) return workEntryLabel(marker)
 
 		let mostProgressed: SessionLabel | null = null
 		let highestIndex = -1

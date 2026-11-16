@@ -38,6 +38,7 @@ interface ActiveRun {
 	readonly runId: number
 	readonly fiber: Fiber.Fiber<void, ClaudeExecutionError | ClaudeSessionsShuttingDownError>
 	readonly input: ExecuteClaudeSessionInput
+	readonly markReviewUncertain: () => void
 }
 
 // The SDK finalizer force-closes its query after two seconds. Do not let a stuck
@@ -69,6 +70,7 @@ export const makeClaudeSessionsLive = (
 				{
 					readonly fiber: Fiber.Fiber<void, ClaudeExecutionError | ClaudeSessionsShuttingDownError>
 					readonly input: ExecuteClaudeSessionInput
+					readonly markReviewUncertain: () => void
 				}
 			>()
 			const startingSessionIds = new Set<string>()
@@ -88,12 +90,15 @@ export const makeClaudeSessionsLive = (
 					runs,
 					(run) =>
 						Effect.gen(function* () {
+							// Mark before interrupting: interrupted effects need not run tapCause.
+							run.markReviewUncertain()
 							const [terminationDuration, completed] = yield* Fiber.interrupt(run.fiber).pipe(
 								Effect.timeoutOption(runTerminationTimeout),
 								Effect.timed,
 							)
 							if (Option.isSome(completed)) return true
 							activeRuns.delete(run.runId)
+							run.markReviewUncertain()
 							const terminationDurationMs = Duration.toMillis(terminationDuration)
 							yield* Effect.logError(
 								'Claude session fiber did not terminate after forced SDK close',
@@ -229,13 +234,19 @@ export const makeClaudeSessionsLive = (
 					(entry) => removeGeneration(sessionId, entry.generation),
 				)
 
-			const runClaudeProcessToCompletion = (prepared: PreparedClaudeRun, onRegistered: Effect.Effect<void>) =>
+			const runClaudeProcessToCompletion = (
+				prepared: PreparedClaudeRun,
+				onRegistered: Effect.Effect<void>,
+				onCloseFailure: Effect.Effect<void>,
+			) =>
 				Effect.scoped(
 					Effect.gen(function* () {
 						const sdk = yield* ClaudeSdk
 						const sessionId = prepared.session.id
 						const sdkSession = yield* sdk.open(prepared.sdk)
-						yield* Effect.addFinalizer(() => sdkSession.input.close)
+						yield* Effect.addFinalizer(() =>
+							sdkSession.input.close.pipe(Effect.tapCause(() => onCloseFailure)),
+						)
 						const entry = yield* register(sessionId, sdkSession.input)
 						yield* onRegistered
 						yield* processOpenSession({
@@ -325,11 +336,17 @@ export const makeClaudeSessionsLive = (
 						: stopGeneration(input.sessionId, entry.generation, input.reason ?? 'explicit')
 				}).pipe(Effect.withSpan('claude.sessions.stop', { attributes: { session_id: input.sessionId } }))
 
-			const runClaudeSession = (input: ExecuteClaudeSessionInput, onRegistered: Effect.Effect<void>) =>
+			const runClaudeSession = (
+				input: ExecuteClaudeSessionInput,
+				onRegistered: Effect.Effect<void>,
+				onCloseFailure: Effect.Effect<void>,
+			) =>
 				Effect.gen(function* () {
 					const api = yield* DaemonApi
 					yield* prepareClaudeRun(input, configuration).pipe(
-						Effect.flatMap((prepared) => runClaudeProcessToCompletion(prepared, onRegistered)),
+						Effect.flatMap((prepared) =>
+							runClaudeProcessToCompletion(prepared, onRegistered, onCloseFailure),
+						),
 						Effect.catch((cause) => {
 							const sessionId = input.context.session.id
 							const errorMessage = describeClaudeSdkCause(cause)
@@ -403,10 +420,27 @@ export const makeClaudeSessionsLive = (
 									Effect.andThen(Deferred.succeed(started, undefined)),
 									Effect.asVoid,
 								)
+								const observations = input.context.services?.reviewWriterObservations
+								const observation = observations?.runs.get(sessionId)
+								const markReviewUncertain = () => {
+									if (observation) {
+										observation.uncertain = true
+										if (observations?.runs.get(sessionId) === observation)
+											observations.finished?.(observation.taskId)
+									}
+								}
+								// The execution call returns at registration; this supervised run owns termination.
 								const run = Deferred.await(admitted).pipe(
-									Effect.andThen(runClaudeSession(input, markStarted)),
+									Effect.andThen(
+										runClaudeSession(input, markStarted, Effect.sync(markReviewUncertain)),
+									),
 									Effect.tapCause((cause) =>
-										Deferred.isDone(started).pipe(
+										Effect.sync(() => {
+											// The SDK can suppress interrupt/termination failure. Fiber
+											// interruption, including idle cleanup, is not process-exit proof.
+											if (observation) observation.uncertain = true
+										}).pipe(
+											Effect.andThen(Deferred.isDone(started)),
 											Effect.flatMap((didStart) =>
 												didStart
 													? Effect.sync(() => captureClaudeTerminalCause(cause, input))
@@ -418,11 +452,15 @@ export const makeClaudeSessionsLive = (
 										Effect.sync(() => {
 											activeRuns.delete(runId)
 											startingSessionIds.delete(sessionId)
+											if (observation && observations?.runs.get(sessionId) === observation) {
+												observation.running = false
+												observations?.finished?.(observation.taskId)
+											}
 										}),
 									),
 								)
 								const fiber = yield* Effect.forkIn(run, serviceScope)
-								activeRuns.set(runId, { fiber, input })
+								activeRuns.set(runId, { fiber, input, markReviewUncertain })
 								yield* Deferred.succeed(admitted, undefined)
 								return started
 							})

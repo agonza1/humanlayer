@@ -3,6 +3,7 @@ import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { projects } from '@humanlayer/db/tables/projects'
 import { repositoryLocationsForUserForHost } from '@humanlayer/db/tables/repository-locations-for-user-for-host'
+import { reviewProgression } from '@humanlayer/db/tables/review-progression'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskLaunches } from '@humanlayer/db/tables/task-launches'
 import { tasks } from '@humanlayer/db/tables/tasks'
@@ -191,6 +192,80 @@ describe('tasks v2 create', () => {
 		model: 'opus',
 		permissionsMode: 'default' as const,
 	}
+
+	test('enrolls atomically, retains accepted scope and rejects changed or dropped enrollment on replay', async () => {
+		const actor = await setupActor()
+		const text =
+			'Implement accepted criteria and publish in this same session with DeliveryReportV1. Independent review is separate; no merge authority.'
+		const request = {
+			taskId: uuidv7(),
+			workspaceId: uuidv7(),
+			sessionId: uuidv7(),
+			eventId: uuidv7(),
+			projectId: actor.projectId,
+			name: 'Enrolled delivery',
+			slug: 'enrolled-delivery',
+			repositories: [repository],
+			taskContent: text,
+			ticketDescription: text,
+			workflowType: 'freeform' as const,
+			autoAdvanceImplementationToPr: false,
+			firstSession: {
+				...firstSession,
+				title: 'Delivery',
+				text,
+				hostId: actor.hostId,
+				intent: 'implementation' as const,
+			},
+			reviewProgressionEnrollment: { enrollmentId: 'personal', returnRouteRef: 'origin_1' },
+		}
+		expect((await call(createTaskV2, request, { context: actor.context })).result).toBe('created')
+		const [row] = await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, request.taskId))
+		expect(row).toMatchObject({
+			source_session_id: request.sessionId,
+			host_id: actor.hostId,
+			resource_owner_user_id: actor.userId,
+			stage: 'awaiting_delivery',
+			verified_binding: null,
+			binding_digest: null,
+			placement: {
+				kind: 'project_workspace',
+				projectId: actor.projectId,
+				workspaceId: request.workspaceId,
+				setupRowId: null,
+			},
+			accepted_launch: { acceptedTaskArtifact: text, firstSession: { text } },
+		})
+		expect((await call(createTaskV2, request, { context: actor.context })).result).toBe('already-exists')
+		for (const changed of [
+			{ ...request, reviewProgressionEnrollment: undefined },
+			{
+				...request,
+				reviewProgressionEnrollment: { ...request.reviewProgressionEnrollment, returnRouteRef: 'other' },
+			},
+			{ ...request, sessionId: uuidv7() },
+			{ ...request, eventId: uuidv7() },
+			{ ...request, taskContent: `${text}\nChanged acceptance` },
+		])
+			await expect(call(createTaskV2, changed, { context: actor.context })).rejects.toThrow()
+		expect(await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, request.taskId))).toEqual([
+			row,
+		])
+		expect(await db.select().from(sessions).where(eq(sessions.task_id, request.taskId))).toHaveLength(1)
+		const rollback = {
+			...request,
+			taskId: uuidv7(),
+			workspaceId: uuidv7(),
+			sessionId: uuidv7(),
+			slug: 'enrolled-rollback',
+		}
+		await expect(call(createTaskV2, rollback, { context: actor.context })).rejects.toThrow()
+		expect(await db.select().from(tasks).where(eq(tasks.id, rollback.taskId))).toHaveLength(0)
+		expect(await db.select().from(sessions).where(eq(sessions.task_id, rollback.taskId))).toHaveLength(0)
+		expect(
+			await db.select().from(reviewProgression).where(eq(reviewProgression.task_id, rollback.taskId)),
+		).toHaveLength(0)
+	})
 
 	test('atomically creates workspace, task, session, and repository status rows', async () => {
 		const actor = await setupActor()

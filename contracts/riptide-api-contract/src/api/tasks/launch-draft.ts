@@ -7,6 +7,7 @@ import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
 import { safeSubpathSchema } from '../../lib/filename-validation'
+import { hasSameSessionDelivery, ReviewProgressionEnrollmentSchema } from '../../lib/review-progression'
 import { TicketProviderSchema } from '../../lib/ticket-provider'
 import { CodingAgentSchema, PermissionsModeSchema } from '../sessions/launch'
 import { CreatedWithExperimentFlagsSchema } from './experiment-flags'
@@ -72,8 +73,24 @@ export const LaunchTaskDraftInputSchema = z
 		createdWithExperimentFlags: CreatedWithExperimentFlagsSchema.optional(),
 		attachments: z.array(LaunchTaskDraftAttachmentInputSchema).max(50).default([]),
 		firstSession: LaunchTaskDraftFirstSessionInputSchema,
+		reviewProgressionEnrollment: ReviewProgressionEnrollmentSchema.optional(),
 	})
 	.superRefine((input, context) => {
+		if (
+			input.reviewProgressionEnrollment &&
+			(input.workflowType !== 'freeform' ||
+				input.firstSession.intent !== 'implementation' ||
+				input.autoAdvanceImplementationToPr ||
+				(input.workspaceSpec && input.workspaceSpec.repos.length !== 1) ||
+				!hasSameSessionDelivery(input.taskContent) ||
+				!hasSameSessionDelivery(input.firstSession.text))
+		) {
+			context.addIssue({
+				code: 'custom',
+				path: ['reviewProgressionEnrollment'],
+				message: 'Choose same-session delivery with one repository and automatic PR handoff turned off.',
+			})
+		}
 		if (input.workspaceSpec && input.worktreeTiming !== 'now') {
 			context.addIssue({
 				code: 'custom',
@@ -107,6 +124,8 @@ export const LaunchTaskDraftInputSchema = z
 			})
 		}
 	})
+
+export type LaunchTaskDraftInput = z.infer<typeof LaunchTaskDraftInputSchema>
 
 export const LaunchTaskDraftOutputSchema = z.object({
 	outcome: z.enum(['created', 'promoted', 'already-launched']),

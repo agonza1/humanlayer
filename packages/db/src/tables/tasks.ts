@@ -7,7 +7,7 @@ import {
 import type { WorkspaceSpec, WorkspaceState } from '@humanlayer/schemas/effect/workspace'
 import { WorkspaceSpecSchema, WorkspaceStateSchema } from '@humanlayer/schemas/zod/workspace'
 import { sql } from 'drizzle-orm'
-import { bigint, boolean, index, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core'
+import { bigint, boolean, check, index, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core'
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-zod'
 import { uuidv7 } from 'uuidv7'
 import z from 'zod/v4'
@@ -84,6 +84,9 @@ export const tasks = pgTable(
 
 		// Auto-advance workflow flags
 		workflow_type: text('workflow_type').$type<TaskWorkflowType>().default('rpi').notNull(),
+		workflow_revision: bigint({ mode: 'bigint' })
+			.notNull()
+			.default(sql`0`),
 		worktree_timing: text('worktree_timing').$type<WorktreeTiming>().default('later').notNull(),
 		/** @deprecated Prefer workspace_spec plus the current host setup row for setup-aware reads. */
 		workspace_state: jsonb().$type<WorkspaceState>(),
@@ -104,6 +107,7 @@ export const tasks = pgTable(
 		slack_notifications_muted: boolean('slack_notifications_muted').default(false).notNull(),
 	},
 	(t) => [
+		check('tasks_workflow_revision_nonnegative', sql`${t.workflow_revision} >= 0`),
 		index('tasks_org_resource_owner_idx').on(t.organization_id, t.resource_owner_user_id),
 		index('tasks_org_project_workspace_idx').on(t.organization_id, t.project_id, t.workspace_id),
 		unique('tasks_organization_id_id_unique').on(t.organization_id, t.id),
@@ -111,6 +115,7 @@ export const tasks = pgTable(
 )
 
 export const taskSelectSchema = createSelectSchema(tasks, {
+	workflow_revision: z.bigint().nonnegative().default(0n),
 	setup_status: z.enum(['pending', 'in_progress', 'completed', 'failed']).nullable(),
 	ticket_provider: z.enum(['linear', 'jira', 'github']).nullable(),
 	workflow_type: z.enum(TASK_WORKFLOW_TYPES),
