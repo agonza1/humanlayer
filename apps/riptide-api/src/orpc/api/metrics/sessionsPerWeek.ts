@@ -40,7 +40,7 @@ export const sessionsPerWeekProcedure = apiBaseOrgRequired.metrics.sessionsPerWe
 		const startMonday = getMonday(startDate)
 		const endMonday = getMonday(endDate)
 
-		for (let d = new Date(startMonday); d <= endMonday; d.setDate(d.getDate() + 7)) {
+		for (let d = new Date(startMonday); d <= endMonday; d.setUTCDate(d.getUTCDate() + 7)) {
 			const weekStr = formatDate(d, 0)
 			data.push({
 				weekStart: weekStr,

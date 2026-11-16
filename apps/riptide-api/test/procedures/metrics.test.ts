@@ -8,7 +8,7 @@ import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { call } from '@orpc/server'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
-import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
 
 import { apiRouter } from '../../src/orpc/router'
 import { createMockApiAuth, createMockApiAuthNoOrg, createMockApiContext } from '../mocks'
@@ -244,6 +244,63 @@ describe('Metrics Endpoints', async () => {
 	})
 
 	describe('metrics.sessionsPerWeek', () => {
+		test.each([
+			['spring', '2026-03-14T19:11:00Z', '2025-12-15', '2026-03-09'],
+			['fall', '2026-11-07T19:11:00Z', '2026-08-10', '2026-11-02'],
+		])('keeps UTC Monday buckets across %s DST on a non-UTC host', async (_, now, first, last) => {
+			const originalTZ = process.env.TZ
+			process.env.TZ = 'America/New_York'
+			vi.useFakeTimers({ toFake: ['Date'] })
+			vi.setSystemTime(new Date(now))
+			try {
+				expect(new Date().getTimezoneOffset()).not.toBe(0)
+				const [org] = await db
+					.insert(organizations)
+					.values({ name: 'DST metrics', workos_organization_id: `org_dst_${randomUUID()}` })
+					.returning()
+				if (!org) throw new Error('Unable to insert organization')
+				await db.insert(sessions).values(
+					[`${last}T01:00:00Z`, `${last}T12:00:00Z`].map((createdAt) => ({
+						organization_id: org.id,
+						resource_owner_user_id: adminUserId,
+						created_by: adminUserId,
+						host_id: hostId,
+						working_directory: tmpdir(),
+						coding_agent: 'claude' as const,
+						status: 'ready_for_input' as const,
+						created_at: BigInt(new Date(createdAt).getTime()),
+					})),
+				)
+				const context = createMockApiContext({
+					auth: createMockApiAuth({ organizationId: org.id }),
+					services: { db, dbReadReplica: db },
+				})
+				for (const timezoneOffset of [0, 480]) {
+					const result = await call(
+						apiRouter.metrics.sessionsPerWeek,
+						{ weeks: 12, timezoneOffset },
+						{ context },
+					)
+					const expectedKeys = Array.from({ length: 13 }, (_, index) =>
+						new Date(Date.parse(`${first}T00:00:00Z`) + index * 7 * 86400000)
+							.toISOString()
+							.slice(0, 10),
+					)
+					expect(result.data.map((bucket) => bucket.weekStart)).toEqual(expectedKeys)
+					expect(result.startDate).toBe(first)
+					expect(result.endDate).toBe(last)
+					expect(result.total).toBe(2)
+					expect(result.data.at(-1)?.sessions).toBe(timezoneOffset === 0 ? 2 : 1)
+					expect(result.data.at(-2)?.sessions).toBe(timezoneOffset === 0 ? 0 : 1)
+					expect(result.data.slice(0, -2).every((bucket) => bucket.sessions === 0)).toBe(true)
+				}
+			} finally {
+				vi.useRealTimers()
+				if (originalTZ === undefined) delete process.env.TZ
+				else process.env.TZ = originalTZ
+			}
+		})
+
 		test('sessionsPerWeek returns weekly bucket shape with total', async () => {
 			const result = await call(apiRouter.metrics.sessionsPerWeek, { weeks: 12 }, callContext())
 
