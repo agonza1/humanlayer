@@ -84,5 +84,18 @@ export const ensurePullRequestStreamProcedure =
 			}),
 		)
 
-		return { ...base, hasPullRequest: pullRequest !== null }
+		return {
+			...base,
+			hasPullRequest: pullRequest !== null,
+			delivery:
+				pullRequest && fetched && fetched.wire.mergedAt !== undefined && fetched.wire.headRef !== undefined
+					? {
+							number: pullRequest.number,
+							state: pullRequest.state,
+							headSha: pullRequest.headSha,
+							branchHeadSha: fetched.wire.headRef?.target.oid ?? null,
+							mergedAt: fetched.wire.mergedAt,
+						}
+					: null,
+		}
 	})

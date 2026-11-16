@@ -88,6 +88,8 @@ export const PULL_REQUEST_PANEL_QUERY = `
 					title
 					url
 					state
+					mergedAt
+					headRef { target { oid } }
 					isDraft
 					mergeable
 					reviewDecision
@@ -213,6 +215,9 @@ export const GitHubPullRequestWire = Schema.Struct({
 	title: Schema.String,
 	url: Schema.String,
 	state: Schema.Literals(['OPEN', 'CLOSED', 'MERGED']),
+	// Optional for compatibility with older recorded responses and fixtures.
+	mergedAt: Schema.optional(Schema.NullOr(Schema.String)),
+	headRef: Schema.optional(Schema.NullOr(Schema.Struct({ target: Schema.Struct({ oid: Schema.String }) }))),
 	isDraft: Schema.Boolean,
 	mergeable: Schema.Literals(['MERGEABLE', 'CONFLICTING', 'UNKNOWN']),
 	reviewDecision: Schema.NullOr(Schema.Literals(['APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED'])),

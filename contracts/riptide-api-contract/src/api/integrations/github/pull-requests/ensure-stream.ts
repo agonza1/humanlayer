@@ -19,6 +19,17 @@ export const EnsurePullRequestStreamOutputSchema = z.object({
 	repoFullName: z.string(),
 	branch: z.string(),
 	hasPullRequest: z.boolean(),
+	/** A fresh GitHub answer for board completion; absent on older API builds. */
+	delivery: z
+		.object({
+			number: z.number().int(),
+			state: z.enum(['open', 'closed', 'merged']),
+			headSha: z.string(),
+			branchHeadSha: z.string().nullable(),
+			mergedAt: z.string().nullable(),
+		})
+		.nullable()
+		.optional(),
 })
 
 export const ensurePullRequestStreamContract = contractBuilder
