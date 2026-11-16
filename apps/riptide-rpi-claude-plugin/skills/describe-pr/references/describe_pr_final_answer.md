@@ -1,6 +1,7 @@
 ### Status
 
 - PR: [#{number} - {title}]({pr_url})
+- Head: `{exact_remote_head_sha}`
 - Description saved: [.humanlayer/tasks/{task-dir}/pr-description.md](cloud permalink from hook)
 - Ticket: [{TICKET_ID}]({ticket_url}) (if applicable)
 
@@ -19,7 +20,7 @@
 
 ### Next Steps
 
-The PR description has been updated at [pr_url]. Waiting 5 minutes, then checking for merge conflicts and watching CI checks until they pass.
+The PR description has been updated at [pr_url] for `{exact_remote_head_sha}`. [Actual verification results and any unresolved findings, conflicts, or required gates; do not claim checks passed without evidence.]
 
 ---
 
