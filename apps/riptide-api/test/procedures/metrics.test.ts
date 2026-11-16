@@ -282,9 +282,7 @@ describe('Metrics Endpoints', async () => {
 						{ context },
 					)
 					const expectedKeys = Array.from({ length: 13 }, (_, index) =>
-						new Date(Date.parse(`${first}T00:00:00Z`) + index * 7 * 86400000)
-							.toISOString()
-							.slice(0, 10),
+						new Date(Date.parse(`${first}T00:00:00Z`) + index * 7 * 86400000).toISOString().slice(0, 10),
 					)
 					expect(result.data.map((bucket) => bucket.weekStart)).toEqual(expectedKeys)
 					expect(result.startDate).toBe(first)
