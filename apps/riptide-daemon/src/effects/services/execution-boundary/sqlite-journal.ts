@@ -1,5 +1,5 @@
 import { Database, SQLiteError } from 'bun:sqlite'
-import { closeSync, fsyncSync, lstatSync, openSync } from 'node:fs'
+import { closeSync, fsyncSync, lstatSync, openSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 
 import {
@@ -22,6 +22,11 @@ interface StoredRecord {
 	readonly checksum: string
 }
 
+export interface SupervisorStorageIdentity {
+	readonly directory: { readonly device: number; readonly inode: number }
+	readonly file: { readonly path: string; readonly device: number; readonly inode: number }
+}
+
 function requirePrivatePath(path: string, kind: 'directory' | 'file'): void {
 	const metadata = lstatSync(path)
 	const expectedKind = kind === 'directory' ? metadata.isDirectory() : metadata.isFile() && metadata.nlink === 1
@@ -33,7 +38,11 @@ function requirePrivatePath(path: string, kind: 'directory' | 'file'): void {
 // The supervisor owns the entire path and keeps it outside the workload's authority.
 // Each file is a single generation's slot. A missing recovery file is an error.
 export class SqliteBoundaryJournal implements BoundaryJournal {
-	private constructor(private readonly database: Database) {}
+	private constructor(
+		private readonly database: Database,
+		readonly supervisorDirectory: string,
+		readonly supervisorStorageIdentity: SupervisorStorageIdentity,
+	) {}
 
 	static create(path: string): SqliteBoundaryJournal {
 		if (!isAbsolute(path)) throw new Error('Boundary journal requires an absolute path')
@@ -51,6 +60,10 @@ export class SqliteBoundaryJournal implements BoundaryJournal {
 
 	private static connect(path: string, initialize: boolean): SqliteBoundaryJournal {
 		requirePrivatePath(path, 'file')
+		const canonicalPath = realpathSync(path)
+		const directoryPath = dirname(canonicalPath)
+		const directoryIdentity = lstatSync(directoryPath)
+		const fileIdentity = lstatSync(canonicalPath)
 		const database = new Database(path, { create: false, readwrite: true, strict: true })
 		try {
 			const mode = database.query<{ journal_mode: string }, []>('PRAGMA journal_mode').get()
@@ -92,7 +105,10 @@ export class SqliteBoundaryJournal implements BoundaryJournal {
 				throw new Error('Boundary journal has an unsupported format')
 			}
 
-			const journal = new SqliteBoundaryJournal(database)
+			const journal = new SqliteBoundaryJournal(database, directoryPath, {
+				directory: { device: directoryIdentity.dev, inode: directoryIdentity.ino },
+				file: { path: canonicalPath, device: fileIdentity.dev, inode: fileIdentity.ino },
+			})
 			if (!initialize && !journal.read()) throw new Error('Boundary journal has no prepared generation')
 			return journal
 		} catch (cause) {
@@ -161,6 +177,32 @@ export class SqliteBoundaryJournal implements BoundaryJournal {
 				return this.admits(intent) ? launch() : 'not-accepted'
 			})
 			.immediate()
+	}
+
+	inspectDispatch(intent: ActivationIntent): {
+		state: 'unclaimed' | 'claimed' | 'mismatch'
+		record: BoundaryRecord | undefined
+	} {
+		this.requireAutocommit()
+		return this.database
+			.transaction(() => {
+				const record = this.read()
+				const existing = this.database
+					.query<{ intent_digest: string }, [string]>(
+						'SELECT intent_digest FROM boundary_dispatch WHERE effect_id = ?',
+					)
+					.get(intent.reservation.id)
+				let state: 'unclaimed' | 'claimed' | 'mismatch' = 'unclaimed'
+				if (existing) {
+					state =
+						existing.intent_digest ===
+						digest([intent.boundaryDigest, intent.controllerEpoch, reservationDigest([intent.reservation])])
+							? 'claimed'
+							: 'mismatch'
+				}
+				return { state, record }
+			})
+			.deferred()
 	}
 
 	private admits(intent: ActivationIntent): boolean {
