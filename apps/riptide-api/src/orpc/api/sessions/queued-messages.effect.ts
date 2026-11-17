@@ -5,6 +5,7 @@ import { Clock, Effect } from 'effect'
 import { uuidv7 } from 'uuidv7'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { guardSessionDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { ACTIVE_SESSION_STATUSES } from '../../../db/session-statuses'
 import { canWriteTaskForSession } from '../../../db/task-auth'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
@@ -38,6 +39,7 @@ export const createQueuedMessageEffectProcedure = effectOrpcBaseOrganizationRequ
 		const result = yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					yield* tx.run(() => guardSessionDeliveryMutation(tx.client, input.sessionId, organizationId))
 					const [session] = yield* tx.query(
 						tx.client
 							.select({

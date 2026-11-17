@@ -64,6 +64,7 @@ const task: Task = {
 	auto_advance_plan_to_worktree: false,
 	auto_advance_worktree_to_implementation: false,
 	auto_advance_implementation_to_pr: false,
+	automatic_delivery: null,
 	slack_notifications_muted: false,
 }
 

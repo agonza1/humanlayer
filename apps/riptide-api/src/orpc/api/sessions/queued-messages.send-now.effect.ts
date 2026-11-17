@@ -6,6 +6,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { Clock, Effect } from 'effect'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { guardSessionDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { isSessionActive } from '../../../db/session-statuses'
 import { mapPostgresErrorToResponse } from '../../../effects/services/postgres/error-mapping'
 import { PostgresDb } from '../../../effects/services/postgres/postgres-db.service'
@@ -36,6 +37,7 @@ export const sendNowQueuedMessageEffectProcedure = effectOrpcBaseOrganizationReq
 		const sendNowResult = yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					yield* tx.run(() => guardSessionDeliveryMutation(tx.client, input.sessionId, organizationId))
 					// pull the session so we can ensure that it exists & the user has access
 					const [sessionToSendQueuedMessagesInto] = yield* tx.query(
 						tx.client

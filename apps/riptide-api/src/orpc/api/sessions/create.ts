@@ -2,6 +2,7 @@ import { sessions } from '@humanlayer/db/tables/sessions'
 import { ORPCError } from '@orpc/server'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { guardTaskDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { validateHostOwnership } from '../../../db/host-auth'
 import { checkTaskWritePermission } from '../../../db/task-auth'
 import { upsertTaskUserSettingsForSession } from '../../../db/upsert-task-user-settings-for-session'
@@ -39,6 +40,7 @@ export const createSessionProcedure = apiBaseOrgRequired.sessions.create
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				await guardTaskDeliveryMutation(tx, taskId, organizationId)
 				// If taskId is provided, verify write permission and get task's resource_owner
 				let resourceOwnerUserId = context.auth.userId
 				if (taskId) {

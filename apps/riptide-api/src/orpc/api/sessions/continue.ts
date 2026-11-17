@@ -5,6 +5,7 @@ import { ORPCError } from '@orpc/server'
 import { and, eq, sql } from 'drizzle-orm'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { guardSessionDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { tryEnsureSessionStreamHydrated } from '../../../effects/services/durable-streams/streams'
 import {
 	getSessionAccessControlLevelForClassicProcedure,
@@ -30,6 +31,7 @@ export const continueSessionProcedure = apiBaseOrgRequired.sessions.continue
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				await guardSessionDeliveryMutation(tx, sessionId, context.auth.organizationId)
 				// Fetch the session first to check authorization
 				const [session] = await tx
 					.select({

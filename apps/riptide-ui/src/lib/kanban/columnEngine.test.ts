@@ -7,6 +7,7 @@ import {
 	buildKanbanColumns,
 	type KanbanSessionInput,
 	type KanbanTaskInput,
+	KANBAN_COLUMN_DEFS,
 	LABEL_TO_COLUMN,
 } from './columnEngine'
 
@@ -26,12 +27,18 @@ function session(overrides: Partial<KanbanSessionInput> = {}): KanbanSessionInpu
 const resolveOwner = () => ({ initials: 'DW', avatarUrl: undefined })
 
 describe('assignColumn', () => {
-	test('places confirmed merged deliveries in Done and reopens resumed work', () => {
+	test('keeps idle PR work in review until the task is archived', () => {
 		const sessions = [session({ status: 'ready_for_input', labels: [label('rpi:describe-pr')] })]
-		expect(assignColumn({ deliveryComplete: true }, sessions)).toBe('done')
+		expect(assignColumn({}, sessions)).toBe('in-review')
 		sessions[0].status = 'running'
-		expect(assignColumn({ deliveryComplete: true }, sessions)).not.toBe('done')
-		expect(assignColumn({ is_draft: true, deliveryComplete: true }, sessions)).not.toBe('done')
+		expect(assignColumn({}, sessions)).toBe('in-review')
+		expect(KANBAN_COLUMN_DEFS.map((column) => column.id)).toEqual([
+			'todo',
+			'research-design',
+			'planning',
+			'implementation',
+			'in-review',
+		])
 	})
 
 	test.each([
@@ -279,14 +286,7 @@ describe('buildKanbanColumns', () => {
 
 	test('produces the 5 ordered columns', () => {
 		const columns = buildKanbanColumns({ tasks: [], resolveOwner })
-		expect(columns.map((c) => c.id)).toEqual([
-			'todo',
-			'research-design',
-			'planning',
-			'implementation',
-			'in-review',
-			'done',
-		])
+		expect(columns.map((c) => c.id)).toEqual(['todo', 'research-design', 'planning', 'implementation', 'in-review'])
 	})
 
 	test('places tasks into their assigned columns with workflow badge', () => {

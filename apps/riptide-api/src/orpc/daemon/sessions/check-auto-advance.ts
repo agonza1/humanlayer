@@ -164,6 +164,7 @@ export async function checkAutoAdvance(
 			.select({
 				id: sessions.id,
 				task_id: sessions.task_id,
+				automatic_delivery: tasks.automatic_delivery,
 				labels: sessions.labels,
 				created_at: sessions.created_at,
 				archived: sessions.archived,
@@ -214,6 +215,8 @@ export async function checkAutoAdvance(
 			logger.debug({ sessionId }, 'Auto-advance: skipped — no session or no task_id')
 			return
 		}
+		// Opted-in delivery owns its successor sessions; never compete with stock auto-advance.
+		if (session.automatic_delivery !== null) return
 
 		// Drizzle double-serializes JSONB, so labels may come back as a JSON string
 		const rawLabels = session.labels ?? []
@@ -385,16 +388,19 @@ export async function checkAutoAdvance(
 			const currentTaskId = session.task_id
 
 			const lockedSourceSession = await db.transaction(async (tx) => {
-				await tx
-					.select({ id: tasks.id })
+				const [currentTask] = await tx
+					.select({ id: tasks.id, archived: tasks.archived })
 					.from(tasks)
 					.where(and(eq(tasks.id, currentTaskId), eq(tasks.organization_id, organizationId)))
 					.limit(1)
 					.for('no key update')
+				if (!currentTask || currentTask.archived) return null
 
 				const [currentSession] = await tx
 					.select({
 						task_id: sessions.task_id,
+						archived: sessions.archived,
+						status: sessions.status,
 						resource_owner_user_id: sessions.resource_owner_user_id,
 						created_by: sessions.created_by,
 						working_directory: sessions.working_directory,
@@ -411,7 +417,35 @@ export async function checkAutoAdvance(
 					.limit(1)
 					.for('no key update')
 
-				if (!currentSession || currentSession.task_id !== currentTaskId) return null
+				if (
+					!currentSession ||
+					currentSession.task_id !== currentTaskId ||
+					currentSession.archived ||
+					currentSession.status !== 'ready_for_input'
+				)
+					return null
+
+				// The optimistic check above is not sufficient: another completion callback
+				// can create the next session while this callback waits for the task lock.
+				const lockedSiblings = await tx
+					.select({ labels: sessions.labels })
+					.from(sessions)
+					.where(
+						and(
+							eq(sessions.task_id, currentTaskId),
+							eq(sessions.organization_id, organizationId),
+							eq(sessions.archived, false),
+							gt(sessions.created_at, session.created_at),
+						),
+					)
+				if (
+					lockedSiblings.some((row) => {
+						const raw = row.labels ?? []
+						const parsed = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{ name: string }>
+						return parsed.some((label) => label.name === transition.dedupLabel)
+					})
+				)
+					return null
 
 				await createSessionForLaunch(tx, {
 					taskId: currentSession.task_id,
@@ -436,7 +470,7 @@ export async function checkAutoAdvance(
 			})
 
 			if (!lockedSourceSession) {
-				logger.debug({ sessionId }, 'Auto-advance: skipped because the source session moved tasks')
+				logger.debug({ sessionId }, 'Auto-advance: skipped after locked eligibility check')
 				return
 			}
 

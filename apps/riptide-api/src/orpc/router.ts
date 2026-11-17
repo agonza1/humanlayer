@@ -1,9 +1,8 @@
+import { discoverWorkspaceAgentCommandsProcedure } from './api/agent-commands/discover-workspace.effect'
+import { generateTitleProcedure } from './api/ai/generate-title'
 /**
  * This file implements the implementer `os` with the methods we defined
  */
-
-import { discoverWorkspaceAgentCommandsProcedure } from './api/agent-commands/discover-workspace.effect'
-import { generateTitleProcedure } from './api/ai/generate-title'
 import { resolveApprovalEffectProcedure } from './api/approvals/resolve.effect'
 import { createUploadApiArtifactProcedure } from './api/artifacts/create-upload.effect'
 import { getArtifactProcedure } from './api/artifacts/get.effect'
@@ -214,6 +213,7 @@ import { upsertTaskUserSettingsProcedure } from './api/task-user-settings/upsert
 import { archiveTaskProcedure } from './api/tasks/archive'
 import { createTaskProcedure } from './api/tasks/create'
 import { createTaskDraftEffectProcedure } from './api/tasks/createDraft.effect'
+import { configureDeliveryProcedure, getDeliveryProcedure, reportDeliveryReviewProcedure } from './api/tasks/delivery'
 import { launchTaskDraftProcedure } from './api/tasks/launch-draft'
 import { listTasksProcedure } from './api/tasks/list.effect'
 import { reassignTaskOwnerProcedure } from './api/tasks/reassign-owner'
@@ -244,6 +244,7 @@ import { updateCommentProcedure } from './daemon/comments/update'
 import { recordObservedCommitsProcedure } from './daemon/commits/record-observed.effect'
 import { getCommitWatermarksProcedure, setCommitWatermarkProcedure } from './daemon/commits/watermark.effect'
 import { daemonListEnabledContextShardsProcedure } from './daemon/context-shards/list-enabled.effect'
+import { claimDeliveryProcedure, completeDeliveryProcedure, validateDeliveryProcedure } from './daemon/delivery'
 import { getDiffCommentsProcedure } from './daemon/diff-comments/get.effect'
 import { replyToDiffCommentProcedure } from './daemon/diff-comments/reply.effect'
 import { updateDiffCommentsProcedure } from './daemon/diff-comments/update.effect'
@@ -420,6 +421,11 @@ export const apiRouter = os.router({
 		},
 	},
 	tasks: {
+		delivery: {
+			configure: configureDeliveryProcedure,
+			get: getDeliveryProcedure,
+			reportReview: reportDeliveryReviewProcedure,
+		},
 		create: createTaskProcedure,
 		createDraft: createTaskDraftEffectProcedure,
 		launchDraft: launchTaskDraftProcedure,
@@ -641,6 +647,11 @@ export const apiRouter = os.router({
 })
 
 export const daemonRouter = daemonBase.router({
+	delivery: {
+		claim: claimDeliveryProcedure,
+		complete: completeDeliveryProcedure,
+		validate: validateDeliveryProcedure,
+	},
 	workspaceSetup: { update: updateDaemonWorkspaceSetupProcedure },
 	providerLogin: { update: updateDaemonProviderLoginProcedure },
 	hosts: {

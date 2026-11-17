@@ -4,7 +4,10 @@ import type { CodingAgent } from '@humanlayer/schemas/coding-agent'
 import type { PgDatabase } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 
+import { guardTaskDeliveryMutation } from './guard-delivery-mutation'
+
 interface CreateSessionForLaunchParams {
+	deliveryManaged?: boolean
 	id?: string
 	eventId?: string
 	taskId: string | null
@@ -36,6 +39,7 @@ export async function createSessionForLaunch(
 	tx: PgDatabase<PostgresJsQueryResultHKT>,
 	params: CreateSessionForLaunchParams,
 ) {
+	if (!params.deliveryManaged) await guardTaskDeliveryMutation(tx, params.taskId, params.organizationId)
 	const sessionValues: typeof sessions.$inferInsert = {
 		task_id: params.taskId,
 		forked_from_session_id: params.forkedFromSessionId ?? null,

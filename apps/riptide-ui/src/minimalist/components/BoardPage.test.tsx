@@ -4,11 +4,9 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { BoardPage } from './BoardPage'
 
-const { useTaskTree, useTaskDeliveries } = vi.hoisted(() => ({
+const { useTaskTree } = vi.hoisted(() => ({
 	useTaskTree: vi.fn(),
-	useTaskDeliveries: vi.fn<(...args: unknown[]) => Set<string>>(() => new Set<string>()),
 }))
-vi.mock('@/hooks/useTaskDeliveries', () => ({ useTaskDeliveries }))
 vi.mock('@/minimalist/lib/data', () => ({ useTaskTree }))
 vi.mock('@tanstack/react-router', () => ({
 	Link: ({ children }: { children: ReactNode }) => <a href="/task">{children}</a>,
@@ -22,8 +20,6 @@ vi.mock('@/minimalist/lib/use-unread', () => ({ useTaskUnread: () => false }))
 
 afterEach(() => {
 	cleanup()
-	useTaskDeliveries.mockReset()
-	useTaskDeliveries.mockReturnValue(new Set())
 })
 
 test('moves an unlabeled card from Todo through implementation to review as live state changes', () => {
@@ -50,29 +46,20 @@ test('moves an unlabeled card from Todo through implementation to review as live
 	expect(screen.queryByRole('link', { name: /Canary/ })).toBeNull()
 })
 
-test('waits for complete session sync, then moves a confirmed delivery to Done', () => {
+test('keeps idle work in review until archived data leaves the active board, without a Done column', () => {
 	const row = {
 		task: { id: 'merged', name: 'Merged delivery', resource_owner_user_id: 'owner' },
 		projectName: 'Repository',
 		sessions: [{ id: 'session', archived: false, labels: null, last_activity_at: 1n, status: 'ready_for_input' }],
 	}
-	useTaskDeliveries.mockImplementation((...args: unknown[]) =>
-		(args[0] as unknown[]).length ? new Set(['merged']) : new Set(),
-	)
-	useTaskTree.mockReturnValue({ recent: [row], isReady: false })
+	useTaskTree.mockReturnValue({ recent: [row], isReady: true })
 	const { rerender } = render(<BoardPage />)
-	expect(useTaskDeliveries).toHaveBeenLastCalledWith([])
 	expect(
 		within(screen.getByRole('region', { name: 'In Review' })).getByRole('link', { name: /Merged delivery/ }),
 	).toBeTruthy()
-	useTaskTree.mockReturnValue({ recent: [row], isReady: true })
+	expect(screen.queryByRole('region', { name: 'Done' })).toBeNull()
+	expect(useTaskTree).toHaveBeenLastCalledWith(false, 'everyone')
+	useTaskTree.mockReturnValue({ recent: [], isReady: true })
 	rerender(<BoardPage />)
-	expect(
-		within(screen.getByRole('region', { name: 'Done' })).getByRole('link', { name: /Merged delivery/ }),
-	).toBeTruthy()
-	row.sessions[0].status = 'running'
-	rerender(<BoardPage />)
-	expect(
-		within(screen.getByRole('region', { name: 'Implementation' })).getByRole('link', { name: /Merged delivery/ }),
-	).toBeTruthy()
+	expect(screen.queryByRole('link', { name: /Merged delivery/ })).toBeNull()
 })

@@ -217,6 +217,7 @@ import { upsertTaskUserSettingsContract } from './api/task-user-settings/upsert'
 import { archiveTaskContract } from './api/tasks/archive'
 import { createTaskContract } from './api/tasks/create'
 import { createTaskDraftContract } from './api/tasks/createDraft'
+import { configureDeliveryContract, getDeliveryContract, reportDeliveryReviewContract } from './api/tasks/delivery'
 import { launchTaskDraftContract } from './api/tasks/launch-draft'
 import { listTasksContract } from './api/tasks/list'
 import { reassignTaskOwnerContract } from './api/tasks/reassign-owner'
@@ -248,6 +249,7 @@ import { updateCommentContract } from './daemon/comments/update'
 import { recordObservedCommitsContract } from './daemon/commits/record-observed'
 import { getCommitWatermarksContract, setCommitWatermarkContract } from './daemon/commits/watermark'
 import { listEnabledContextShardsContract } from './daemon/context-shards/list-enabled'
+import { claimDeliveryContract, completeDeliveryContract, validateDeliveryContract } from './daemon/delivery'
 import { getDiffCommentsContract } from './daemon/diff-comments/get'
 import { replyToDiffCommentContract } from './daemon/diff-comments/reply'
 import { updateDiffCommentsContract } from './daemon/diff-comments/update'
@@ -424,6 +426,11 @@ export const RiptideApiContract = {
 		},
 	},
 	tasks: {
+		delivery: {
+			configure: configureDeliveryContract,
+			get: getDeliveryContract,
+			reportReview: reportDeliveryReviewContract,
+		},
 		create: createTaskContract,
 		createDraft: createTaskDraftContract,
 		launchDraft: launchTaskDraftContract,
@@ -641,6 +648,7 @@ export const RiptideApiContract = {
 }
 
 export const RiptideDaemonApiContract = {
+	delivery: { claim: claimDeliveryContract, complete: completeDeliveryContract, validate: validateDeliveryContract },
 	hosts: {
 		heartbeat: heartbeatContract,
 		shutdown: shutdownContract,

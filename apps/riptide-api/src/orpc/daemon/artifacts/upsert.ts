@@ -3,10 +3,12 @@ import { artifactOperationsLog } from '@humanlayer/db/tables/artifact-operations
 import { artifactVersions } from '@humanlayer/db/tables/artifact-versions'
 import { artifacts } from '@humanlayer/db/tables/artifacts'
 import { sessions } from '@humanlayer/db/tables/sessions'
+import { DeliveryReviewSchema, decodeDelivery } from '@humanlayer/schemas/zod/automatic-delivery'
 import { and, eq, sql } from 'drizzle-orm'
 import { Effect } from 'effect'
 import { hash } from 'ohash'
 
+import { acceptDeliveryReview, lockDeliveryTask } from '../../../db/automatic-delivery'
 import { getTxId } from '../../../db/get-tx-id'
 import { getTaskWithEffectivePermissions } from '../../../db/task-auth'
 import { OnboardingService } from '../../../effects/services/onboarding/onboarding.service'
@@ -62,6 +64,46 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				}
 
 				const taskSlug = task.slug
+				if (sessionId && fileName === `delivery-review-${sessionId}.json`) {
+					const deliveryTask = await lockDeliveryTask(tx, taskId, organizationId)
+					const delivery = decodeDelivery(deliveryTask?.automatic_delivery)
+					if (deliveryTask && delivery?.phase === 'review' && sessionId === delivery.managedSessionId) {
+						const [reviewer] = await tx
+							.select()
+							.from(sessions)
+							.where(and(eq(sessions.id, sessionId), eq(sessions.organization_id, organizationId)))
+						if (
+							!reviewer ||
+							reviewer.host_id !== context.auth.hostId ||
+							reviewer.task_id !== taskId ||
+							reviewer.created_by !== userId
+						)
+							throw errors.FORBIDDEN()
+						let value: unknown
+						try {
+							value = JSON.parse(content)
+						} catch {
+							throw errors.BAD_REQUEST({
+								data: {
+									message:
+										'Could not read review evidence. Write a complete JSON document and try again.',
+								},
+							})
+						}
+						const parsed = DeliveryReviewSchema.safeParse(value)
+						if (
+							!parsed.success ||
+							parsed.data.sessionId !== sessionId ||
+							!(await acceptDeliveryReview(tx, deliveryTask, parsed.data))
+						)
+							throw errors.BAD_REQUEST({
+								data: {
+									message:
+										'Could not accept review evidence. Check the designated session and exact PR heads.',
+								},
+							})
+					}
+				}
 				const resourceOwnerUserId = task.resource_owner_user_id ?? userId
 
 				// 3. Check if artifact exists

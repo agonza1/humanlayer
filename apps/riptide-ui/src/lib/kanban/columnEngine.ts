@@ -6,7 +6,7 @@ import { activityMinute } from '@/lib/activitySorting'
 import { aggregateTaskStatus } from '@/lib/taskStatus'
 
 /** Fixed kanban column ids, left-to-right workflow order. */
-export type ColumnId = 'todo' | 'research-design' | 'planning' | 'implementation' | 'in-review' | 'done'
+export type ColumnId = 'todo' | 'research-design' | 'planning' | 'implementation' | 'in-review'
 
 /** Ordered column definitions (titles match the prototype). */
 export const KANBAN_COLUMN_DEFS: ReadonlyArray<{ id: ColumnId; title: string }> = [
@@ -15,7 +15,6 @@ export const KANBAN_COLUMN_DEFS: ReadonlyArray<{ id: ColumnId; title: string }> 
 	{ id: 'planning', title: 'Planning' },
 	{ id: 'implementation', title: 'Implementation' },
 	{ id: 'in-review', title: 'In Review' },
-	{ id: 'done', title: 'Done' },
 ]
 
 /**
@@ -188,17 +187,7 @@ function assignColumnInternal(sessions: KanbanSessionInput[]): AssignResult | nu
  * Returns the skill-label column, or lifecycle fallback for unlabeled work.
  * Drafts and session-less tasks land in `todo`.
  */
-export function assignColumn(
-	task: { is_draft?: boolean; deliveryComplete?: boolean },
-	sessions: KanbanSessionInput[],
-): ColumnId {
-	if (
-		!task.is_draft &&
-		task.deliveryComplete &&
-		sessions.some((session) => !session.archived) &&
-		sessions.filter((session) => !session.archived).every((session) => session.status === 'ready_for_input')
-	)
-		return 'done'
+export function assignColumn(_task: { is_draft?: boolean }, sessions: KanbanSessionInput[]): ColumnId {
 	const result = assignColumnInternal(sessions)
 	return result?.columnId ?? 'todo'
 }
@@ -209,7 +198,6 @@ export interface KanbanTaskInput {
 	name: string
 	created_at?: bigint | null
 	is_draft?: boolean
-	deliveryComplete?: boolean
 	resource_owner_user_id: string | null
 	sessions: KanbanSessionInput[]
 }
