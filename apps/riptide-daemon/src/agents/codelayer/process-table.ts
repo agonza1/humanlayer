@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
@@ -62,7 +63,15 @@ print(json.dumps([parent] + [row for row in rows if row is not None]))
 
 export async function processTable(platform: NodeJS.Platform = process.platform): Promise<Identity[]> {
 	if (platform === 'darwin') {
-		const { stdout } = await exec('/usr/bin/python3', ['-I', '-c', DARWIN_PROCESS_TABLE, String(process.pid)], {
+		// /usr/bin/python3 is an xcrun launcher and may write outside a sandbox's temp roots.
+		const python =
+			process.env.HUMANLAYER_PROCESS_INSPECTOR_PYTHON ||
+			[
+				'/Library/Developer/CommandLineTools/usr/bin/python3',
+				'/Applications/Xcode.app/Contents/Developer/usr/bin/python3',
+			].find((path) => existsSync(path)) ||
+			'/usr/bin/python3'
+		const { stdout } = await exec(python, ['-I', '-c', DARWIN_PROCESS_TABLE, String(process.pid)], {
 			timeout: 2_000,
 			maxBuffer: 4 * 1024 * 1024,
 		})
