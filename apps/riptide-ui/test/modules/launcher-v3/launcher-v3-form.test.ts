@@ -33,6 +33,7 @@ describe('launcherV3FormSchema', () => {
 			hostId: null,
 			directory: '',
 			projectId: null,
+			deliveryOverride: 'inherit',
 			projectDefaultRepositoryIdentity: null,
 			permissionsMode: 'auto',
 			agent: 'claude',
@@ -181,6 +182,7 @@ describe('draft projection', () => {
 				hostId: 'host-1',
 				directory: '  /repo  ',
 				projectId: null,
+				deliveryOverride: 'inherit',
 				projectDefaultRepositoryIdentity: null,
 				permissionsMode: 'auto',
 				agent: 'claude',
@@ -281,6 +283,7 @@ describe('toLaunchCommand', () => {
 			task_composer: { assigned_group: 'v3_composer' as const, actual_form: 'v3_composer' as const },
 		}
 		expect(toLaunchCommand(launchable({ effort: 'high', createdWithExperimentFlags: flags }))).toEqual({
+			deliveryOverride: 'inherit',
 			promptText: 'Build the launcher',
 			ticket: null,
 			title: 'Launcher V3',
