@@ -42,6 +42,17 @@ describe('process inspection', () => {
 		await processTable('darwin')
 		expect(execute.mock.calls[0]?.[0]).toBe('/Library/Developer/CommandLineTools/usr/bin/python3')
 	})
+	it('uses Xcode Python when the Command Line Tools interpreter is absent', async () => {
+		exists.mockImplementation((path) => path === '/Applications/Xcode.app/Contents/Developer/usr/bin/python3')
+		const rows = [{ pid: process.pid, parent: 1, state: '', started: '10:20' }]
+		execute.mockResolvedValue({ stdout: JSON.stringify(rows) })
+		expect(await processTable('darwin')).toEqual(rows)
+		expect(execute).toHaveBeenCalledWith(
+			'/Applications/Xcode.app/Contents/Developer/usr/bin/python3',
+			['-I', '-c', DARWIN_PROCESS_TABLE, String(process.pid)],
+			expect.objectContaining({ timeout: 2_000 }),
+		)
+	})
 	it('supports an explicit non-shim interpreter for other installations', async () => {
 		vi.stubEnv('HUMANLAYER_PROCESS_INSPECTOR_PYTHON', '/configured/python3')
 		execute.mockResolvedValue({
