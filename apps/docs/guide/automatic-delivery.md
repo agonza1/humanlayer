@@ -22,6 +22,8 @@ The stock CLI uses the same settings:
 
 ```sh
 humanlayer --local api projects v2 update --project-id PROJECT_UUID --delivery-mode pr-only
+# Enable automatic merge for new tasks:
+humanlayer --local api projects v2 update --project-id PROJECT_UUID --delivery-mode merge
 # Add --delivery-override off, pr-only, merge, or inherit to the normal tasks v2 create command.
 ```
 
