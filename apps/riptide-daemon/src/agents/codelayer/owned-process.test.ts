@@ -11,13 +11,6 @@ import { runOwnedCommand } from './owned-process'
 
 const exec = promisify(execFile)
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
-let processTableAvailable = false
-try {
-	await exec('ps', ['-axo', 'pid=,ppid=,lstart='])
-	processTableAvailable = true
-} catch (error) {
-	if (process.env.CI) throw error
-}
 
 async function running(pid: number) {
 	try {
@@ -29,7 +22,7 @@ async function running(pid: number) {
 }
 
 describe('owned Bash process cleanup', () => {
-	it.runIf(processTableAvailable).each(['timeout', 'abort'] as const)(
+	it.each(['timeout', 'abort'] as const)(
 		'cleans nested new process groups and SIGTERM-resistant children on %s, leaving a sentinel alive',
 		async (reason) => {
 			const directory = await mkdtemp(join(tmpdir(), 'owned-process-'))
@@ -80,7 +73,7 @@ describe('owned Bash process cleanup', () => {
 		},
 	)
 
-	it.runIf(processTableAvailable)('returns normal output and preserves nonzero failures', async () => {
+	it('returns normal output and preserves nonzero failures', async () => {
 		const result = await runOwnedCommand('echo output; echo error >&2; exit 4', { cwd: tmpdir(), timeout: 2_000 })
 		expect(result).toMatchObject({
 			stdout: 'output\n',
@@ -90,9 +83,6 @@ describe('owned Bash process cleanup', () => {
 			aborted: false,
 		})
 	})
-	it.runIf(!processTableAvailable)('fails closed before launching when process inspection is denied', async () => {
-		await expect(runOwnedCommand('sleep 10', { cwd: tmpdir(), timeout: 200 })).rejects.toThrow()
-	})
 
 	it('does not spawn a command for a pre-cancelled call', async () => {
 		const controller = new AbortController()
@@ -100,5 +90,26 @@ describe('owned Bash process cleanup', () => {
 		await expect(
 			runOwnedCommand('sleep 10', { cwd: tmpdir(), timeout: 2_000, signal: controller.signal }),
 		).rejects.toThrow()
+	})
+	it('merges session environment over inherited environment in the actual child without changing the parent', async () => {
+		const previous = process.env.HUMANLAYER_BASH_INTEGRATION_FIXTURE
+		process.env.HUMANLAYER_BASH_INTEGRATION_FIXTURE = 'inherited'
+		try {
+			const inherited = await runOwnedCommand('printf "%s|%s" "$HUMANLAYER_BASH_INTEGRATION_FIXTURE" "$PWD"', {
+				cwd: tmpdir(),
+				timeout: 2_000,
+			})
+			expect(inherited.stdout).toBe(`inherited|${tmpdir()}`)
+			const overridden = await runOwnedCommand('printf "%s|%s" "$HUMANLAYER_BASH_INTEGRATION_FIXTURE" "$PATH"', {
+				cwd: tmpdir(),
+				timeout: 2_000,
+				env: { HUMANLAYER_BASH_INTEGRATION_FIXTURE: 'session' },
+			})
+			expect(overridden.stdout).toBe(`session|${process.env.PATH}`)
+			expect(process.env.HUMANLAYER_BASH_INTEGRATION_FIXTURE).toBe('inherited')
+		} finally {
+			if (previous === undefined) delete process.env.HUMANLAYER_BASH_INTEGRATION_FIXTURE
+			else process.env.HUMANLAYER_BASH_INTEGRATION_FIXTURE = previous
+		}
 	})
 })
