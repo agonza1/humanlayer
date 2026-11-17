@@ -19,7 +19,10 @@ export const base = defineConfig({
 	test: {
 		environment: 'node',
 		pool: 'forks',
-		maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || 2,
+		maxWorkers:
+			process.env.HUMANLAYER_VERIFICATION_CONCURRENCY || !process.env.CI
+				? Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || 2
+				: undefined,
 		testTimeout: 15_000,
 	},
 })

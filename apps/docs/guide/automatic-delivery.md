@@ -63,7 +63,7 @@ Restoring does not reset the delivery review budget or restart archived automati
 
 ## Validation and rollout
 
-CodeLayer Bash calls explicitly select ordinary execution or verification. Verification uses one lane per repository checkout, including subagents; ordinary tools and separate task checkouts remain concurrent. `HUMANLAYER_VERIFICATION_CONCURRENCY` defaults to 2 and controls local Turbo/Vitest workers and verification compiler jobs. Do not background multiple checks inside a shell command.
+CodeLayer Bash calls explicitly select ordinary execution or verification. Verification uses one lane per repository checkout, including subagents; ordinary tools and separate task checkouts remain concurrent. The verification runtime sets `HUMANLAYER_VERIFICATION_CONCURRENCY` to 2 by default for local Turbo/Vitest workers and verification compiler jobs. Root build/typecheck/unit-test scripts apply the Turbo cap only when this variable is explicitly set; hosted CI retains its prior Turbo and Vitest defaults otherwise. Local Vitest defaults to 2 workers. Do not background multiple checks inside a shell command.
 
 Verification records command, directory, scope, finding generation, exact Git revision and outcome in the worktree's Git metadata, scoped to the task. Only the Describe PR session may reuse a successful clean unchanged revision; changed commits, dirty inputs, new affected findings, failures, timeouts and cancellations require execution again. Independent QA never reuses implementation evidence. This does not replace required exact-head hosted CI or authorize publication, merge, archive or production promotion.
 

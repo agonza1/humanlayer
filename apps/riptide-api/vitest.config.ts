@@ -28,7 +28,7 @@ export default mergeConfig(
 			// only takes effect when fileParallelism is true (the unit project); when
 			// fileParallelism is false Vitest forces maxWorkers to 1.
 			fileParallelism: false,
-			maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || 2,
+			maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || (process.env.CI ? 4 : 2),
 			projects: [
 				{
 					extends: true,

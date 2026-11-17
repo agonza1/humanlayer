@@ -63,7 +63,7 @@ export default mergeConfig(
 							'test/effect/fold-session-launch.vi.test.ts',
 							'test/effect/fold-streaming.vi.test.ts',
 						],
-						maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || 2,
+						maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || (process.env.CI ? 4 : 2),
 					},
 				},
 				{
