@@ -3,6 +3,13 @@
 	"ui": "stream",
 	"concurrency": "20",
 	"envMode": "loose",
+	"globalPassThroughEnv": [
+		"HUMANLAYER_VERIFICATION_CONCURRENCY",
+		"GOMAXPROCS",
+		"RAYON_NUM_THREADS",
+		"CARGO_BUILD_JOBS",
+		"CMAKE_BUILD_PARALLEL_LEVEL"
+	],
 	"tasks": {
 		"build": {
 			"env": ["VITE_*"],
