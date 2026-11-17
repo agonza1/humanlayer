@@ -63,6 +63,12 @@ Restoring does not reset the delivery review budget or restart archived automati
 
 ## Validation and rollout
 
+CodeLayer Bash calls explicitly select ordinary execution or verification. Verification uses one lane per repository checkout, including subagents; ordinary tools and separate task checkouts remain concurrent. `HUMANLAYER_VERIFICATION_CONCURRENCY` defaults to 2 and controls local Turbo/Vitest workers and verification compiler jobs. Do not background multiple checks inside a shell command.
+
+Verification records command, directory, scope, finding generation, exact Git revision and outcome in the worktree's Git metadata, scoped to the task. Only the Describe PR session may reuse a successful clean unchanged revision; changed commits, dirty inputs, new affected findings, failures, timeouts and cancellations require execution again. Independent QA never reuses implementation evidence. This does not replace required exact-head hosted CI or authorize publication, merge, archive or production promotion.
+
+On Bash timeout or cancellation, CodeLayer tracks owned descendants by ancestry and process identity, including children in other process groups. It terminates gracefully, escalates after a bounded grace period even if the shell exited, and waits for cleanup before returning. Process inspection must be available; unavailable inspection fails before command launch rather than pretending cleanup is safe.
+
 Source tests cover exact-head merge, required repository protections, optional/no-CI checks, finding triage, bounded repairs, duplicate callbacks, stale inputs, restart uncertainty, daemon artifact reporting and archive. A successful source test does not prove a deployed canary. Record the deployed revision and an actual opt-in task's review, PR, merge and archive before describing an installation as live end to end.
 
 For another repository, reuse its HumanLayer project, verify worker clone/push/PR/merge access and test commands, and explicitly enroll accepted work. Extend the read-only App installation separately when its PR visibility is needed. No new App, key, VM or deferred H#16/O#893 branch is required for this stock path.

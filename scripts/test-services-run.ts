@@ -1,6 +1,8 @@
 import { serviceTestConcurrency } from '../ci-scripts/service-test-concurrency'
 
-const concurrency = serviceTestConcurrency(process.env.SERVICE_TEST_CONCURRENCY)
+const concurrency = serviceTestConcurrency(
+	process.env.HUMANLAYER_VERIFICATION_CONCURRENCY ?? process.env.SERVICE_TEST_CONCURRENCY,
+)
 const servicesStarted = performance.now()
 const child = Bun.spawn(
 	[

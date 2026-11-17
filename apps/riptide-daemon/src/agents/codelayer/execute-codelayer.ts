@@ -48,6 +48,7 @@ import { DEFAULT_EFFECTIVE_SETTINGS, type EffectiveSettings } from '../claudecod
 import { loadContextShardsPromptBlock } from '../shared/context-shards'
 import { createHumanlayerTools } from '../shared/humanlayer-tools'
 import type { ForkMeta, SessionContext } from '../shared/run-session'
+import { createOwnedBashTool, VERIFICATION_INSTRUCTIONS } from './bash-tool'
 import { createDaemonCodexDiagnostics } from './codex-diagnostics'
 import {
 	type CodexSkillDiscoveryDiagnostic,
@@ -65,6 +66,7 @@ import { createCodelayerCommitAttributionHook } from './hooks/commit-attribution
 import { createCodelayerTaskDiffCaptureHook } from './hooks/task-diff-capture-hook'
 import { getResearchSubagentModelId } from './research-model-routing'
 import { RAW_TOTAL_KEY, toConventionalTokenMap, toUsageEventTokenMap } from './token-usage'
+import { verificationHandoff } from './verification'
 
 type RiptideCodelayerProviderType = ProviderType | 'firepass'
 type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -472,6 +474,16 @@ export async function executeCodelayer(
 	// the same seam every agent path uses (see @humanlayer/git-attribution) — for codelayer it
 	// reaches the agent's `bash` tool via createCodelayerAgent's `shellEnv` passthrough.
 	const commitAttrEnv = await commitAttributionEnv(session.id, { cwd, codingAgent: 'codelayer' })
+	const isDescribePr = !!session.labels?.some((label) => label.name === 'rpi:describe-pr')
+	const ownedBash = createOwnedBashTool({
+		cwd,
+		env: commitAttrEnv,
+		task: session.task_id ?? session.id,
+		session: session.id,
+		allowReuse: isDescribePr,
+	})
+	systemPromptAdditions.push(VERIFICATION_INSTRUCTIONS)
+	if (isDescribePr) systemPromptAdditions.push(await verificationHandoff(cwd, session.task_id ?? session.id))
 
 	// Create agent with hooks
 	const hasArtifactSyncHooks = !!artifactSync
@@ -552,7 +564,7 @@ export async function executeCodelayer(
 		providerOptionOverrides,
 		systemPromptAdditions,
 		skillTool,
-		additionalTools: humanlayerTools,
+		additionalTools: { ...humanlayerTools, bash: ownedBash },
 		hooks: {
 			approval: [createCodelayerApprovalHook(services, session, cwd)],
 			postToolUse: postToolUseHooks,

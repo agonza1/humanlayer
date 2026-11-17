@@ -22,6 +22,7 @@ Create or update the pull request for the current task with a concise descriptio
 
 3. Gather only the context needed to explain the change:
    - Read the ticket and relevant task artifacts, including implementation evidence: exact tested SHA, actual check results, and blocked or unperformed verification. Never infer a pass.
+   - Reuse successful implementation verification for the exact unchanged clean commit, command, directory, scope, and finding generation. Use Bash's verification execution class when available; it records and checks evidence across the handoff. Do not blindly rerun full monorepo quality, typecheck, or test suites. Changed commits, dirty inputs, or new findings require affected checks again; failed, cancelled, and timed-out checks are not passes. Missing evidence remains missing. Independent QA must execute independently, and required exact-head hosted CI still applies.
    - Read the complete PR diff and enough surrounding code to understand behavior and ownership.
    - Use `gh pr view` to collect PR metadata and changed files.
    - Read `{SKILLBASE}/references/show-me.md` for the visual-outline conventions used in the PR body.

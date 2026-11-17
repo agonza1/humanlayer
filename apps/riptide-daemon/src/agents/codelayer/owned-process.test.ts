@@ -1,0 +1,104 @@
+import { execFile, spawn } from 'node:child_process'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { promisify } from 'node:util'
+
+import { describe, expect, it } from 'vitest'
+
+import { runOwnedCommand } from './owned-process'
+
+const exec = promisify(execFile)
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+let processTableAvailable = false
+try {
+	await exec('ps', ['-axo', 'pid=,ppid=,lstart='])
+	processTableAvailable = true
+} catch (error) {
+	if (process.env.CI) throw error
+}
+
+async function running(pid: number) {
+	try {
+		const { stdout } = await exec('ps', ['-o', 'stat=', '-p', String(pid)])
+		return !!stdout.trim() && !stdout.trim().startsWith('Z')
+	} catch {
+		return false
+	}
+}
+
+describe('owned Bash process cleanup', () => {
+	it.runIf(processTableAvailable).each(['timeout', 'abort'] as const)(
+		'cleans nested new process groups and SIGTERM-resistant children on %s, leaving a sentinel alive',
+		async (reason) => {
+			const directory = await mkdtemp(join(tmpdir(), 'owned-process-'))
+			const journal = join(directory, 'pids')
+			const record = `require('fs').appendFileSync(${JSON.stringify(journal)}, process.pid + '\\n');`
+			const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+			const sentinelExit = new Promise((resolve) => sentinel.once('exit', resolve))
+			const leaf = `${record} process.on("SIGTERM", () => {}); console.log(process.pid); setInterval(() => {}, 1000)`
+			const middle = `${record} require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(leaf)}], {detached:true, stdio:'inherit'}); console.log(process.pid); setInterval(() => {}, 1000)`
+			const root = `${record} require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(middle)}], {detached:true, stdio:'inherit'}); console.log(process.pid); setInterval(() => {}, 1000)`
+			const controller = new AbortController()
+			const abort = reason === 'abort' ? setTimeout(() => controller.abort(), 900) : undefined
+			let pids: number[] = []
+			try {
+				const result = await runOwnedCommand(`${quote(process.execPath)} -e ${quote(root)}`, {
+					cwd: tmpdir(),
+					timeout: reason === 'timeout' ? 900 : 5_000,
+					signal: controller.signal,
+				})
+				pids = result.stdout.trim().split('\n').map(Number)
+				expect(pids).toHaveLength(3)
+				expect(result.exitCode).not.toBe(0)
+				expect(result.timedOut).toBe(reason === 'timeout')
+				expect(result.aborted).toBe(reason === 'abort')
+				for (let attempt = 0; attempt < 30 && (await Promise.all(pids.map(running))).some(Boolean); attempt++)
+					await delay(20)
+				expect(await Promise.all(pids.map(running))).toEqual([false, false, false])
+				expect(await running(sentinel.pid ?? -1)).toBe(true)
+			} finally {
+				clearTimeout(abort)
+				// The journal is task-owned and survives executor errors, unlike captured stdout.
+				pids = (await readFile(journal, 'utf8').catch(() => ''))
+					.trim()
+					.split('\n')
+					.map(Number)
+					.filter((pid) => Number.isInteger(pid) && pid > 1)
+				for (const pid of pids) {
+					if (await running(pid)) {
+						try {
+							process.kill(pid, 'SIGKILL')
+						} catch {}
+					}
+				}
+				sentinel.kill('SIGKILL')
+				await sentinelExit
+				await rm(directory, { recursive: true, force: true })
+			}
+		},
+	)
+
+	it.runIf(processTableAvailable)('returns normal output and preserves nonzero failures', async () => {
+		const result = await runOwnedCommand('echo output; echo error >&2; exit 4', { cwd: tmpdir(), timeout: 2_000 })
+		expect(result).toMatchObject({
+			stdout: 'output\n',
+			stderr: 'error\n',
+			exitCode: 4,
+			timedOut: false,
+			aborted: false,
+		})
+	})
+	it.runIf(!processTableAvailable)('fails closed before launching when process inspection is denied', async () => {
+		await expect(runOwnedCommand('sleep 10', { cwd: tmpdir(), timeout: 200 })).rejects.toThrow()
+	})
+
+	it('does not spawn a command for a pre-cancelled call', async () => {
+		const controller = new AbortController()
+		controller.abort()
+		await expect(
+			runOwnedCommand('sleep 10', { cwd: tmpdir(), timeout: 2_000, signal: controller.signal }),
+		).rejects.toThrow()
+	})
+})
