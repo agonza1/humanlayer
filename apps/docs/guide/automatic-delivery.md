@@ -30,6 +30,16 @@ Review JSON is written through the existing task artifact tool as `delivery-revi
 
 Only all-merged, independently reviewed task branches with unchanged task work and no active or pending sessions can be archived. Reservations survive restarts; an uncertain merge outcome stops for inspection. Archive uses existing reversible task/session archival and diff-stream cleanup. It does not delete worktrees or history. Both active boards have no Done column; archived tasks remain in archived history and can be restored.
 
+## Restore an archived task
+
+Archival preserves task and session history and worktrees. Restore a task and its associated sessions with the stock CLI:
+
+```sh
+humanlayer --local api tasks archive --task-id TASK_UUID --archived false --cascade-to-sessions true
+```
+
+Restoring does not reset the delivery review budget or restart archived automatic delivery.
+
 ## Validation and rollout
 
 Source tests cover exact-head merge, required repository protections, optional/no-CI checks, finding triage, bounded repairs, duplicate callbacks, stale inputs, restart uncertainty, daemon artifact reporting and archive. A successful source test does not prove a deployed canary. Record the deployed revision and an actual opt-in task's review, PR, merge and archive before describing an installation as live end to end.
