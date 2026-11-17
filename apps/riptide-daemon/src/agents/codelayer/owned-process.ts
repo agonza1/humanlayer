@@ -1,25 +1,7 @@
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
-import { promisify } from 'node:util'
 
-const exec = promisify(execFile)
-
-interface Identity {
-	pid: number
-	parent: number
-	started: string
-	state: string
-}
-
-async function processTable(): Promise<Identity[]> {
-	const { stdout } = await exec('ps', ['-axo', 'pid=,ppid=,stat=,lstart='], { timeout: 2_000 })
-	return stdout.split('\n').flatMap((line) => {
-		const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line)
-		return match
-			? [{ pid: Number(match[1]), parent: Number(match[2]), state: match[3] ?? '', started: match[4] ?? '' }]
-			: []
-	})
-}
+import { coalesceSamples, processTable, type Identity } from './process-table'
 
 export interface CommandResult {
 	stdout: string
@@ -81,11 +63,7 @@ export async function runOwnedCommand(
 		}
 		return table.filter((entry) => owned.get(entry.pid)?.started === entry.started)
 	}
-	let tracking = Promise.resolve<Identity[]>([])
-	const sample = () => {
-		tracking = tracking.catch(() => []).then(discover)
-		return tracking
-	}
+	const sample = coalesceSamples(discover)
 	let timedOut = false
 	let aborted = false
 	let cleanup: Promise<void> | undefined

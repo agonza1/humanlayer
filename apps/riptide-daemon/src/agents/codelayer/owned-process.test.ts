@@ -1,24 +1,19 @@
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { promisify } from 'node:util'
 
 import { describe, expect, it } from 'vitest'
 
 import { runOwnedCommand } from './owned-process'
+import { processTable } from './process-table'
 
-const exec = promisify(execFile)
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 
 async function running(pid: number) {
-	try {
-		const { stdout } = await exec('ps', ['-o', 'stat=', '-p', String(pid)])
-		return !!stdout.trim() && !stdout.trim().startsWith('Z')
-	} catch {
-		return false
-	}
+	const entry = (await processTable()).find((entry) => entry.pid === pid)
+	return !!entry && !entry.state.startsWith('Z')
 }
 
 describe('owned Bash process cleanup', () => {
