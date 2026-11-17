@@ -74,3 +74,5 @@ Source tests cover exact-head merge, required repository protections, optional/n
 For another repository, reuse its HumanLayer project, verify worker clone/push/PR/merge access and test commands, and explicitly enroll accepted work. Extend the read-only App installation separately when its PR visibility is needed. No new App, key, VM or deferred H#16/O#893 branch is required for this stock path.
 
 On macOS, process inspection uses the installed Command Line Tools or Xcode Python directly, avoiding the `/usr/bin/python3` launcher’s `xcrun` cache writes inside a sandbox. Other installations can set `HUMANLAYER_PROCESS_INSPECTOR_PYTHON` to an absolute non-launcher Python path. Process-metadata access must still be authorized by the installed sandbox; this setting does not change its permissions.
+
+A confirmed macOS inspector timeout gets one retry with a five-second deadline. Permission failures are not retried; persistent failures retain subprocess code, signal and diagnostic text, and no command starts without a successful ownership inspection.
