@@ -36,7 +36,7 @@ export default mergeConfig(
 						name: 'unit',
 						include: ['test/**/*.test.ts'],
 						exclude: databaseTests,
-						maxWorkers: 8,
+						maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || (process.env.CI ? 8 : 2),
 					},
 				},
 				{

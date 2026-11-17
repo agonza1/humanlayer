@@ -38,13 +38,8 @@ async function runCheck(name: string, script: string): Promise<number> {
     return exitCode;
 }
 
-const [typecheckResult, qualityResult] = await Promise.allSettled([
-    runCheck("typecheck", "hook:typecheck"),
-    runCheck("quality", "hook:quality"),
-]);
-
-const typecheckCode = typecheckResult.status === "fulfilled" ? typecheckResult.value : 1;
-const qualityCode = qualityResult.status === "fulfilled" ? qualityResult.value : 1;
+const typecheckCode = await runCheck("typecheck", "hook:typecheck").catch(() => 1);
+const qualityCode = await runCheck("quality", "hook:quality").catch(() => 1);
 
 if (typecheckCode !== 0 || qualityCode !== 0) {
     process.exit(1);

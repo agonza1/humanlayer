@@ -28,7 +28,7 @@ export default mergeConfig(
 			// only takes effect when fileParallelism is true (the unit project); when
 			// fileParallelism is false Vitest forces maxWorkers to 1.
 			fileParallelism: false,
-			maxWorkers: 4,
+			maxWorkers: Number(process.env.HUMANLAYER_VERIFICATION_CONCURRENCY) || (process.env.CI ? 4 : 2),
 			projects: [
 				{
 					extends: true,
@@ -44,7 +44,7 @@ export default mergeConfig(
 						globalSetup: ['test/utils/global-setup.ts'],
 						// Each unit test file provisions its own unique random Postgres
 						// database (see test/utils/test-db.ts), so files are safe to run in
-						// parallel. Bounded to 4 workers to keep connection/CREATE-DROP-DATABASE
+						// parallel. Bounded workers keep connection/CREATE-DROP-DATABASE
 						// pressure well under postgres max_connections (500).
 						fileParallelism: true,
 						isolate: false,

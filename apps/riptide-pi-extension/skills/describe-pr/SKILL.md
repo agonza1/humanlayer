@@ -5,6 +5,8 @@ description: Only use when the user explicitly invokes this skill by name.
 
 # Describe a Pull Request
 
+Reuse successful implementation verification only for the exact unchanged clean commit, command, directory, scope, and finding generation. Do not blindly repeat full monorepo checks. Changed inputs or new findings require affected checks again; failures, timeouts, cancellations, and missing evidence are not passes. Independent QA and required exact-head hosted CI remain independent gates.
+
 Create or update the pull request for the current task with a concise description that helps a reviewer understand why the change exists and the shape of the implementation.
 
 ## Workflow
