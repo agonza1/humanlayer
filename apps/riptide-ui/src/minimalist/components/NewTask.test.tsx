@@ -279,3 +279,20 @@ describe('picking how big a new task is', () => {
 		})
 	})
 })
+
+describe('task delivery override', () => {
+	it('uses the selected override in the minimalist project launcher', async () => {
+		render(<NewTask />)
+		fireEvent.click(screen.getByRole('button', { name: 'Choose task delivery' }))
+		fireEvent.click(screen.getByRole('button', { name: /PR with manual merge/ }))
+		fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Deliver this with manual merge' } })
+		fireEvent.click(screen.getByRole('button', { name: 'Start task' }))
+		await waitFor(() => expect(startTask).toHaveBeenCalledOnce())
+		expect(startTask.mock.calls[0]?.[1]).toMatchObject({ deliveryOverride: 'pr-only' })
+	})
+	it('hides delivery choices for directory-based work', () => {
+		render(<NewTask />)
+		fireEvent.click(screen.getByRole('button', { name: 'Pick directory' }))
+		expect(screen.queryByRole('button', { name: 'Choose task delivery' })).toBeNull()
+	})
+})

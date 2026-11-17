@@ -1,4 +1,5 @@
 import type { RiptideApiOutputs } from '@humanlayer/riptide-api-contract/contract-router'
+import { ProjectDeliveryModeSchema } from '@humanlayer/schemas/zod/automatic-delivery'
 import { Badge } from '@humanlayer/ui/components/badge'
 import { Button } from '@humanlayer/ui/components/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@humanlayer/ui/components/hover-card'
@@ -293,6 +294,33 @@ function ProjectRow({
 
 			{expanded && (
 				<div className="px-3 pb-2.5 pl-9">
+					<label className="block py-2 text-sm">
+						Delivery default
+						<select
+							aria-label={`Choose delivery default for ${project.name}`}
+							className="ml-3 bg-background text-foreground"
+							value={project.deliveryMode}
+							disabled={!canEdit || updateMutation.isPending}
+							onChange={async (event) => {
+								const deliveryMode = ProjectDeliveryModeSchema.parse(event.target.value)
+								try {
+									await updateMutation.mutateAsync({ projectId: project.id, deliveryMode })
+									await onRefresh()
+								} catch {
+									toast.error('Could not save delivery default. Refresh and try again.')
+								}
+							}}
+						>
+							<option value="off">Off</option>
+							<option value="pr-only">PR with manual merge</option>
+							<option value="merge">Automatic merge</option>
+						</select>
+					</label>
+					<p className="pb-3 text-xs text-muted-foreground">
+						Applies only to your new implementation work. Pull requests receive independent review and
+						bounded repairs. Manual merge waits for you; automatic merge follows repository policy. Existing
+						tasks and required human approvals do not change.
+					</p>
 					{project.repositories.map((repo, index) => (
 						<div
 							key={repo.repositoryIdentity}

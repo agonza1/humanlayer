@@ -121,6 +121,7 @@ export const createProject = Effect.fn('project_workspace.create_project')(funct
 							created_by: input.actor.userId,
 							resource_owner_user_id: input.actor.userId,
 							repositories: input.project.repositories,
+							delivery_mode: input.project.deliveryMode ?? 'off',
 							archived: false,
 						})
 						.returning(),
@@ -167,6 +168,7 @@ export const updateProject = Effect.fn('project_workspace.update_project')(funct
 							description: input.changes.description,
 							private: input.changes.private,
 							repositories: input.changes.repositories,
+							delivery_mode: input.changes.deliveryMode,
 							updated_at: BigInt(yield* Clock.currentTimeMillis),
 						})
 						.where(
@@ -459,6 +461,7 @@ const parseProject = Effect.fn('project_workspace.parse_project')(function* (row
 		resourceOwnerUserId: parsed.resource_owner_user_id,
 		repositories: parsed.repositories,
 		archived: parsed.archived,
+		deliveryMode: parsed.delivery_mode,
 		createdAt: Number(parsed.created_at),
 		updatedAt: Number(parsed.updated_at),
 	} satisfies ProjectV2

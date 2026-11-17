@@ -165,6 +165,7 @@ export async function checkAutoAdvance(
 				id: sessions.id,
 				task_id: sessions.task_id,
 				automatic_delivery: tasks.automatic_delivery,
+				delivery_snapshot: tasks.delivery_snapshot,
 				labels: sessions.labels,
 				created_at: sessions.created_at,
 				archived: sessions.archived,
@@ -282,6 +283,13 @@ export async function checkAutoAdvance(
 			if (!labels.some((l) => l.name === transition.label)) {
 				continue
 			}
+			if (transition.label === 'rpi:implementation' && session.delivery_snapshot) {
+				const snapshot =
+					typeof session.delivery_snapshot === 'string'
+						? JSON.parse(session.delivery_snapshot)
+						: session.delivery_snapshot
+				if (snapshot.mode !== 'off') return
+			}
 
 			logger.debug(
 				{ sessionId, taskId: session.task_id, transition: transition.taskFlag },
@@ -389,12 +397,24 @@ export async function checkAutoAdvance(
 
 			const lockedSourceSession = await db.transaction(async (tx) => {
 				const [currentTask] = await tx
-					.select({ id: tasks.id, archived: tasks.archived })
+					.select({
+						id: tasks.id,
+						archived: tasks.archived,
+						automatic_delivery: tasks.automatic_delivery,
+						delivery_snapshot: tasks.delivery_snapshot,
+					})
 					.from(tasks)
 					.where(and(eq(tasks.id, currentTaskId), eq(tasks.organization_id, organizationId)))
 					.limit(1)
 					.for('no key update')
-				if (!currentTask || currentTask.archived) return null
+				if (!currentTask || currentTask.archived || currentTask.automatic_delivery !== null) return null
+				if (transition.label === 'rpi:implementation' && currentTask.delivery_snapshot) {
+					const snapshot =
+						typeof currentTask.delivery_snapshot === 'string'
+							? JSON.parse(currentTask.delivery_snapshot)
+							: currentTask.delivery_snapshot
+					if (snapshot.mode !== 'off') return null
+				}
 
 				const [currentSession] = await tx
 					.select({

@@ -159,6 +159,7 @@ describe('startTask', () => {
 			ids,
 			target: { kind: 'project', project: { id: 'p1', repositories: [repository] } },
 			hostId: 'h1',
+			deliveryOverride: 'pr-only',
 			draft: 'Fix the login bug',
 			ticket: null,
 			attachments: [],
@@ -168,6 +169,7 @@ describe('startTask', () => {
 		expect(api.projects.v2.repositorySources.get).toHaveBeenCalled()
 		const [created] = api.tasks.v2.create.mock.calls[0] as unknown as [Record<string, unknown>]
 		expect(created).toMatchObject({
+			deliveryOverride: 'pr-only',
 			name: 'Fix the login bug',
 			slug: 'fix-the-login-bug-0001',
 			projectId: 'p1',

@@ -1,5 +1,29 @@
 import z from 'zod/v4'
 
+export const ProjectDeliveryModeSchema = z.enum(['off', 'pr-only', 'merge'])
+export const TaskDeliveryOverrideSchema = z.enum(['inherit', 'off', 'pr-only', 'merge'])
+export const TaskDeliverySnapshotSchema = z.object({
+	mode: ProjectDeliveryModeSchema,
+	authorizedBy: z.string(),
+	authorizedAt: z.number(),
+})
+export type TaskDeliverySnapshot = z.infer<typeof TaskDeliverySnapshotSchema>
+
+export function snapshotProjectDelivery(input: {
+	projectOwner: string
+	taskOwner: string
+	projectMode: z.infer<typeof ProjectDeliveryModeSchema>
+	override?: z.infer<typeof TaskDeliveryOverrideSchema>
+}): TaskDeliverySnapshot {
+	const mode =
+		input.override && input.override !== 'inherit'
+			? input.override
+			: input.projectOwner === input.taskOwner
+				? input.projectMode
+				: 'off'
+	return { mode, authorizedBy: input.taskOwner, authorizedAt: Date.now() }
+}
+
 export const DeliveryTargetSchema = z.object({
 	repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
 	branch: z.string().min(1).max(255),

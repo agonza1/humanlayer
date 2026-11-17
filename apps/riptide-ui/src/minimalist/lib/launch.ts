@@ -162,6 +162,7 @@ export type LoadedTarget =
 	  }
 
 type NewTask = {
+	deliveryOverride?: 'inherit' | 'off' | 'pr-only' | 'merge'
 	ids: { taskId: string; sessionId: string; eventId: string }
 	target: LoadedTarget
 	hostId: string
@@ -238,6 +239,7 @@ export async function startTask(api: RiptideApiClient, input: NewTask): Promise<
 				sessionId: ids.sessionId,
 				eventId: ids.eventId,
 				projectId: target.project.id,
+				deliveryOverride: input.deliveryOverride,
 				repositories,
 				defaultRepositoryIdentity: repositories.find((repository) => repository.default)?.repositoryIdentity,
 				firstSession,

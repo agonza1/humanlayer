@@ -1,9 +1,10 @@
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { decodeDelivery, deliveryReviewVerdict, sameDeliveryHeads } from '@humanlayer/schemas/zod/automatic-delivery'
-import { and, eq, isNotNull } from 'drizzle-orm'
+import { and, eq, isNotNull, or } from 'drizzle-orm'
 import { Effect } from 'effect'
 
 import { claimTaskDelivery, completeTaskDelivery, deliveryContext, lockDeliveryTask } from '../../db/automatic-delivery'
+import { enrollProjectDelivery } from '../../db/project-delivery'
 import { TaskDiffService } from '../../effects/services/task-diff-durable-streams/task-diff-durable-streams.service'
 import { daemonBase, requiresDaemonBillingMiddleware } from '../base'
 
@@ -20,7 +21,7 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 						eq(tasks.organization_id, organizationId),
 						eq(tasks.resource_owner_user_id, userId),
 						eq(tasks.archived, false),
-						isNotNull(tasks.automatic_delivery),
+						or(isNotNull(tasks.automatic_delivery), isNotNull(tasks.delivery_snapshot)),
 					),
 				)
 				.for('no key update', { skipLocked: true })
@@ -31,6 +32,7 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 					(decodeDelivery(b.automatic_delivery)?.managedAt ?? 0),
 			)
 			for (const task of candidates) {
+				await enrollProjectDelivery(tx, task, hostId)
 				if (decodeDelivery(task.automatic_delivery)?.hostId !== hostId) continue
 				const action = await claimTaskDelivery(tx, task)
 				if (action) return { action }

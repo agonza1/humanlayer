@@ -106,6 +106,7 @@ export const launcherV3FormSchema = z.object({
 	directory: z.string().default(''),
 	/** A V2 project selected in place of a bare working directory. */
 	projectId: z.string().nullable().default(null),
+	deliveryOverride: z.enum(['inherit', 'off', 'pr-only', 'merge']).default('inherit'),
 	projectDefaultRepositoryIdentity: z.string().nullable().default(null),
 	permissionsMode: permissionModeSchema.default('auto'),
 	agent: agentSchema.default('claude'),
@@ -306,6 +307,7 @@ export type LauncherV3LaunchTarget =
 	| { kind: 'project'; project: LauncherV3ProjectLaunch }
 
 export interface LauncherV3Command {
+	deliveryOverride?: LauncherV3FormValues['deliveryOverride']
 	promptText: string
 	ticket: LauncherV3TicketAttachment | null
 	title: string
@@ -339,6 +341,7 @@ export function toLaunchCommand(values: LauncherV3FormValues, target?: LauncherV
 	const effectiveWorktreeTiming =
 		target?.kind === 'project' ? 'now' : target?.kind === 'in-place' ? 'never' : values.worktreeTiming
 	const command: LauncherV3Command = {
+		deliveryOverride: values.deliveryOverride,
 		promptText: getTextFromContent(values.prompt).trim(),
 		ticket: values.ticket
 			? {

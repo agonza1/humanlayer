@@ -1,5 +1,6 @@
 import { TASK_WORKFLOW_TYPES } from '@humanlayer/schemas/effect/taskconfiguration'
 import { TaskIntentSchema } from '@humanlayer/schemas/task-intent'
+import { TaskDeliveryOverrideSchema } from '@humanlayer/schemas/zod/automatic-delivery'
 import { WorkspaceRepositoriesSchema } from '@humanlayer/schemas/zod/project-workspace'
 import { StatusCodes } from 'http-status-codes'
 import z from 'zod/v4'
@@ -42,6 +43,9 @@ export const CreateTaskV2InputSchema = z
 		sessionId: z.uuidv7().optional(),
 		eventId: z.uuidv7().optional(),
 		projectId: z.uuidv7(),
+		deliveryOverride: TaskDeliveryOverrideSchema.optional().describe(
+			'inherit uses your own project default; off, pr-only, or merge explicitly override it for this task',
+		),
 		name: z.string().min(1),
 		slug: z
 			.string()

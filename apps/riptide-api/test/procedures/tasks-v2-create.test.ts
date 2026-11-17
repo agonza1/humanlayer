@@ -3,6 +3,7 @@ import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { projects } from '@humanlayer/db/tables/projects'
 import { repositoryLocationsForUserForHost } from '@humanlayer/db/tables/repository-locations-for-user-for-host'
+import { sessionRepositories } from '@humanlayer/db/tables/session-repositories'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskLaunches } from '@humanlayer/db/tables/task-launches'
 import { tasks } from '@humanlayer/db/tables/tasks'
@@ -18,13 +19,18 @@ import { Effect, Layer } from 'effect'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest'
 
+import { lockDeliveryTask } from '../../src/db/automatic-delivery'
+import { enrollProjectDelivery } from '../../src/db/project-delivery'
 import {
 	type GenerateSessionTitleInput,
 	SessionTitleGeneration,
 } from '../../src/effects/services/session-title-generation/session-title-generation.service'
 import { createTaskV2Procedure as liveCreateTaskV2 } from '../../src/orpc/api/tasks/v2/create.effect'
+import { claimDeliveryProcedure } from '../../src/orpc/daemon/delivery'
 import {
 	createMockApiContext,
+	createMockDaemonAuth,
+	createMockDaemonContext,
 	createMockJiraService,
 	createMockLinearService,
 	createMockS3Service,
@@ -191,6 +197,286 @@ describe('tasks v2 create', () => {
 		model: 'opus',
 		permissionsMode: 'default' as const,
 	}
+
+	async function deliveryFixture(
+		mode: 'off' | 'pr-only' | 'merge' = 'merge',
+		override?: 'inherit' | 'off' | 'pr-only' | 'merge',
+		intent: 'research' | 'implementation' = 'implementation',
+	) {
+		const actor = await setupActor()
+		await db.update(projects).set({ delivery_mode: mode }).where(eq(projects.id, actor.projectId))
+		const input = {
+			taskId: uuidv7(),
+			workspaceId: uuidv7(),
+			sessionId: uuidv7(),
+			projectId: actor.projectId,
+			name: 'Delivery task',
+			slug: 'delivery-task',
+			repositories: [repository],
+			deliveryOverride: override,
+			workflowType: 'freeform' as const,
+			firstSession: { ...firstSession, hostId: actor.hostId, intent },
+		}
+		await call(createTaskV2, input, { context: actor.context })
+		const state = async () => (await db.select().from(tasks).where(eq(tasks.id, input.taskId)))[0]!
+		const enroll = () =>
+			db.transaction(async (tx) =>
+				enrollProjectDelivery(
+					tx,
+					(await lockDeliveryTask(tx, input.taskId, actor.organizationId))!,
+					actor.hostId,
+				),
+			)
+		const materialize = () =>
+			db
+				.update(workspaceRepositoryStatusForUserForHost)
+				.set({
+					status: 'done',
+					repo_available: true,
+					error: null,
+					materialization: {
+						kind: 'worktree',
+						path: '/tmp/actual-materialized-delivery',
+						branch: repository.branch,
+					},
+				})
+				.where(eq(workspaceRepositoryStatusForUserForHost.workspace_id, input.workspaceId))
+		return { actor, input, state, enroll, materialize }
+	}
+
+	test.each([
+		['off', undefined, 'off'],
+		['merge', undefined, 'merge'],
+		['pr-only', 'inherit', 'pr-only'],
+		['merge', 'off', 'off'],
+		['merge', 'pr-only', 'pr-only'],
+		['off', 'merge', 'merge'],
+	] as const)('snapshots %s with override %s as %s', async (mode, override, expected) => {
+		const f = await deliveryFixture(mode, override)
+		expect((await f.state()).delivery_snapshot).toMatchObject({ mode: expected, authorizedBy: f.actor.userId })
+		expect((await f.state()).automatic_delivery).toBeNull()
+		await f.materialize()
+		await f.enroll()
+		expect((await f.state()).automatic_delivery?.mode ?? 'off').toBe(expected)
+	})
+
+	test('uses exact materialized targets and preserves snapshots and evidence on retries', async () => {
+		const f = await deliveryFixture('pr-only')
+		await f.enroll()
+		expect((await f.state()).automatic_delivery).toBeNull()
+		await f.materialize()
+		await f.enroll()
+		const enrolled = (await f.state()).automatic_delivery!
+		expect(enrolled).toMatchObject({
+			sourceSessionId: f.input.sessionId,
+			hostId: f.actor.hostId,
+			mode: 'pr-only',
+			targets: [
+				{
+					repository: 'humanlayer/syncopate',
+					base: 'main',
+					branch: repository.branch,
+					directory: '/tmp/actual-materialized-delivery',
+				},
+			],
+		})
+		await db
+			.update(tasks)
+			.set({ automatic_delivery: { ...enrolled, passes: 2, recoveryAttempts: 1 } })
+			.where(eq(tasks.id, f.input.taskId))
+		const before = await f.state()
+		await db.update(projects).set({ delivery_mode: 'merge' }).where(eq(projects.id, f.actor.projectId))
+		expect(
+			(await call(createTaskV2, { ...f.input, deliveryOverride: 'merge' }, { context: f.actor.context })).result,
+		).toBe('already-exists')
+		await f.enroll()
+		const after = await f.state()
+		expect(after.delivery_snapshot).toEqual(before.delivery_snapshot)
+		expect(after.automatic_delivery).toEqual(before.automatic_delivery)
+	})
+
+	test('the existing daemon claim enrolls the snapshot and owns the PR successor', async () => {
+		const f = await deliveryFixture('pr-only')
+		await f.materialize()
+		await db.update(sessions).set({ status: 'running' }).where(eq(sessions.id, f.input.sessionId))
+		const context = createMockDaemonContext({
+			auth: createMockDaemonAuth({
+				userId: f.actor.userId,
+				organizationId: f.actor.organizationId,
+				hostId: f.actor.hostId,
+			}),
+			services: { db, dbReadReplica: db },
+		})
+		expect((await call(claimDeliveryProcedure, {}, { context })).action).toBeNull()
+		expect((await f.state()).automatic_delivery).toMatchObject({
+			mode: 'pr-only',
+			phase: 'implementation',
+			sourceSessionId: f.input.sessionId,
+		})
+		await db.insert(sessionRepositories).values({
+			organization_id: f.actor.organizationId,
+			task_id: f.input.taskId,
+			session_id: f.input.sessionId,
+			host_id: f.actor.hostId,
+			local_path: '/tmp/actual-materialized-delivery',
+			repo_full_name: 'humanlayer/syncopate',
+			branch: repository.branch,
+		})
+		await db.update(sessions).set({ status: 'ready_for_input' }).where(eq(sessions.id, f.input.sessionId))
+		await call(claimDeliveryProcedure, {}, { context })
+		const state = await f.state()
+		expect(state.automatic_delivery?.phase).toBe('pr')
+		expect(state.automatic_delivery?.managedSessionId).toBeTruthy()
+		expect(await db.select().from(sessions).where(eq(sessions.task_id, f.input.taskId))).toHaveLength(2)
+	})
+
+	test('does not enroll planning-only work and selects its later implementation session', async () => {
+		const f = await deliveryFixture('merge', undefined, 'research')
+		await f.materialize()
+		await db.update(sessions).set({ status: 'ready_for_input' }).where(eq(sessions.id, f.input.sessionId))
+		await f.enroll()
+		expect((await f.state()).automatic_delivery).toBeNull()
+		const [implementation] = await db
+			.insert(sessions)
+			.values({
+				organization_id: f.actor.organizationId,
+				task_id: f.input.taskId,
+				created_by: f.actor.userId,
+				resource_owner_user_id: f.actor.userId,
+				host_id: f.actor.hostId,
+				status: 'running',
+				working_directory: '/tmp/actual-materialized-delivery',
+				coding_agent: 'claude',
+				provider: 'anthropic',
+				model: 'opus',
+				labels: [{ name: 'rpi:implementation', title: 'implementation' }],
+			})
+			.returning()
+		await f.enroll()
+		expect((await f.state()).automatic_delivery?.sourceSessionId).toBe(implementation!.id)
+	})
+
+	test('an explicit research intent is not overwritten by a oneshot workflow', async () => {
+		const actor = await setupActor()
+		const input = {
+			taskId: uuidv7(),
+			workspaceId: uuidv7(),
+			sessionId: uuidv7(),
+			projectId: actor.projectId,
+			name: 'Research only',
+			slug: 'research-only',
+			repositories: [repository],
+			workflowType: 'oneshot' as const,
+			firstSession: { ...firstSession, hostId: actor.hostId, intent: 'research' as const },
+		}
+		await call(createTaskV2, input, { context: actor.context })
+		const [session] = await db.select().from(sessions).where(eq(sessions.id, input.sessionId))
+		expect(session!.labels).toEqual([{ name: 'rpi:research', title: 'research' }])
+	})
+
+	test.each(['wrong-branch', 'relative-path', 'unavailable', 'wrong-repository', 'wrong-remote'] as const)(
+		'refuses a %s materialization',
+		async (problem) => {
+			const f = await deliveryFixture()
+			await f.materialize()
+			const changes =
+				problem === 'wrong-branch'
+					? {
+							materialization: {
+								kind: 'worktree' as const,
+								path: '/tmp/actual-materialized-delivery',
+								branch: 'main',
+							},
+						}
+					: problem === 'relative-path'
+						? {
+								materialization: {
+									kind: 'worktree' as const,
+									path: '~/guessed-path',
+									branch: repository.branch,
+								},
+							}
+						: problem === 'unavailable'
+							? { repo_available: false }
+							: problem === 'wrong-repository'
+								? { repository_identity: 'github.com/other/repo' }
+								: { repository_remote_url: 'https://github.com/other/repo.git' }
+			await db
+				.update(workspaceRepositoryStatusForUserForHost)
+				.set(changes)
+				.where(eq(workspaceRepositoryStatusForUserForHost.workspace_id, f.input.workspaceId))
+			await f.enroll()
+			expect((await f.state()).automatic_delivery).toBeNull()
+		},
+	)
+
+	test.each(['base-branch', 'non-github', 'too-many'] as const)(
+		'rejects an unsupported %s delivery recipe before creating work',
+		async (reason) => {
+			const actor = await setupActor()
+			const repos =
+				reason === 'too-many'
+					? Array.from({ length: 11 }, (_, index) => ({
+							...repository,
+							repositoryIdentity: `github.com/humanlayer/repo-${index}`,
+							remoteUrl: `https://github.com/humanlayer/repo-${index}.git`,
+							default: index === 0,
+						}))
+					: [
+							{
+								...repository,
+								...(reason === 'base-branch'
+									? { branch: 'main' }
+									: {
+											repositoryIdentity: 'gitlab.com/humanlayer/syncopate',
+											remoteUrl: 'https://gitlab.com/humanlayer/syncopate.git',
+										}),
+							},
+						]
+			await db
+				.update(projects)
+				.set({ repositories: repos, delivery_mode: 'merge' })
+				.where(eq(projects.id, actor.projectId))
+			const taskId = uuidv7()
+			await expect(
+				call(
+					createTaskV2,
+					{
+						taskId,
+						workspaceId: uuidv7(),
+						projectId: actor.projectId,
+						name: 'Unsupported delivery',
+						slug: 'unsupported-delivery',
+						repositories: repos,
+						firstSession: { ...firstSession, hostId: actor.hostId, intent: 'implementation' },
+					},
+					{ context: actor.context },
+				),
+			).rejects.toMatchObject({
+				code: 'UNSUPPORTED_RECIPE',
+				data: { message: expect.stringContaining('Choose Off') },
+			})
+			expect(await db.select().from(tasks).where(eq(tasks.id, taskId))).toHaveLength(0)
+		},
+	)
+
+	test('shared project defaults cannot grant another user merge authority', async () => {
+		const actor = await setupActor()
+		await db.update(projects).set({ delivery_mode: 'merge' }).where(eq(projects.id, actor.projectId))
+		const other = await setupCollaborator(actor)
+		const input = {
+			taskId: uuidv7(),
+			workspaceId: uuidv7(),
+			projectId: actor.projectId,
+			name: 'Other owner',
+			slug: 'other-owner',
+			repositories: [repository],
+			firstSession: { ...firstSession, hostId: other.hostId, intent: 'implementation' as const },
+		}
+		await call(createTaskV2, input, { context: other.context })
+		const [task] = await db.select().from(tasks).where(eq(tasks.id, input.taskId))
+		expect(task!.delivery_snapshot).toMatchObject({ mode: 'off', authorizedBy: other.userId })
+	})
 
 	test('atomically creates workspace, task, session, and repository status rows', async () => {
 		const actor = await setupActor()
