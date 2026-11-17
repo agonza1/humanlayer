@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -99,7 +99,7 @@ describe('owned Bash process cleanup', () => {
 				cwd: tmpdir(),
 				timeout: 2_000,
 			})
-			expect(inherited.stdout).toBe(`inherited|${tmpdir()}`)
+			expect(inherited.stdout).toBe(`inherited|${await realpath(tmpdir())}`)
 			const overridden = await runOwnedCommand('printf "%s|%s" "$HUMANLAYER_BASH_INTEGRATION_FIXTURE" "$PATH"', {
 				cwd: tmpdir(),
 				timeout: 2_000,
