@@ -1,4 +1,5 @@
 import type { ProjectRepositories } from '@humanlayer/schemas/effect/project-workspace'
+import { ProjectDeliveryModeSchema } from '@humanlayer/schemas/zod/automatic-delivery'
 import { ProjectRepositoriesSchema } from '@humanlayer/schemas/zod/project-workspace'
 import { sql } from 'drizzle-orm'
 import { bigint, boolean, index, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core'
@@ -41,6 +42,7 @@ export const projects = pgTable(
 		resource_owner_user_id: text().notNull(),
 		repositories: jsonb().$type<ProjectRepositories>().notNull(),
 		archived: boolean().notNull().default(false),
+		delivery_mode: text().$type<'off' | 'pr-only' | 'merge'>().notNull().default('off'),
 	},
 	(t) => [
 		index('projects_organization_id_index').on(t.organization_id),
@@ -49,6 +51,7 @@ export const projects = pgTable(
 )
 
 export const projectSelectSchema = createSelectSchema(projects, {
+	delivery_mode: ProjectDeliveryModeSchema,
 	repositories: jsonbParser(ProjectRepositoriesSchema),
 })
 export const projectInsertSchema = createInsertSchema(projects, {

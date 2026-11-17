@@ -1,6 +1,6 @@
 import { useHotkeys } from '@humanlayer/react-hotkeys-hook'
 import { useMemo, useState } from 'react'
-import { useForm, useWatch } from 'react-hook-form'
+import { Controller, useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 
 import { HotkeyScopeBoundary } from '@/components/HotkeyScopeBoundary'
@@ -287,6 +287,27 @@ export function LauncherV3Form({
 						)}
 						<LauncherWorkflowControlWired key="workflow" control={control} disabled={formDisabled} />
 						<LauncherAutoAdvanceControlWired key="auto-advance" control={control} disabled={formDisabled} />
+						<Controller
+							key="delivery"
+							control={control}
+							name="deliveryOverride"
+							render={({ field }) => (
+								<label className="text-xs">
+									Delivery{' '}
+									<select
+										{...field}
+										disabled={formDisabled || !getValues('projectId')}
+										aria-label="Choose task delivery"
+										className="bg-background text-foreground"
+									>
+										<option value="inherit">Inherit project default</option>
+										<option value="off">Off</option>
+										<option value="pr-only">PR with manual merge</option>
+										<option value="merge">Automatic merge</option>
+									</select>
+								</label>
+							)}
+						/>
 						<LauncherV3Submit
 							key="submit"
 							disabled={disabled || uploadingFileNames.size > 0}

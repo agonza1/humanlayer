@@ -14,6 +14,15 @@ export const configureDeliveryProcedure = apiBaseOrgRequired.tasks.delivery.conf
 			if (!task) throw errors.NOT_FOUND()
 			if (task.resource_owner_user_id !== context.auth.userId) throw errors.FORBIDDEN()
 			const existing = decodeDelivery(task.automatic_delivery)
+			if (input.mode === 'disabled' && !existing && task.delivery_snapshot) {
+				await tx
+					.update(tasks)
+					.set({
+						delivery_snapshot: { mode: 'off', authorizedBy: context.auth.userId, authorizedAt: Date.now() },
+					})
+					.where(eq(tasks.id, task.id))
+				return { delivery: null }
+			}
 			if (existing) {
 				// Revocation is always allowed. Reconfiguration must never reset evidence or the pass budget.
 				if (input.mode !== 'disabled')

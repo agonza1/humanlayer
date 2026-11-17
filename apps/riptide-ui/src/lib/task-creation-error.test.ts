@@ -77,6 +77,18 @@ describe('getTaskCreationError', () => {
 		})
 	})
 
+	test('preserves the unsupported delivery recovery action in the full launcher', () => {
+		const message =
+			'Automatic delivery needs 1–10 GitHub repositories on task branches. Choose Off to use this recipe.'
+		const error = new ORPCError('UNSUPPORTED_RECIPE', { defined: true, status: 400, data: { message } })
+		expect(getRejectedTaskCreationError(error)).toEqual({ errorMessage: message })
+	})
+
+	test('does not expose malformed recipe errors as a recovery message', () => {
+		const error = new ORPCError('UNSUPPORTED_RECIPE', { defined: true, status: 400, data: { message: {} } })
+		expect(getRejectedTaskCreationError(error)).toEqual({ errorMessage: 'Task creation failed.' })
+	})
+
 	test('uses a generic message for unknown server rejections', () => {
 		expect(getTaskCreationError({ code: 'INTERNAL_SERVER_ERROR' }, 'Sync timed out')).toEqual({
 			errorMessage: 'Task creation failed.',

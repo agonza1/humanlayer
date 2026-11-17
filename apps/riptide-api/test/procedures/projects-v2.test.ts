@@ -99,6 +99,24 @@ describe('projects v2', () => {
 		return { organizationId, userId, hostId, context: createMockApiContext({ auth, services }) }
 	}
 
+	test('keeps projects off by default and exposes an owner-updated delivery default', async () => {
+		const actor = await setupActor()
+		const created = await call(
+			createProject,
+			{ name: 'Delivery project', private: true, repositories: [repository] },
+			{ context: actor.context },
+		)
+		expect(created.project.deliveryMode).toBe('off')
+		const updated = await call(
+			updateProject,
+			{ projectId: created.project.id, deliveryMode: 'pr-only' },
+			{ context: actor.context },
+		)
+		expect(updated.project.deliveryMode).toBe('pr-only')
+		const read = await call(getProject, { projectId: created.project.id }, { context: actor.context })
+		expect(read.project.deliveryMode).toBe('pr-only')
+	})
+
 	test('atomically creates a path-free recipe and exact user-host location', async () => {
 		const actor = await setupActor()
 		const result = await call(
@@ -270,7 +288,11 @@ describe('projects v2', () => {
 			call(getProject, { projectId: created.project.id }, { context: collaboratorContext }),
 		).rejects.toMatchObject({ code: 'NOT_FOUND' })
 		await expect(
-			call(updateProject, { projectId: created.project.id, name: 'Stolen' }, { context: collaboratorContext }),
+			call(
+				updateProject,
+				{ projectId: created.project.id, name: 'Stolen', deliveryMode: 'merge' },
+				{ context: collaboratorContext },
+			),
 		).rejects.toMatchObject({ code: 'FORBIDDEN' })
 	})
 

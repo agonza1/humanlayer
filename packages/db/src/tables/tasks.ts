@@ -5,7 +5,7 @@ import {
 	type WorktreeTiming,
 } from '@humanlayer/schemas/effect/taskconfiguration'
 import type { WorkspaceSpec, WorkspaceState } from '@humanlayer/schemas/effect/workspace'
-import { AutomaticDeliverySchema } from '@humanlayer/schemas/zod/automatic-delivery'
+import { AutomaticDeliverySchema, TaskDeliverySnapshotSchema } from '@humanlayer/schemas/zod/automatic-delivery'
 import { WorkspaceSpecSchema, WorkspaceStateSchema } from '@humanlayer/schemas/zod/workspace'
 import { sql } from 'drizzle-orm'
 import { bigint, boolean, index, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core'
@@ -99,6 +99,7 @@ export const tasks = pgTable(
 		auto_advance_implementation_to_pr: boolean('auto_advance_implementation_to_pr').default(false).notNull(),
 		automatic_delivery:
 			jsonb('automatic_delivery').$type<import('@humanlayer/schemas/zod/automatic-delivery').AutomaticDelivery>(),
+		delivery_snapshot: jsonb().$type<import('@humanlayer/schemas/zod/automatic-delivery').TaskDeliverySnapshot>(),
 
 		/**
 		 * Task-level Slack mute. When true, owner-filtered Slack notification automations skip this task;
@@ -114,6 +115,7 @@ export const tasks = pgTable(
 )
 
 export const taskSelectSchema = createSelectSchema(tasks, {
+	delivery_snapshot: jsonbParser(TaskDeliverySnapshotSchema.nullable()).default(null),
 	automatic_delivery: jsonbParser(AutomaticDeliverySchema.nullable()).default(null),
 	setup_status: z.enum(['pending', 'in_progress', 'completed', 'failed']).nullable(),
 	ticket_provider: z.enum(['linear', 'jira', 'github']).nullable(),
@@ -125,12 +127,14 @@ export const taskSelectSchema = createSelectSchema(tasks, {
 	created_with_experiment_flags: jsonbParser(CreatedWithExperimentFlagsSchema.nullable()),
 })
 export const taskInsertSchema = createInsertSchema(tasks, {
+	delivery_snapshot: z.never().optional(),
 	automatic_delivery: z.never().optional(),
 	workspace_state: WorkspaceStateSchema.nullish(),
 	workspace_spec: WorkspaceSpecSchema.nullish(),
 	created_with_experiment_flags: CreatedWithExperimentFlagsSchema.nullish(),
 })
 export const taskUpdateSchema = createUpdateSchema(tasks, {
+	delivery_snapshot: z.never().optional(),
 	automatic_delivery: z.never().optional(),
 	workspace_state: WorkspaceStateSchema.nullish(),
 	workspace_spec: WorkspaceSpecSchema.nullish(),

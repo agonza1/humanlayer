@@ -108,6 +108,7 @@ export function NewTask({
 	const [ticket, setTicket] = useState<Ticket | null>(null)
 	const [issueDialog, setIssueDialog] = useState<TicketProvider | null>(null)
 	const [launching, setLaunching] = useState(false)
+	const [deliveryOverride, setDeliveryOverride] = useState<'inherit' | 'off' | 'pr-only' | 'merge'>('inherit')
 	const launchLock = useRef(false)
 	const [ids] = useState(() => ({ taskId: uuidv7(), sessionId: uuidv7(), eventId: uuidv7() }))
 	const attachments = useAttachments(existingTaskId ?? ids.taskId, Boolean(existingTaskId))
@@ -257,6 +258,7 @@ export function NewTask({
 			}
 			if (!workspace) throw new Error('project not loaded')
 			await startTask(api, {
+				deliveryOverride,
 				ids,
 				target: workspace,
 				hostId,
@@ -319,6 +321,9 @@ export function NewTask({
 			) : null}
 			{ticket && !existingTaskId ? <IssueChip ticket={ticket} onRemove={() => setTicket(null)} /> : null}
 			{existingTaskId ? null : <TaskSizePicker size={taskSize} onPick={setTaskSize} />}
+			{!existingTaskId && effectiveTarget?.kind === 'project' ? (
+				<DeliveryPicker value={deliveryOverride} onPick={setDeliveryOverride} />
+			) : null}
 		</div>
 	)
 
@@ -564,4 +569,47 @@ function TaskSizePicker({ size, onPick }: { size: TaskSize; onPick: (size: TaskS
 
 function WorkingCopyIcon({ branch }: { branch: boolean }) {
 	return branch ? <GitBranch className="i sm" strokeWidth={1.6} /> : <Folder className="i sm" strokeWidth={1.6} />
+}
+
+function DeliveryPicker({
+	value,
+	onPick,
+}: {
+	value: 'inherit' | 'off' | 'pr-only' | 'merge'
+	onPick: (value: 'inherit' | 'off' | 'pr-only' | 'merge') => void
+}) {
+	const anchor = useRef<HTMLButtonElement>(null)
+	const [open, setOpen] = useState(false)
+	const options = [
+		{ value: 'inherit', label: 'Inherit project default', detail: 'Use your project default for this task' },
+		{ value: 'off', label: 'Off', detail: 'Keep the existing task workflow' },
+		{
+			value: 'pr-only',
+			label: 'PR with manual merge',
+			detail: 'Review and repair the pull request, then wait for your merge',
+		},
+		{ value: 'merge', label: 'Automatic merge', detail: 'Review, repair, and merge when repository policy allows' },
+	] as const
+	return (
+		<>
+			<button type="button" ref={anchor} aria-label="Choose task delivery" onClick={() => setOpen(true)}>
+				{options.find((option) => option.value === value)?.label}
+				<ChevronDown className="i sm" />
+			</button>
+			<Menu anchor={anchor} open={open} onClose={() => setOpen(false)} placement="above-end" width={300}>
+				{options.map((option) => (
+					<MenuItem
+						key={option.value}
+						label={option.label}
+						detail={option.detail}
+						checked={option.value === value}
+						onSelect={() => {
+							onPick(option.value)
+							setOpen(false)
+						}}
+					/>
+				))}
+			</Menu>
+		</>
+	)
 }

@@ -2504,13 +2504,16 @@ describe('Auto-Advance: implementation → describe-pr', async () => {
 	}, 30000)
 
 	test.each([
-		{ callbacks: 1, archived: false, sourceStatus: 'ready_for_input', expected: 2 },
-		{ callbacks: 5, archived: false, sourceStatus: 'ready_for_input', expected: 2 },
-		{ callbacks: 1, archived: true, sourceStatus: 'ready_for_input', expected: 1 },
-		{ callbacks: 1, archived: false, sourceStatus: 'running', expected: 1 },
+		{ callbacks: 1, archived: false, sourceStatus: 'ready_for_input', expected: 2, snapshotMode: null },
+		{ callbacks: 5, archived: false, sourceStatus: 'ready_for_input', expected: 2, snapshotMode: null },
+		{ callbacks: 1, archived: true, sourceStatus: 'ready_for_input', expected: 1, snapshotMode: null },
+		{ callbacks: 1, archived: false, sourceStatus: 'running', expected: 1, snapshotMode: null },
+		{ callbacks: 5, archived: false, sourceStatus: 'ready_for_input', expected: 1, snapshotMode: 'merge' },
+		{ callbacks: 5, archived: false, sourceStatus: 'ready_for_input', expected: 1, snapshotMode: 'pr-only' },
+		{ callbacks: 1, archived: false, sourceStatus: 'ready_for_input', expected: 2, snapshotMode: 'off' },
 	] as const)(
 		'guards implementation-to-PR continuation: %j',
-		async ({ callbacks, archived, sourceStatus, expected }) => {
+		async ({ callbacks, archived, sourceStatus, expected, snapshotMode }) => {
 			const [task] = await db
 				.insert(tasks)
 				.values({
@@ -2522,6 +2525,9 @@ describe('Auto-Advance: implementation → describe-pr', async () => {
 					default_working_directory: tmpdir(),
 					setup_status: 'completed',
 					auto_advance_implementation_to_pr: true,
+					delivery_snapshot: snapshotMode
+						? { mode: snapshotMode, authorizedBy: userId, authorizedAt: Date.now() }
+						: null,
 					archived,
 				})
 				.returning()

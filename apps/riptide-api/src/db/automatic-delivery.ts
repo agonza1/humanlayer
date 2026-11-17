@@ -21,6 +21,7 @@ import { archiveTaskRows } from './archive-idle-task'
 import { createSessionForLaunch } from './create-session-for-launch'
 
 type Tx = PgDatabase<PostgresJsQueryResultHKT>
+export type DeliveryTransaction = Tx
 type Task = typeof tasks.$inferSelect
 type Session = typeof sessions.$inferSelect
 

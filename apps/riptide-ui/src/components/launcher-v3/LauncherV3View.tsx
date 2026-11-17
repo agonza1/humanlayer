@@ -8,7 +8,16 @@ import { isValidElement, type ReactNode, useRef, useState } from 'react'
 import { useMountEffect } from '@/hooks/useMountEffect'
 import { formatShortcut, hotkeysCatalog } from '@/hotkeysCatalog'
 
-const TRAY_OVERFLOW_KEYS = ['attachments', 'permission', 'auto-advance', 'host', 'directory', 'workflow', 'worktree']
+const TRAY_OVERFLOW_KEYS = [
+	'attachments',
+	'permission',
+	'auto-advance',
+	'delivery',
+	'host',
+	'directory',
+	'workflow',
+	'worktree',
+]
 
 function collectRenderedSlots(children: ReactNode): ReadonlyMap<string, ReactNode> {
 	const renderedChildren = Array.isArray(children) ? children : [children]

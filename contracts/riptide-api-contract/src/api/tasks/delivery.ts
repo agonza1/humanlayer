@@ -24,7 +24,7 @@ export const configureDeliveryContract = contractBuilder
 				),
 		}),
 	)
-	.output(z.object({ delivery: AutomaticDeliverySchema }))
+	.output(z.object({ delivery: AutomaticDeliverySchema.nullable() }))
 
 export const reportDeliveryReviewContract = contractBuilder
 	.input(

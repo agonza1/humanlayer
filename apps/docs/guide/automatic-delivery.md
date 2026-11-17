@@ -1,10 +1,31 @@
 # Automatic delivery
 
-The task owner can enable a continuation on an existing launched task. The existing daemon heartbeat drives it with the browser closed; there is no second scheduler or controller.
+A project owner can choose a delivery default for new accepted work, or the task owner can enable a continuation on an existing launched task. The existing daemon heartbeat drives it with the browser closed; there is no second scheduler or controller.
 
 Implementation → stock Describe PR → independent review → repair when needed → review → authorized merge → fresh GitHub verification → archive.
 
 Review is bounded to three passes across changed heads and restarts. A fresh managed session uses an existing automatic review when available, otherwise independent local QA. Related P0/P1/P2 findings return to the existing branches for repair. Unrelated P2/P3 findings stay in the evidence for follow-up. Unrelated urgent findings, failed or uncertain reviews and exhausted budgets stop for attention. One managed diagnostic recovery session reports the remaining blocker; it cannot reset the budget or override a human checkpoint.
+
+## Project defaults
+
+In Settings → Projects, choose **Delivery default** on your project:
+
+- **Off** keeps the existing workflow and its stage auto-advance settings.
+- **PR with manual merge** opens the PR, reviews and repairs it, then waits for your merge before verified archival.
+- **Automatic merge** uses the same review/repair loop, merges when the task and repository policies allow, then verifies and archives.
+
+All existing projects start Off. A new task snapshots its owner's project default at launch. Changing the project later does not alter existing tasks, reviews or budgets. Shared-project defaults do not grant another user merge authority. Explicit task instructions and required human checkpoints still apply.
+
+Both task launchers offer **Inherit project default**, **Off**, **PR with manual merge**, and **Automatic merge** for project tasks. The choice applies to that task only. Research and planning sessions stay outside delivery; enrollment waits for an implementation session and the selected host's complete, matching repository materializations. Repository branches, bases and absolute paths come from the task workspace; no manual path configuration is needed. Pending or failed setup remains visible in the existing workspace status and cannot advance delivery.
+
+The stock CLI uses the same settings:
+
+```sh
+humanlayer --local api projects v2 update --project-id PROJECT_UUID --delivery-mode pr-only
+# Add --delivery-override off, pr-only, merge, or inherit to the normal tasks v2 create command.
+```
+
+These settings do not install credentials, change worker permissions, or enroll existing tasks. Automatic delivery supports up to 10 GitHub repositories on task branches. Unsupported recipes are rejected at launch with an Off alternative; they cannot stall the delivery loop. Directory-only launches retain their existing behavior. Task-level initial configuration below remains available for existing tasks.
 
 ## Enable a task
 

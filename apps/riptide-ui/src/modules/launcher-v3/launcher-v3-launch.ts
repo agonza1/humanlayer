@@ -229,6 +229,7 @@ export function buildCreateTaskV2Input({
 		sessionId: ids.firstSessionId,
 		eventId: ids.firstEventId,
 		projectId: command.project.projectId,
+		deliveryOverride: command.deliveryOverride,
 		name: command.title,
 		slug: command.slug,
 		repositories: command.project.repositories,

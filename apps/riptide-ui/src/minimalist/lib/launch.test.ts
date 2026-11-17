@@ -101,6 +101,13 @@ describe('launchError', () => {
 		expect(launchError(error)).toBe(`Could not start the task. The name "fix-auth" is taken. ${kept}`)
 	})
 
+	it('keeps the unsupported delivery limit and Off recovery action', () => {
+		const message =
+			'Automatic delivery needs 1–10 GitHub repositories on task branches. Choose Off to use this recipe.'
+		const error = new ORPCError('UNSUPPORTED_RECIPE', { defined: true, status: 400, data: { message } })
+		expect(launchError(error)).toBe(`Could not start the task. ${message} ${kept}`)
+	})
+
 	it('says what to do about billing and access', () => {
 		expect(launchError(new ORPCError('BILLING_REQUIRED', { status: 402 }))).toContain('Settings → Billing')
 		expect(launchError(new ORPCError('FORBIDDEN', { status: 403 }))).toContain("can't start tasks here")
@@ -159,6 +166,7 @@ describe('startTask', () => {
 			ids,
 			target: { kind: 'project', project: { id: 'p1', repositories: [repository] } },
 			hostId: 'h1',
+			deliveryOverride: 'pr-only',
 			draft: 'Fix the login bug',
 			ticket: null,
 			attachments: [],
@@ -168,6 +176,7 @@ describe('startTask', () => {
 		expect(api.projects.v2.repositorySources.get).toHaveBeenCalled()
 		const [created] = api.tasks.v2.create.mock.calls[0] as unknown as [Record<string, unknown>]
 		expect(created).toMatchObject({
+			deliveryOverride: 'pr-only',
 			name: 'Fix the login bug',
 			slug: 'fix-the-login-bug-0001',
 			projectId: 'p1',

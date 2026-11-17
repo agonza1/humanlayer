@@ -15,6 +15,7 @@ import {
 } from '@humanlayer/riptide-api-contract/lib/task-workspace-path'
 import type { ProjectRepositories, WorkspaceRepositories } from '@humanlayer/schemas/effect/project-workspace'
 import { hasRepositoryUrlCredentials } from '@humanlayer/schemas/effect/project-workspace'
+import { DeliveryTargetSchema, snapshotProjectDelivery } from '@humanlayer/schemas/zod/automatic-delivery'
 import * as Sentry from '@sentry/node'
 import { and, eq } from 'drizzle-orm'
 import { Effect } from 'effect'
@@ -123,6 +124,12 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 			}))
 			const defaultWorkingDirectory = taskWorkspaceSessionDirectory(taskWorkspaceRoot(input.slug), repositories)
 			const taskValues = {
+				delivery_snapshot: snapshotProjectDelivery({
+					projectOwner: project.resource_owner_user_id,
+					taskOwner: input.actor.userId,
+					projectMode: project.delivery_mode,
+					override: input.deliveryOverride,
+				}),
 				organization_id: input.actor.organizationId,
 				project_id: input.projectId,
 				workspace_id: workspaceId,
@@ -173,6 +180,25 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 				const txId = yield* getTransactionId(transaction)
 				return { result: 'already-exists' as const, transactionId: txId, taskId, workspaceId, sessionId }
 			}
+
+			if (
+				taskValues.delivery_snapshot.mode !== 'off' &&
+				(repositories.length > 10 ||
+					repositories.some(
+						(repository) =>
+							repository.branch === repository.defaultBranch ||
+							!repository.repositoryIdentity.startsWith('github.com/') ||
+							!DeliveryTargetSchema.omit({ directory: true }).safeParse({
+								repository: repository.repositoryIdentity.slice('github.com/'.length),
+								branch: repository.branch,
+								base: repository.defaultBranch,
+							}).success,
+					))
+			)
+				return yield* new UnsupportedRecipeProfile({
+					message:
+						'Automatic delivery needs 1–10 GitHub repositories on task branches. Choose Off to use this recipe.',
+				})
 
 			const [workspace] = yield* transaction.query(
 				transaction.client
@@ -376,7 +402,9 @@ export const createTaskV2 = Effect.fn('project_workspace.create_task_v2')(functi
 						status: 'ready_for_launch',
 						title: requestedTitle,
 						prompt: input.firstSession.text,
-						labels: taskIntentLabels(intent),
+						labels: taskIntentLabels(
+							intent ?? (input.workflowType === 'oneshot' ? 'implementation' : undefined),
+						),
 						coding_agent: input.firstSession.codingAgent,
 						provider: input.firstSession.provider,
 						model: input.firstSession.model,

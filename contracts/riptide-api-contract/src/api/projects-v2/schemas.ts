@@ -1,3 +1,4 @@
+import { ProjectDeliveryModeSchema } from '@humanlayer/schemas/zod/automatic-delivery'
 import { ProjectRepositoriesSchema, ProjectRepositoryPathsSchema } from '@humanlayer/schemas/zod/project-workspace'
 import z from 'zod/v4'
 
@@ -11,6 +12,7 @@ export const projectV2Schema = z.object({
 	resourceOwnerUserId: z.string(),
 	repositories: ProjectRepositoriesSchema,
 	archived: z.boolean(),
+	deliveryMode: ProjectDeliveryModeSchema.default('off'),
 	createdAt: z.number().int(),
 	updatedAt: z.number().int(),
 })
@@ -26,6 +28,7 @@ export const projectLocationV2Schema = z.object({
 })
 
 export const projectMutationFieldsSchema = z.object({
+	deliveryMode: ProjectDeliveryModeSchema.optional(),
 	name: z.string().trim().min(1),
 	description: z.string().trim().min(1).nullable().optional(),
 	private: z.boolean(),
