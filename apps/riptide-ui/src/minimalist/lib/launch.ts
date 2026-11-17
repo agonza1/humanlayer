@@ -6,7 +6,7 @@ import { ORPCError } from '@orpc/client'
 import { useSettingsStore } from '@/hooks/stores/settingsStore'
 import { getFirstSessionParams, withDescribePrNextStep } from '@/lib/auto-advance'
 import { initialRepositorySourceSelections, missingRepositorySources } from '@/lib/repository-sources'
-import { getTaskConflictMessage } from '@/lib/task-creation-error'
+import { getTaskConflictMessage, getTaskRecipeError } from '@/lib/task-creation-error'
 import { getTicketLookupError } from '@/lib/ticket-lookup-error'
 import { type AttachmentMetadata, withAttachments } from '@/minimalist/lib/attachments'
 import type { HostView } from '@/minimalist/lib/data'
@@ -278,7 +278,7 @@ export function launchError(error: unknown): string {
 }
 
 function launchFailure(error: unknown): string | null {
-	const known = getTaskConflictMessage(error) ?? getTicketLookupError(error)?.message
+	const known = getTaskConflictMessage(error) ?? getTaskRecipeError(error) ?? getTicketLookupError(error)?.message
 	if (known) return known
 	const code = error instanceof ORPCError ? error.code : null
 	if (code === 'BILLING_REQUIRED')

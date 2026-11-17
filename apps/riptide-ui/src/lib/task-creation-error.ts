@@ -56,6 +56,15 @@ export function getTaskConflictMessage(error: unknown): string | null {
 	return null
 }
 
+/** The defined recipe rejection carries the action that lets the owner launch with delivery Off. */
+export function getTaskRecipeError(error: unknown): string | null {
+	if (!(error instanceof ORPCError) || !isDefinedError(error) || error.code !== 'UNSUPPORTED_RECIPE') return null
+	const data = error.data
+	return data && typeof data === 'object' && 'message' in data && typeof data.message === 'string'
+		? data.message
+		: null
+}
+
 export function getTaskCreationError(error: unknown, timeoutMessage: string): TaskCreationErrorDetails {
 	if (isTaskPersistenceUncertain(error)) {
 		return { errorMessage: timeoutMessage }
@@ -64,9 +73,9 @@ export function getTaskCreationError(error: unknown, timeoutMessage: string): Ta
 }
 
 export function getRejectedTaskCreationError(error: unknown): TaskCreationErrorDetails {
-	const conflictMessage = getTaskConflictMessage(error)
-	if (conflictMessage) {
-		return { errorMessage: conflictMessage }
+	const rejectionMessage = getTaskConflictMessage(error) ?? getTaskRecipeError(error)
+	if (rejectionMessage) {
+		return { errorMessage: rejectionMessage }
 	}
 
 	const lookupError = getTicketLookupError(error)

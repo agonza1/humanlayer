@@ -101,6 +101,13 @@ describe('launchError', () => {
 		expect(launchError(error)).toBe(`Could not start the task. The name "fix-auth" is taken. ${kept}`)
 	})
 
+	it('keeps the unsupported delivery limit and Off recovery action', () => {
+		const message =
+			'Automatic delivery needs 1–10 GitHub repositories on task branches. Choose Off to use this recipe.'
+		const error = new ORPCError('UNSUPPORTED_RECIPE', { defined: true, status: 400, data: { message } })
+		expect(launchError(error)).toBe(`Could not start the task. ${message} ${kept}`)
+	})
+
 	it('says what to do about billing and access', () => {
 		expect(launchError(new ORPCError('BILLING_REQUIRED', { status: 402 }))).toContain('Settings → Billing')
 		expect(launchError(new ORPCError('FORBIDDEN', { status: 403 }))).toContain("can't start tasks here")
