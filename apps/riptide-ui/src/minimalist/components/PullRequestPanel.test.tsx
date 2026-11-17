@@ -1,12 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PullRequestDetail } from './PullRequestPanel'
+import { PullRequestDetail, PullRequestPanel } from './PullRequestPanel'
 
 vi.mock('@/orpc/client', () => ({ useRiptideApi: () => ({ client: {} }) }))
-vi.mock('@/hooks/session-detail/usePrStatusStream', () => ({
-	usePrStatusStream: () => ({ pullRequest: null, checks: [] }),
-}))
+const { liveStatus, taskPr } = vi.hoisted(() => ({ liveStatus: vi.fn(), taskPr: vi.fn() }))
+vi.mock('@/hooks/session-detail/usePrStatusStream', () => ({ usePrStatusStream: liveStatus }))
+vi.mock('@/minimalist/lib/pull-requests', () => ({ useTaskPullRequest: taskPr }))
+beforeEach(() => {
+	liveStatus.mockReturnValue({ pullRequest: null, checks: [], status: 'ready' })
+	taskPr.mockReturnValue({ branch: { repoFullName: 'acme/app', branch: 'feature', pullRequest: null } })
+})
 vi.mock('@/minimalist/lib/use-action', () => ({ useAction: () => ({ pending: false, run: vi.fn() }) }))
 vi.mock('@/minimalist/lib/send', () => ({
 	useAskAgent: () => ({ pending: false, ask: vi.fn() }),
@@ -46,5 +50,35 @@ describe('PullRequestDetail', () => {
 		expect(screen.getByRole('link', { name: /acme\/app #42/ }).getAttribute('href')).toBe(pullRequest.url)
 		fireEvent.click(screen.getByRole('button', { name: 'Copy pull request link' }))
 		await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://github.com/acme/app/pull/42'))
+	})
+})
+
+describe('PullRequestPanel discovery', () => {
+	it('discovers a merged PR when the branch has no cached PR', () => {
+		liveStatus.mockReturnValue({ pullRequest: { ...pullRequest, state: 'merged' }, checks: [], status: 'ready' })
+		render(<PullRequestPanel taskId="task" sessionId={null} />)
+		expect(liveStatus).toHaveBeenCalledWith({
+			scope: { taskId: 'task' },
+			repoFullName: 'acme/app',
+			branch: 'feature',
+		})
+		expect(screen.getByRole('link', { name: /acme\/app #42/ }).getAttribute('href')).toBe(pullRequest.url)
+		expect(screen.getByText('Merged')).toBeTruthy()
+		expect(screen.queryByText('No pull request yet')).toBeNull()
+	})
+	it('does not report no PR while GitHub is still loading', () => {
+		liveStatus.mockReturnValue({ pullRequest: null, checks: [], status: 'hydrating' })
+		render(<PullRequestPanel taskId="task" sessionId={null} />)
+		expect(screen.queryByText('No pull request yet')).toBeNull()
+	})
+	it('distinguishes an unavailable GitHub response from an absent PR', () => {
+		liveStatus.mockReturnValue({ pullRequest: null, checks: [], status: 'unavailable' })
+		render(<PullRequestPanel taskId="task" sessionId={null} />)
+		expect(screen.getByRole('alert').textContent).toContain('Could not load the pull request')
+		expect(screen.queryByText('No pull request yet')).toBeNull()
+	})
+	it('shows the empty state only after GitHub confirms no PR', () => {
+		render(<PullRequestPanel taskId="task" sessionId={null} />)
+		expect(screen.getByText('No pull request yet')).toBeTruthy()
 	})
 })

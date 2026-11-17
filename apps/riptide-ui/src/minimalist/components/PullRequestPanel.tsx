@@ -6,7 +6,7 @@ import type { CheckRowType } from '@humanlayer/streams/pr-status'
 import { ArrowUpRight, Circle, GitMerge, GitPullRequest, X } from 'lucide-react'
 
 import { groupChecks } from '@/components/github/check-groups'
-import { usePrStatusStream } from '@/hooks/session-detail/usePrStatusStream'
+import { type PrStatusStreamResult, usePrStatusStream } from '@/hooks/session-detail/usePrStatusStream'
 import { readGitPrefs } from '@/minimalist/lib/git-prefs'
 import { pullRequestPrompt } from '@/minimalist/lib/git-prompts'
 import { useTaskPullRequest } from '@/minimalist/lib/pull-requests'
@@ -57,8 +57,41 @@ export function PullRequestPanel({ taskId, sessionId }: { taskId: string; sessio
 				</button>
 			</div>
 		)
-	if (!branch?.pullRequest) return <NoPullRequest branch={branch} sessionId={sessionId} />
+	if (!branch) return <NoPullRequest branch={null} sessionId={sessionId} />
+	if (!branch.pullRequest) return <DiscoverPullRequest taskId={taskId} sessionId={sessionId} branch={branch} />
 	return <PullRequestDetail taskId={taskId} sessionId={sessionId} branch={branch} pullRequest={branch.pullRequest} />
+}
+
+/** A listed branch has no cached PR until the existing GitHub stream first hydrates it. */
+function DiscoverPullRequest({
+	taskId,
+	sessionId,
+	branch,
+}: {
+	taskId: string
+	sessionId: string | null
+	branch: PullRequestBranch
+}) {
+	const live = usePrStatusStream({ scope: { taskId }, repoFullName: branch.repoFullName, branch: branch.branch })
+	if (live.pullRequest)
+		return (
+			<PullRequestDetailView
+				taskId={taskId}
+				sessionId={sessionId}
+				branch={branch}
+				pullRequest={live.pullRequest}
+				live={live}
+			/>
+		)
+	if (live.status === 'hydrating' || live.status === 'idle') return <div className="boot-mark" />
+	if (live.status === 'unavailable' || live.status === 'permission_required')
+		return (
+			<div className="pr-empty" role="alert">
+				<b>Could not load the pull request</b>
+				<div className="d">Check the GitHub connection and refresh to try again.</div>
+			</div>
+		)
+	return <NoPullRequest branch={branch} sessionId={sessionId} />
 }
 
 function NoPullRequest({ branch, sessionId }: { branch: PullRequestBranch | null; sessionId: string | null }) {
@@ -86,23 +119,34 @@ function NoPullRequest({ branch, sessionId }: { branch: PullRequestBranch | null
 	)
 }
 
-/** A PR's checks, reviews and merge controls. The fix-it buttons ask the agent in `sessionId`, if there is one. */
-export function PullRequestDetail({
-	taskId,
-	sessionId,
-	branch,
-	pullRequest,
-}: {
+type PullRequestDetailProps = {
 	taskId: string
 	sessionId: string | null
 	branch: PullRequestBranch
 	pullRequest: NonNullable<PullRequestBranch['pullRequest']>
-}) {
+}
+
+/** A PR's checks, reviews and merge controls. The fix-it buttons ask the agent in `sessionId`, if there is one. */
+export function PullRequestDetail(props: PullRequestDetailProps) {
+	const live = usePrStatusStream({
+		scope: { taskId: props.taskId },
+		repoFullName: props.branch.repoFullName,
+		branch: props.branch.branch,
+	})
+	return <PullRequestDetailView {...props} live={live} />
+}
+
+function PullRequestDetailView({
+	taskId,
+	sessionId,
+	branch,
+	pullRequest,
+	live,
+}: PullRequestDetailProps & { live: PrStatusStreamResult }) {
 	const { client: api } = useRiptideApi()
 	const action = useAction()
 	const agent = useAskAgent(sessionId)
 	const busy = action.pending || agent.pending
-	const live = usePrStatusStream({ scope: { taskId }, repoFullName: branch.repoFullName, branch: branch.branch })
 	const pr = live.pullRequest ?? pullRequest
 	const checks = groupChecks(live.checks)
 	const merge = pr.merge
