@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
@@ -62,10 +63,15 @@ print(json.dumps([parent] + [row for row in rows if row is not None]))
 
 export async function processTable(platform: NodeJS.Platform = process.platform): Promise<Identity[]> {
 	if (platform === 'darwin') {
-		const { stdout } = await exec('/usr/bin/python3', ['-I', '-c', DARWIN_PROCESS_TABLE, String(process.pid)], {
-			timeout: 2_000,
-			maxBuffer: 4 * 1024 * 1024,
-		})
+		// /usr/bin/python3 is an xcrun launcher and may write outside a sandbox's temp roots.
+		const python =
+			process.env.HUMANLAYER_PROCESS_INSPECTOR_PYTHON ||
+			[
+				'/Library/Developer/CommandLineTools/usr/bin/python3',
+				'/Applications/Xcode.app/Contents/Developer/usr/bin/python3',
+			].find((path) => existsSync(path)) ||
+			'/usr/bin/python3'
+		const stdout = await inspectDarwin(python)
 		const table: Identity[] = JSON.parse(stdout)
 		if (!table.some((entry) => entry.pid === process.pid)) throw new Error('Supervisor metadata unavailable')
 		return table
@@ -79,6 +85,38 @@ export async function processTable(platform: NodeJS.Platform = process.platform)
 	})
 	if (!table.some((entry) => entry.pid === process.pid)) throw new Error('Supervisor metadata unavailable')
 	return table
+}
+
+async function inspectDarwin(python: string): Promise<string> {
+	for (const timeout of [2_000, 5_000]) {
+		try {
+			return (
+				await exec(python, ['-I', '-c', DARWIN_PROCESS_TABLE, String(process.pid)], {
+					timeout,
+					maxBuffer: 4 * 1024 * 1024,
+				})
+			).stdout
+		} catch (error) {
+			const failure = error as Error & {
+				code?: string | number | null
+				signal?: string | null
+				killed?: boolean
+				stderr?: string
+			}
+			// execFile marks its own deadline kill; permission and other failures are never retried.
+			if (timeout === 2_000 && failure.killed && failure.signal === 'SIGTERM') continue
+			throw new Error(
+				`Could not inspect process metadata. ${JSON.stringify({
+					code: failure.code,
+					signal: failure.signal,
+					killed: failure.killed,
+					detail: failure.stderr?.trim() || failure.message,
+				})}`,
+				{ cause: error },
+			)
+		}
+	}
+	throw new Error('Could not inspect process metadata.')
 }
 
 export function coalesceSamples<T>(inspect: () => Promise<T>): () => Promise<T> {
