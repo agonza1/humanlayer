@@ -2503,83 +2503,97 @@ describe('Auto-Advance: implementation → describe-pr', async () => {
 		organizationId = org.id
 	}, 30000)
 
-	test('creates describe-pr session when all conditions met', async () => {
-		const [task] = await db
-			.insert(tasks)
-			.values({
-				organization_id: organizationId,
-				name: 'Test Impl To PR',
-				slug: 'test-impl-to-pr',
-				resource_owner_user_id: userId,
-				created_by: userId,
-				default_working_directory: tmpdir(),
-				setup_status: 'completed',
-				auto_advance_implementation_to_pr: true,
-			})
-			.returning()
+	test.each([
+		{ callbacks: 1, archived: false, sourceStatus: 'ready_for_input', expected: 2 },
+		{ callbacks: 5, archived: false, sourceStatus: 'ready_for_input', expected: 2 },
+		{ callbacks: 1, archived: true, sourceStatus: 'ready_for_input', expected: 1 },
+		{ callbacks: 1, archived: false, sourceStatus: 'running', expected: 1 },
+	] as const)(
+		'guards implementation-to-PR continuation: %j',
+		async ({ callbacks, archived, sourceStatus, expected }) => {
+			const [task] = await db
+				.insert(tasks)
+				.values({
+					organization_id: organizationId,
+					name: 'Test Impl To PR',
+					slug: 'test-impl-to-pr',
+					resource_owner_user_id: userId,
+					created_by: userId,
+					default_working_directory: tmpdir(),
+					setup_status: 'completed',
+					auto_advance_implementation_to_pr: true,
+					archived,
+				})
+				.returning()
 
-		const [session] = await db
-			.insert(sessions)
-			.values({
-				organization_id: organizationId,
-				resource_owner_user_id: userId,
-				created_by: userId,
-				host_id: hostId,
-				task_id: task!.id,
-				title: 'implementation',
-				working_directory: '/tmp/impl-dir',
-				coding_agent: 'claude',
-				provider: 'anthropic',
-				model: 'claude-sonnet-4-5',
-				permissions_mode: 'default',
-				status: 'ready_for_input',
-				labels: [{ name: 'rpi:implementation', title: 'Implementation' }],
-				next_step_suggestions: [
-					{
-						parsedAt: Date.now(),
-						extraction: {
-							type: 'next_step_found',
-							nextStepPrompt: 'use the rpi:describe-pr skill',
-							nextStepSummary: 'Describe PR',
-							nextStepType: 'describe-pr',
-							taskReference: 'test-impl-to-pr',
+			const [session] = await db
+				.insert(sessions)
+				.values({
+					organization_id: organizationId,
+					resource_owner_user_id: userId,
+					created_by: userId,
+					host_id: hostId,
+					task_id: task!.id,
+					title: 'implementation',
+					working_directory: '/tmp/impl-dir',
+					coding_agent: 'claude',
+					provider: 'anthropic',
+					model: 'claude-sonnet-4-5',
+					permissions_mode: 'default',
+					status: sourceStatus,
+					labels: [{ name: 'rpi:implementation', title: 'Implementation' }],
+					next_step_suggestions: [
+						{
+							parsedAt: Date.now(),
+							extraction: {
+								type: 'next_step_found',
+								nextStepPrompt: 'use the rpi:describe-pr skill',
+								nextStepSummary: 'Describe PR',
+								nextStepType: 'describe-pr',
+								taskReference: 'test-impl-to-pr',
+							},
 						},
-					},
-				],
-			})
-			.returning()
+					],
+				})
+				.returning()
 
-		await checkAutoAdvance(db, session!.id, organizationId)
+			await Promise.all(
+				Array.from({ length: callbacks }, () => checkAutoAdvance(db, session!.id, organizationId)),
+			)
+			// A repeated callback after completion (including a process restart) must not launch again.
+			await checkAutoAdvance(db, session!.id, organizationId)
 
-		const newSessions = await db
-			.select()
-			.from(sessions)
-			.where(eq(sessions.task_id, task!.id))
-			.orderBy(sessions.created_at)
+			const newSessions = await db
+				.select()
+				.from(sessions)
+				.where(eq(sessions.task_id, task!.id))
+				.orderBy(sessions.created_at)
 
-		expect(newSessions).toHaveLength(2)
-		const prSession = newSessions[1]
+			expect(newSessions).toHaveLength(expected)
+			if (expected === 1) return
+			const prSession = newSessions[1]
 
-		expect(prSession?.status).toBe('ready_for_launch')
-		expect(prSession?.title).toBe('describe-pr: Test Impl To PR')
-		expect(prSession?.task_id).toBe(task!.id)
-		// No suggestedDirectory so falls back to session's working_directory
-		expect(prSession?.working_directory).toBe('/tmp/impl-dir')
-		expect(prSession?.host_id).toBe(hostId)
-		expect(prSession?.model).toBe('claude-sonnet-4-5')
+			expect(prSession?.status).toBe('ready_for_launch')
+			expect(prSession?.title).toBe('describe-pr: Test Impl To PR')
+			expect(prSession?.task_id).toBe(task!.id)
+			// No suggestedDirectory so falls back to session's working_directory
+			expect(prSession?.working_directory).toBe('/tmp/impl-dir')
+			expect(prSession?.host_id).toBe(hostId)
+			expect(prSession?.model).toBe('claude-sonnet-4-5')
 
-		// Verify prompt contains describe-pr skill and task slug (no promptSuffix for this transition)
-		expect(prSession?.prompt).toContain('describe-pr')
-		expect(prSession?.prompt).toContain('test-impl-to-pr')
+			// Verify prompt contains describe-pr skill and task slug (no promptSuffix for this transition)
+			expect(prSession?.prompt).toContain('describe-pr')
+			expect(prSession?.prompt).toContain('test-impl-to-pr')
 
-		// Verify labels
-		const rawLabels = prSession?.labels
-		const prLabels = (typeof rawLabels === 'string' ? JSON.parse(rawLabels) : rawLabels) as Array<{
-			name: string
-			title: string
-		}> | null
-		expect(prLabels).toContainEqual({ name: 'rpi:describe-pr', title: 'describe-pr' })
-	})
+			// Verify labels
+			const rawLabels = prSession?.labels
+			const prLabels = (typeof rawLabels === 'string' ? JSON.parse(rawLabels) : rawLabels) as Array<{
+				name: string
+				title: string
+			}> | null
+			expect(prLabels).toContainEqual({ name: 'rpi:describe-pr', title: 'describe-pr' })
+		},
+	)
 
 	test('does NOT create session when auto_advance_implementation_to_pr flag is false', async () => {
 		const [task] = await db

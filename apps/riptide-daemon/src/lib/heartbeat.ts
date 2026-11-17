@@ -5,6 +5,7 @@ import type { HostModelCatalog } from '@humanlayer/schemas/zod/model-catalog'
 import { Data, Duration, Effect, Fiber, type ManagedRuntime, Queue, Schedule, Stream } from 'effect'
 
 import { HostMachineStats } from '@/effects/services/host-machine-stats/host-machine-stats.service'
+import { createDeliveryHeartbeatContinuation } from '@/lib/github/automatic-delivery'
 import { BUILD_VERSION } from '@/lib/macros'
 import { HostUsageLimits } from '@/lib/usage-limits/host-usage-limits'
 import type { ManagedDaemonRuntimeConfig } from '@/managed-daemon-start'
@@ -65,6 +66,7 @@ export class HeartbeatError extends Data.TaggedError('HeartbeatError')<{
 }
 
 interface HeartbeatTarget {
+	readonly continueDelivery?: () => Promise<void>
 	readonly hostId: string
 	readonly orpc: ORPCClient
 	readonly capabilities: HeartbeatCapabilities
@@ -107,6 +109,9 @@ const sendHeartbeat = (target: HeartbeatTarget, update?: HeartbeatUpdate) =>
 		if (response.updateRequest && target.updateRequests !== undefined) {
 			yield* Queue.offer(target.updateRequests, response.updateRequest.version)
 		}
+		// The existing host heartbeat drives delivery even with every browser closed.
+		// The continuation serializes itself and persists reservations before doing work.
+		void target.continueDelivery?.()
 	})
 
 const sendHeartbeatLoggingFailure = (target: HeartbeatTarget) =>
@@ -133,7 +138,12 @@ export async function startHeartbeat(
 	updateRequests?: Queue.Enqueue<string>,
 	modelCatalog?: HeartbeatModelCatalogSnapshot,
 ): Promise<Heartbeat> {
-	const target: HeartbeatTarget = { hostId, orpc, capabilities, updateRequests, modelCatalog }
+	const continueDelivery = createDeliveryHeartbeatContinuation(orpc, (error) => {
+		runtime.runFork(
+			Effect.logError('Automatic delivery continuation failed').pipe(Effect.annotateLogs({ hostId, error })),
+		)
+	})
+	const target: HeartbeatTarget = { hostId, orpc, capabilities, updateRequests, modelCatalog, continueDelivery }
 	await runtime.runPromise(
 		sendHeartbeat(target).pipe(
 			Effect.tapError((error) =>

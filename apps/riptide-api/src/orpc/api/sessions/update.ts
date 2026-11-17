@@ -10,6 +10,7 @@ import { ORPCError } from '@orpc/server'
 import { and, count, eq, inArray } from 'drizzle-orm'
 
 import { getTxId } from '../../../db/get-tx-id'
+import { guardSessionDeliveryMutation, guardTaskDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { validateHostOwnership } from '../../../db/host-auth'
 import { ACTIVE_SESSION_STATUSES } from '../../../db/session-statuses'
 import { checkTaskWritePermission } from '../../../db/task-auth'
@@ -39,6 +40,8 @@ export const updateSessionApiProcedure = apiBaseOrgRequired.sessions.update
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				await guardSessionDeliveryMutation(tx, input.sessionId, context.auth.organizationId)
+				await guardTaskDeliveryMutation(tx, input.taskId, context.auth.organizationId)
 				if (input.taskId) {
 					await tx
 						.select({ id: tasks.id })

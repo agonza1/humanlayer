@@ -2,8 +2,8 @@
 	"name": "@humanlayer/schemas",
 	"version": "0.1.0",
 	"private": true,
-	"sideEffects": false,
 	"type": "module",
+	"sideEffects": false,
 	"exports": {
 		"./coding-agent": "./coding-agent/coding-agent.ts",
 		"./model-provider": "./model-provider/model-provider.ts",
@@ -27,6 +27,7 @@
 		"./effect/taskconfiguration": "./src/effect/taskconfiguration/index.ts",
 		"./effect/taskconfiguration/task-configuration": "./src/effect/taskconfiguration/task-configuration.ts",
 		"./zod/model-catalog": "./src/zod/model-catalog.ts",
+		"./zod/automatic-delivery": "./src/zod/automatic-delivery.ts",
 		"./zod/workspace": "./src/zod/workspace/index.ts",
 		"./zod/workspace/*": "./src/zod/workspace/*.ts",
 		"./zod/project-workspace": "./src/zod/project-workspace/index.ts",

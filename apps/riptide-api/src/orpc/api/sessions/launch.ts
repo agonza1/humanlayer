@@ -8,6 +8,7 @@ import { and, eq } from 'drizzle-orm'
 
 import { createSessionForLaunch } from '../../../db/create-session-for-launch'
 import { getTxId } from '../../../db/get-tx-id'
+import { guardSessionDeliveryMutation, guardTaskDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { validateHostOwnership } from '../../../db/host-auth'
 import { canWriteSession, checkTaskWritePermission } from '../../../db/task-auth'
 import { upsertTaskUserSettingsForSession } from '../../../db/upsert-task-user-settings-for-session'
@@ -68,6 +69,8 @@ export const launchSessionProcedure = apiBaseOrgRequired.sessions.launch
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				await guardTaskDeliveryMutation(tx, taskId, organizationId)
+				if (draftId) await guardSessionDeliveryMutation(tx, draftId, organizationId)
 				let result: typeof sessions.$inferSelect | undefined
 				let forceTaskUserWorkingDirectoryUpdate = false
 

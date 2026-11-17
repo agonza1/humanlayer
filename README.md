@@ -42,7 +42,9 @@ A build from source sends nothing to us: Sentry, PostHog, and the WorkOS client 
 
 The stock Small workflow can advance from implementation to PR preparation when its automatic PR step is enabled. It does not require the experimental review-progression draft.
 
-Both boards show **Done** for idle code tasks only after all tracked repository branches have freshly confirmed merged PRs. While a board is open, it checks eligible tasks every 30 seconds through the existing GitHub integration. Missing access, unmerged PRs, changed remote heads, later session activity or a failed refresh leave the task in its existing workflow column. Done is a board view, not task archival, automatic merge, or acceptance of non-code tasks. Unpushed changes outside observed session activity are not verified by this view.
+Both boards show active workflow columns, without a Done projection or browser-driven delivery polling. A stopped session or merged PR does not by itself archive a task. Archived tasks leave the active board and remain available in archived history for restoration; archiving does not delete a task or its worktree.
+
+Task owners can opt a task into automatic delivery: implementation → PR → independent review → up to three review passes with scoped repairs → authorized merge → fresh merge verification → archive. The existing daemon heartbeat drives this flow with the browser closed. Existing tasks remain off. PR-only tasks wait for a manual merge; blocked or uncertain work goes to one diagnostic recovery session and then owner attention. See [automatic delivery](apps/docs/guide/automatic-delivery.md) for configuration, limits and validation status.
 
 ## Self-hosting
 

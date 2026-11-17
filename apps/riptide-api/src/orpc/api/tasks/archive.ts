@@ -4,7 +4,9 @@ import { ORPCError } from '@orpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Effect } from 'effect'
 
+import { archiveTaskRows } from '../../../db/archive-idle-task'
 import { getTxId } from '../../../db/get-tx-id'
+import { guardTaskDeliveryMutation } from '../../../db/guard-delivery-mutation'
 import { ACTIVE_SESSION_STATUSES } from '../../../db/session-statuses'
 import { checkTaskWritePermission } from '../../../db/task-auth'
 import { TaskDiffService } from '../../../effects/services/task-diff-durable-streams/task-diff-durable-streams.service'
@@ -31,6 +33,7 @@ export const archiveTaskProcedure = apiBaseOrgRequired.tasks.archive
 
 		try {
 			const txResult = await db.transaction(async (tx) => {
+				await guardTaskDeliveryMutation(tx, taskId, organizationId)
 				// 1. Verify write permission on task (via ownership or ACL)
 				const taskCheck = await checkTaskWritePermission(tx, taskId, userId, organizationId)
 				if (!taskCheck.ok) {
@@ -56,7 +59,6 @@ export const archiveTaskProcedure = apiBaseOrgRequired.tasks.archive
 				}
 
 				// 2. Update task archived status
-				await tx.update(tasks).set({ archived }).where(eq(tasks.id, taskId))
 
 				// 3. If cascading, update all associated sessions
 				let affectedSessionCount = 0
@@ -89,15 +91,8 @@ export const archiveTaskProcedure = apiBaseOrgRequired.tasks.archive
 								)
 						}
 					}
-
-					const result = await tx
-						.update(sessions)
-						.set({ archived })
-						.where(and(eq(sessions.task_id, taskId), eq(sessions.organization_id, organizationId)))
-						.returning({ id: sessions.id })
-
-					affectedSessionCount = result.length
 				}
+				affectedSessionCount = await archiveTaskRows(tx, taskId, organizationId, archived, cascadeToSessions)
 
 				const txid = await getTxId(tx)
 

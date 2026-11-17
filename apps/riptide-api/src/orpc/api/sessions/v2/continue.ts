@@ -7,6 +7,7 @@ import { Clock, Effect } from 'effect'
 import { uuidv7 } from 'uuidv7'
 
 import { getTxId } from '../../../../db/get-tx-id'
+import { guardSessionDeliveryMutation } from '../../../../db/guard-delivery-mutation'
 import { isSessionActive } from '../../../../db/session-statuses'
 import { mapPostgresErrorToResponse } from '../../../../effects/services/postgres/error-mapping'
 import { PostgresDb } from '../../../../effects/services/postgres/postgres-db.service'
@@ -33,6 +34,7 @@ export const continueSessionV2Procedure = effectOrpcBaseOrganizationRequired.ses
 		return yield* postgres
 			.transaction((tx) =>
 				Effect.gen(function* () {
+					yield* tx.run(() => guardSessionDeliveryMutation(tx.client, sessionId, organizationId))
 					const [session] = yield* tx.query(
 						tx.client
 							.select({

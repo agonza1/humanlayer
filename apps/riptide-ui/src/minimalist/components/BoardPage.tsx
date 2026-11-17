@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
-import { useTaskDeliveries } from '@/hooks/useTaskDeliveries'
 import { assignColumn, KANBAN_COLUMN_DEFS } from '@/lib/kanban/columnEngine'
 import { WiredUserAvatar } from '@/minimalist/components/Avatar'
 import { Segmented } from '@/minimalist/components/SettingsControls'
@@ -20,12 +19,11 @@ const SCOPES: Array<{ value: TaskTreeScope; label: string }> = [
 export function BoardPage() {
 	const [scope, setScope] = useState<TaskTreeScope>('everyone')
 	const { recent: rows, isReady } = useTaskTree(false, scope)
-	const completed = useTaskDeliveries(isReady ? rows.map((row) => ({ ...row.task, sessions: row.sessions })) : [])
 	const columns = KANBAN_COLUMN_DEFS.map((column) => ({ ...column, rows: [] as TaskRow[] }))
 	const byId = new Map(columns.map((column) => [column.id, column]))
 	for (const row of rows) {
 		const id = assignColumn(
-			{ ...row.task, deliveryComplete: completed.has(row.task.id) },
+			row.task,
 			row.sessions.map((session) => ({
 				status: session.status,
 				archived: session.archived,

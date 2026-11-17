@@ -34,7 +34,11 @@ const neverSettles = (signals: AbortSignal[]) => (_input: unknown, options?: { s
 	return new Promise<never>(() => {})
 }
 
-const makeOrpc = (heartbeat: HeartbeatMock) => ({ hosts: { heartbeat, shutdown: vi.fn() } }) as unknown as ORPCClient
+const makeOrpc = (heartbeat: HeartbeatMock) =>
+	({
+		hosts: { heartbeat, shutdown: vi.fn() },
+		delivery: { claim: vi.fn(async () => ({ action: null })) },
+	}) as unknown as ORPCClient
 
 describe('startHeartbeat', () => {
 	let runtime: ManagedRuntime.ManagedRuntime<HostUsageLimits | HostMachineStats, never>
@@ -47,6 +51,18 @@ describe('startHeartbeat', () => {
 	afterEach(async () => {
 		await runtime.dispose()
 		vi.useRealTimers()
+	})
+
+	test('continues delivery without a browser and keeps heartbeats live while a claim is pending', async () => {
+		const heartbeat = heartbeatMock()
+		const claim = vi.fn(() => new Promise<never>(() => {}))
+		const orpc = { hosts: { heartbeat, shutdown: vi.fn() }, delivery: { claim } } as unknown as ORPCClient
+		const running = await startHeartbeat(runtime, 'host-1', orpc, capabilities)
+		await vi.advanceTimersByTimeAsync(30_000)
+		running.stop()
+		expect(heartbeat.mock.calls.length).toBeGreaterThan(1)
+		expect(claim).toHaveBeenCalledTimes(1)
+		expect(claim.mock.calls[0]?.length).toBe(2)
 	})
 
 	test('sends a reported update once, not on later beats', async () => {

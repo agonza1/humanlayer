@@ -28,6 +28,11 @@ function deepMerge<T extends Record<string, unknown>>(base: T, overrides: DeepPa
 
 export function createMockORPCClient(overrides?: DeepPartial<ORPCClient>): ORPCClient {
 	const base = {
+		delivery: {
+			claim: notImplemented('delivery.claim'),
+			complete: notImplemented('delivery.complete'),
+			validate: notImplemented('delivery.validate'),
+		},
 		hosts: {
 			heartbeat: notImplemented('hosts.heartbeat'),
 			shutdown: notImplemented('hosts.shutdown'),
