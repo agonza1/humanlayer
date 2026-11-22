@@ -141,13 +141,18 @@ const SlackServiceImplementationLive = Layer.effect(
 				teamId,
 				channelId,
 				threadTs,
+				reason,
 			}) {
 				const connection = yield* requireSlackConnection(organizationId).pipe(Effect.option)
 				if (Option.isNone(connection) || connection.value.slack_team_id !== teamId) {
 					return { status: 'unavailable' } as const
 				}
 				const taskUrl = new URL(`/tasks/${taskId}`, appOrigin).toString()
-				const text = `HumanLayer delivery needs attention. <${taskUrl}|Open the task> for the blocker and next action.`
+				// The reconciliation reason is a fixed operator-facing message. Existing delivery errors
+				// can contain local checkout details and are available only on the HumanLayer task.
+				const text = reason
+					? `HumanLayer delivery needs attention. ${reason} <${taskUrl}|Open the task>.`
+					: `HumanLayer delivery needs attention. <${taskUrl}|Open the task> for the blocker and next action.`
 				return yield* slack
 					.postMessage({
 						botToken: Redacted.make(connection.value.bot_access_token),

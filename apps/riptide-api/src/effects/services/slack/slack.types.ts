@@ -348,6 +348,7 @@ export type SlackServiceShape = {
 		teamId: string
 		channelId: string
 		threadTs?: string
+		reason?: string
 	}) => Effect.Effect<DeliveryAlertReceipt, never, PostgresDb>
 	dispatchArtifactEvent: (event: SlackArtifactEvent) => Effect.Effect<void, never, PostgresDb | WorkosService>
 	dispatchCommentEvent: (event: SlackCommentEvent) => Effect.Effect<void, never, PostgresDb | WorkosService>

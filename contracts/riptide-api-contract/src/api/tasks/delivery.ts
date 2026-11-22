@@ -4,6 +4,7 @@ import {
 	DeliveryReviewSchema,
 	DeliveryTargetSchema,
 } from '@humanlayer/schemas/zod/automatic-delivery'
+import { ImplementationReconciliationSchema } from '@humanlayer/schemas/zod/implementation-reconciliation'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../../contract-builder'
@@ -43,4 +44,9 @@ export const getDeliveryContract = contractBuilder
 export const configureDeliveryAlertsContract = contractBuilder
 	.errors({ CONFLICT: { status: 409 } })
 	.input(z.object({ taskId: z.uuidv7(), routes: DeliveryAlertRoutesInputSchema }))
-	.output(z.object({ delivery: AutomaticDeliverySchema }))
+	.output(
+		z.object({
+			delivery: AutomaticDeliverySchema.nullable(),
+			reconciliation: ImplementationReconciliationSchema.nullable().optional(),
+		}),
+	)

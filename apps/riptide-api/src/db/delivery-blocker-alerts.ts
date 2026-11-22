@@ -12,11 +12,18 @@ import {
 	type DeliveryAlertRoutesInputSchema,
 	type DeliveryAlertSlackRoute,
 } from '@humanlayer/schemas/zod/automatic-delivery'
+import { IMPLEMENTATION_BLOCKERS } from '@humanlayer/schemas/zod/implementation-reconciliation'
 import { and, eq } from 'drizzle-orm'
 import { uuidv7 } from 'uuidv7'
 import type { z } from 'zod/v4'
 
+import { resolveLocalSlackAlertRoute } from '../lib/local-slack-alert-relay'
 import { lockDeliveryTask, saveDelivery, type DeliveryTransaction } from './automatic-delivery'
+import {
+	readTaskReconciliation,
+	reconcileImplementation,
+	saveTaskReconciliation,
+} from './implementation-reconciliation'
 
 type Task = typeof tasks.$inferSelect
 type AlertRoutes = NonNullable<AutomaticDelivery['alertRoutes']>
@@ -31,11 +38,19 @@ export type SlackBlockerDispatch = {
 	teamId: string
 	channelId: string
 	threadTs?: string
+	reason?: string
+	relayReason?: 'implementation' | 'review'
+	relayRouteId?: string
 	slots: Slot[]
 }
 
-async function findNativeOrigin(tx: DeliveryTransaction, task: Task, delivery: AutomaticDelivery, sessionId: string) {
-	if (delivery.deliverySessionIds.includes(sessionId)) return false
+async function findNativeOrigin(
+	tx: DeliveryTransaction,
+	task: Task,
+	deliverySessionIds: readonly string[],
+	sessionId: string,
+) {
+	if (deliverySessionIds.includes(sessionId)) return false
 	const [origin] = await tx
 		.select({ id: sessions.id })
 		.from(sessions)
@@ -108,6 +123,7 @@ async function findSlackRoute(
 
 	return {
 		binding: {
+			localRelay: undefined,
 			automationId,
 			channelId: route.channelId,
 			teamId: route.teamId,
@@ -118,19 +134,37 @@ async function findSlackRoute(
 	}
 }
 
+function findLocalSlackRoute(task: Task, automationId: string) {
+	if (task.slack_notifications_muted) return null
+	const pinned = resolveLocalSlackAlertRoute({
+		routeId: automationId,
+		organizationId: task.organization_id,
+		ownerId: task.resource_owner_user_id,
+		taskId: task.id,
+	})
+	return pinned
+		? { binding: { automationId, ...pinned, localRelay: true as const, threadId: undefined }, threadTs: undefined }
+		: null
+}
+
 /** Resolve each explicitly supplied route independently for the authorized task owner. */
 export async function bindDeliveryAlertRoutes(
 	tx: DeliveryTransaction,
 	task: Task,
-	delivery: AutomaticDelivery,
+	deliverySessionIds: readonly string[],
 	input: z.infer<typeof DeliveryAlertRoutesInputSchema>,
 ): Promise<AlertRoutes | null> {
 	const routes: AlertRoutes = {}
 	if (input.slackAutomationId) {
-		const slack = await findSlackRoute(tx, task, input.slackAutomationId)
+		const slack =
+			findLocalSlackRoute(task, input.slackAutomationId) ??
+			(await findSlackRoute(tx, task, input.slackAutomationId))
 		if (slack) routes.slack = slack.binding
 	}
-	if (input.origin?.kind === 'session' && (await findNativeOrigin(tx, task, delivery, input.origin.sessionId))) {
+	if (
+		input.origin?.kind === 'session' &&
+		(await findNativeOrigin(tx, task, deliverySessionIds, input.origin.sessionId))
+	) {
 		routes.origin = input.origin
 	}
 	if (input.origin?.kind === 'slack') {
@@ -142,7 +176,9 @@ export async function bindDeliveryAlertRoutes(
 }
 
 async function resolveAuthorizedSlack(tx: DeliveryTransaction, task: Task, binding: DeliveryAlertSlackRoute) {
-	const route = await findSlackRoute(tx, task, binding.automationId, binding.threadId, false)
+	const route = binding.localRelay
+		? findLocalSlackRoute(task, binding.automationId)
+		: await findSlackRoute(tx, task, binding.automationId, binding.threadId, false)
 	if (
 		!route ||
 		route.binding.teamId !== binding.teamId ||
@@ -159,23 +195,59 @@ function slackDestination(teamId: string, channelId: string, threadTs?: string) 
 }
 
 export function groupSlackBlockerSlots(
-	inputs: readonly { slot: Slot; teamId: string; channelId: string; threadTs?: string }[],
+	inputs: readonly { slot: Slot; teamId: string; channelId: string; threadTs?: string; relayRouteId?: string }[],
 ) {
-	const groups = new Map<string, { teamId: string; channelId: string; threadTs?: string; slots: Slot[] }>()
-	for (const { slot, teamId, channelId, threadTs } of inputs) {
+	const groups = new Map<
+		string,
+		{ teamId: string; channelId: string; threadTs?: string; relayRouteId?: string; slots: Slot[] }
+	>()
+	for (const { slot, teamId, channelId, threadTs, relayRouteId } of inputs) {
 		const key = slackDestination(teamId, channelId, threadTs)
 		const existing = groups.get(key)
 		if (existing) existing.slots.push(slot)
-		else groups.set(key, { teamId, channelId, threadTs, slots: [slot] })
+		else groups.set(key, { teamId, channelId, threadTs, relayRouteId, slots: [slot] })
 	}
 	return [...groups.values()]
 }
 
-/** Runs under the stock delivery task lock. Publish only reserved Slack work after commit. */
-export async function reserveDeliveryBlockerAlerts(tx: DeliveryTransaction, task: Task, delivery: AutomaticDelivery) {
-	if (!['attention', 'pr'].includes(delivery.phase) || !delivery.attention || task.archived) return []
-	const routes = delivery.alertRoutes
-	const alert = (delivery.blockerAlert ??= {
+function activeBlocker(tx: DeliveryTransaction, task: Task) {
+	if (task.archived || task.is_draft) return null
+	const delivery = decodeDelivery(task.automatic_delivery)
+	if (delivery && ['attention', 'pr'].includes(delivery.phase) && delivery.attention) {
+		return {
+			state: delivery,
+			routes: delivery.alertRoutes,
+			reason: delivery.attention,
+			slackReason: undefined,
+			relayReason: undefined,
+			deliverySessionIds: delivery.deliverySessionIds,
+			heldDescribePR: delivery.phase === 'pr' ? delivery.managedSessionId : undefined,
+			reconciliation: false,
+			save: () => saveDelivery(tx, task, delivery),
+		}
+	}
+	const reconciliation = readTaskReconciliation(task)
+	if (reconciliation.decision?.status !== 'blocked') return null
+	const reason = IMPLEMENTATION_BLOCKERS[reconciliation.decision.reason]
+	return {
+		state: reconciliation,
+		routes: reconciliation.alertRoutes ?? delivery?.alertRoutes,
+		reason,
+		slackReason: reason,
+		relayReason: reconciliation.decision.stage === 'in-review' ? ('review' as const) : ('implementation' as const),
+		deliverySessionIds: delivery?.deliverySessionIds ?? [],
+		heldDescribePR: undefined,
+		reconciliation: true,
+		save: () => saveTaskReconciliation(tx, task, reconciliation),
+	}
+}
+
+/** Runs under the stock task lock. Publish only reserved Slack work after commit. */
+export async function reserveDeliveryBlockerAlerts(tx: DeliveryTransaction, task: Task) {
+	const blocker = activeBlocker(tx, task)
+	if (!blocker) return []
+	const { routes } = blocker
+	const alert = (blocker.state.blockerAlert ??= {
 		id: uuidv7(),
 		slack: { status: 'pending' },
 		origin: { status: 'pending' },
@@ -188,7 +260,7 @@ export async function reserveDeliveryBlockerAlerts(tx: DeliveryTransaction, task
 		if (alert[slot].status !== 'pending') continue
 		if (slot === 'origin' && routes?.origin?.kind === 'session') {
 			const sessionId = routes.origin.sessionId
-			if (!(await findNativeOrigin(tx, task, delivery, sessionId))) {
+			if (!(await findNativeOrigin(tx, task, blocker.deliverySessionIds, sessionId))) {
 				alert.origin = { status: 'unavailable' }
 				continue
 			}
@@ -203,7 +275,7 @@ export async function reserveDeliveryBlockerAlerts(tx: DeliveryTransaction, task
 				role: 'system',
 				content: JSON.stringify({
 					kind: 'delivery_blocker',
-					reason: delivery.attention,
+					reason: blocker.reason,
 				}),
 			})
 			alert.origin = { status: 'delivered', receipt: eventId }
@@ -234,9 +306,10 @@ export async function reserveDeliveryBlockerAlerts(tx: DeliveryTransaction, task
 			teamId: route.binding.teamId,
 			channelId: route.binding.channelId,
 			threadTs: route.threadTs,
+			relayRouteId: route.binding.localRelay ? route.binding.automationId : undefined,
 		})
 	}
-	await saveDelivery(tx, task, delivery)
+	await blocker.save()
 	return groupSlackBlockerSlots(targets).map(
 		(target): SlackBlockerDispatch => ({
 			...target,
@@ -244,28 +317,28 @@ export async function reserveDeliveryBlockerAlerts(tx: DeliveryTransaction, task
 			organizationId: task.organization_id,
 			ownerId: task.resource_owner_user_id,
 			alertId: alert.id,
+			reason: blocker.slackReason,
+			relayReason: blocker.relayReason,
 		}),
 	)
 }
 
 export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, dispatch: SlackBlockerDispatch) {
 	const task = await lockDeliveryTask(tx, dispatch.taskId, dispatch.organizationId)
-	const delivery = decodeDelivery(task?.automatic_delivery)
-	if (
-		!task ||
-		task.archived ||
-		task.resource_owner_user_id !== dispatch.ownerId ||
-		!delivery ||
-		!['attention', 'pr'].includes(delivery.phase) ||
-		delivery.blockerAlert?.id !== dispatch.alertId
-	)
-		return []
-	if (delivery.phase === 'pr') {
-		if (!delivery.managedSessionId) return []
+	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return []
+	let blocker = activeBlocker(tx, task)
+	if (blocker?.reconciliation) {
+		await reconcileImplementation(tx, task)
+		blocker = activeBlocker(tx, task)
+	}
+	const alert = blocker?.state.blockerAlert
+	if (!blocker || !alert || alert.id !== dispatch.alertId) return []
+	if (blocker.heldDescribePR !== undefined) {
+		if (!blocker.heldDescribePR) return []
 		const [managed] = await tx
 			.select({ status: sessions.status, archived: sessions.archived })
 			.from(sessions)
-			.where(and(eq(sessions.id, delivery.managedSessionId), eq(sessions.task_id, task.id)))
+			.where(and(eq(sessions.id, blocker.heldDescribePR), eq(sessions.task_id, task.id)))
 		if (!managed || managed.archived || !['needs_approval', 'waiting_for_usage_limit'].includes(managed.status))
 			return []
 	}
@@ -273,17 +346,17 @@ export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, disp
 	const authorized: Slot[] = []
 	const destination = slackDestination(dispatch.teamId, dispatch.channelId, dispatch.threadTs)
 	for (const slot of dispatch.slots) {
-		const origin = delivery.alertRoutes?.origin
-		const binding =
-			slot === 'slack' ? delivery.alertRoutes?.slack : origin?.kind === 'slack' ? origin.route : undefined
-		const retained = delivery.blockerAlert[slot]
+		const origin = blocker.routes?.origin
+		const binding = slot === 'slack' ? blocker.routes?.slack : origin?.kind === 'slack' ? origin.route : undefined
+		const retained = alert[slot]
 		if (!binding || retained.status !== 'unknown' || retained.destination !== destination) continue
 		const current = await resolveAuthorizedSlack(tx, task, binding)
 		if (
 			!current ||
 			current.binding.teamId !== dispatch.teamId ||
 			current.binding.channelId !== dispatch.channelId ||
-			current.threadTs !== dispatch.threadTs
+			current.threadTs !== dispatch.threadTs ||
+			(current.binding.localRelay ? current.binding.automationId : undefined) !== dispatch.relayRouteId
 		)
 			continue
 		authorized.push(slot)
@@ -297,21 +370,21 @@ export async function finishSlackBlockerDispatch(
 	outcome: { kind: 'provider'; result: DeliveryAlertReceipt } | { kind: 'preflight'; canceled: boolean },
 ) {
 	const task = await lockDeliveryTask(tx, dispatch.taskId, dispatch.organizationId)
-	const delivery = decodeDelivery(task?.automatic_delivery)
-	if (!task || task.resource_owner_user_id !== dispatch.ownerId || delivery?.blockerAlert?.id !== dispatch.alertId)
-		return
+	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return
+	const blocker = activeBlocker(tx, task)
+	const alert = blocker?.state.blockerAlert
+	if (!alert || alert.id !== dispatch.alertId) return
 	const destination = slackDestination(dispatch.teamId, dispatch.channelId, dispatch.threadTs)
 	const result = outcome.kind === 'provider' ? outcome.result : { status: 'unavailable' as const }
 	for (const slot of SLOTS) {
-		const retained = delivery.blockerAlert[slot]
+		const retained = alert[slot]
 		if (retained.status !== 'unknown' || retained.destination !== destination) continue
 		if (!dispatch.slots.includes(slot) && outcome.kind === 'preflight') {
 			// A coalesced slot may retry only when preflight canceled the whole send.
-			if (outcome.canceled) delivery.blockerAlert[slot] = { status: 'pending' }
+			if (outcome.canceled) alert[slot] = { status: 'pending' }
 			continue
 		}
-		delivery.blockerAlert[slot] =
-			result.status === 'delivered' || result.status === 'unknown' ? { ...result, destination } : result
+		alert[slot] = result.status === 'delivered' || result.status === 'unknown' ? { ...result, destination } : result
 	}
-	await saveDelivery(tx, task, delivery)
+	await blocker.save()
 }

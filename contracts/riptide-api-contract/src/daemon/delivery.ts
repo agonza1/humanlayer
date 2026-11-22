@@ -1,4 +1,8 @@
-import { DeliveryHeadSchema, DeliveryTargetSchema } from '@humanlayer/schemas/zod/automatic-delivery'
+import {
+	DeliveryHeadSchema,
+	DeliveryInspectionIssueSchema,
+	DeliveryTargetSchema,
+} from '@humanlayer/schemas/zod/automatic-delivery'
 import z from 'zod/v4'
 
 import { contractBuilder } from '../contract-builder'
@@ -24,6 +28,7 @@ export const completeDeliveryContract = contractBuilder
 			leaseId: z.uuid(),
 			heads: z.array(DeliveryHeadSchema),
 			error: z.string().max(30000).nullable(),
+			inspectionIssue: DeliveryInspectionIssueSchema.optional(),
 		}),
 	)
 	.output(z.object({ accepted: z.boolean() }))

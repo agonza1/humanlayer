@@ -2,12 +2,26 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
-import { sameDeliveryHeads, type DeliveryHead, type DeliveryTarget } from '@humanlayer/schemas/zod/automatic-delivery'
+import {
+	sameDeliveryHeads,
+	type DeliveryHead,
+	type DeliveryInspectionIssue,
+	type DeliveryTarget,
+} from '@humanlayer/schemas/zod/automatic-delivery'
 import z from 'zod/v4'
 
 import type { ORPCClient } from '@/orpc/client'
 
 const exec = promisify(execFile)
+
+class DeliveryInspectionError extends Error {
+	constructor(
+		readonly issue: DeliveryInspectionIssue,
+		message: string,
+	) {
+		super(message)
+	}
+}
 const PullRequestsSchema = z.array(
 	z.object({
 		number: z.number().int().positive(),
@@ -52,7 +66,10 @@ async function inspectTarget(
 		.replace(/\.git$/, '')
 		.toLowerCase()
 	if (dirty || branch !== target.branch || normalizedOrigin !== target.repository.toLowerCase())
-		throw new Error('Local checkout has newer/uncommitted work, a different branch, or a different repository')
+		throw new DeliveryInspectionError(
+			'checkout',
+			'Local checkout has newer/uncommitted work, a different branch, or a different repository',
+		)
 	const json = await commands.run(
 		'gh',
 		[
@@ -75,7 +92,8 @@ async function inspectTarget(
 	)
 	const prs = PullRequestsSchema.parse(JSON.parse(json))
 	if (prs.length !== 1)
-		throw new Error(
+		throw new DeliveryInspectionError(
+			prs.length ? 'pr-ambiguous' : 'pr-missing',
 			'Every task branch must have exactly one relevant PR; ambiguous or missing PRs require attention',
 		)
 	const pr = prs[0]
@@ -86,11 +104,14 @@ async function inspectTarget(
 		pr.baseRefName !== target.base ||
 		localSha !== pr.headRefOid
 	)
-		throw new Error('PR is closed without merge or its exact head differs from local work')
+		throw new DeliveryInspectionError(
+			'pr-head-mismatch',
+			'PR is closed without merge or its exact head differs from local work',
+		)
 	const remote = await commands.run('git', ['ls-remote', 'origin', `refs/heads/${target.branch}`], cwd)
 	// A deleted merged branch is fine; a network/auth failure still rejects the command.
 	if (remote ? remote.split(/\s+/)[0] !== pr.headRefOid : pr.state !== 'MERGED')
-		throw new Error('Remote branch has newer work or is unavailable')
+		throw new DeliveryInspectionError('remote-head-mismatch', 'Remote branch has newer work or is unavailable')
 	if (
 		merging &&
 		pr.labels.some((label) =>
@@ -109,7 +130,7 @@ async function inspectTarget(
 		// GitHub enforces repository-required checks at the normal merge endpoint.
 		// Do not poll CI or turn optional/no-CI checks into another gate.
 	}
-	return { ...target, number: pr.number, sha: pr.headRefOid, merged: pr.state === 'MERGED' }
+	return { ...target, number: pr.number, sha: pr.headRefOid, merged: pr.state === 'MERGED', draft: pr.isDraft }
 }
 
 /** One leased action, without retrying mutations. Lost merge outcomes expire to attention. */
@@ -175,6 +196,7 @@ export function createDeliveryHeartbeatContinuation(orpc: ORPCClient, onError: (
 			if (!action) return
 			let heads: DeliveryHead[] = []
 			let error: string | null = null
+			let inspectionIssue: DeliveryInspectionIssue | undefined
 			try {
 				heads = await executeDeliveryAction(
 					action,
@@ -189,10 +211,11 @@ export function createDeliveryHeartbeatContinuation(orpc: ORPCClient, onError: (
 				)
 			} catch (cause) {
 				onError(cause)
+				inspectionIssue = cause instanceof DeliveryInspectionError ? cause.issue : undefined
 				error = cause instanceof Error ? cause.message : 'Delivery worker failed'
 			}
 			await orpc.delivery.complete(
-				{ taskId: action.taskId, leaseId: action.leaseId, heads, error },
+				{ taskId: action.taskId, leaseId: action.leaseId, heads, error, inspectionIssue },
 				{ signal: AbortSignal.timeout(15_000) },
 			)
 		} catch (error) {

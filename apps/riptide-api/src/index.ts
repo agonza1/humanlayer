@@ -5,7 +5,9 @@ import { Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import * as Sentry from '@sentry/node'
 
+import { db, listenToDatabase } from './db/db'
 import { appRuntime } from './effects/app-runtime'
+import { startImplementationReconciliation } from './lib/implementation-reconciliation-events'
 
 const PORT = Number(process.env.RIPTIDE_API_PORT ?? process.env.PORT) || 8700
 
@@ -25,6 +27,9 @@ async function main(): Promise<void> {
 		throw new Error(`Expected http.Server but got ${server.constructor.name}`)
 	}
 	server.keepAliveTimeout = 0
+	const reconciliation = startImplementationReconciliation(db, appRuntime, listenToDatabase).catch((error) => {
+		Sentry.captureException(error, { tags: { error_type: 'implementation_reconciliation_startup' } })
+	})
 
 	let shuttingDown = false
 	const shutdown = async () => {
@@ -40,6 +45,9 @@ async function main(): Promise<void> {
 				resolve()
 			})
 		})
+		await (
+			await reconciliation
+		)?.()
 		await appRuntime.dispose()
 		if (failed) process.exitCode = 1
 	}
