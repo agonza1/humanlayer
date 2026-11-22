@@ -29,6 +29,8 @@ const databaseUrl = requireEnvironment('DATABASE_URL')
 const rawClient = postgres(databaseUrl, poolConfig)
 const client = instrumentPostgresJsSql(rawClient, { requireParentSpan: false })
 export const db = drizzle(client)
+export const listenToDatabase: typeof rawClient.listen = (channel, onEvent, onReady) =>
+	rawClient.listen(channel, onEvent, onReady)
 
 // Read replica for metrics queries - REQUIRED in all environments (no fallback)
 // For local dev, set READ_REPLICA_DATABASE_URL to same value as DATABASE_URL in .env

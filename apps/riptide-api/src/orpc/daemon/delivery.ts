@@ -1,17 +1,20 @@
+import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { decodeDelivery, deliveryReviewVerdict, sameDeliveryHeads } from '@humanlayer/schemas/zod/automatic-delivery'
-import { and, eq, isNotNull, or } from 'drizzle-orm'
-import { Effect, Option } from 'effect'
+import { and, asc, eq, exists, isNotNull, or, sql } from 'drizzle-orm'
+import { Effect } from 'effect'
 
 import { claimTaskDelivery, completeTaskDelivery, deliveryContext, lockDeliveryTask } from '../../db/automatic-delivery'
+import { reserveDeliveryBlockerAlerts } from '../../db/delivery-blocker-alerts'
 import {
-	finishSlackBlockerDispatch,
-	reserveDeliveryBlockerAlerts,
-	validateSlackBlockerDispatch,
-} from '../../db/delivery-blocker-alerts'
+	completeImplementationInspection,
+	readTaskReconciliation,
+	reconcileImplementation,
+} from '../../db/implementation-reconciliation'
 import { enrollProjectDelivery } from '../../db/project-delivery'
-import { SlackService } from '../../effects/services/slack/slack.service'
 import { TaskDiffService } from '../../effects/services/task-diff-durable-streams/task-diff-durable-streams.service'
+import { dispatchDeliveryAlerts } from '../../lib/dispatch-delivery-alerts'
+import { reconcileImplementationTask } from '../../lib/implementation-reconciliation-events'
 import { daemonBase, requiresDaemonBillingMiddleware } from '../base'
 
 export const claimDeliveryProcedure = daemonBase.delivery.claim
@@ -44,40 +47,50 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 				const action = await claimTaskDelivery(tx, task)
 				if (action) return { action, alerts: [] }
 				const updated = await lockDeliveryTask(tx, task.id, organizationId)
-				const current = decodeDelivery(updated?.automatic_delivery)
-				if (!updated || !current) continue
-				const alerts = await reserveDeliveryBlockerAlerts(tx, updated, current)
+				if (!updated) continue
+				const alerts = await reserveDeliveryBlockerAlerts(tx, updated)
 				if (alerts.length) return { action: null, alerts }
+			}
+			const legacy = await tx
+				.select()
+				.from(tasks)
+				.where(
+					and(
+						eq(tasks.organization_id, organizationId),
+						eq(tasks.resource_owner_user_id, userId),
+						eq(tasks.archived, false),
+						eq(tasks.is_draft, false),
+						sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'status' = 'verifying'`,
+						sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'hostId' = ${hostId}`,
+						sql`(${tasks.implementation_reconciliation} -> 'lease' is null or
+						(${tasks.implementation_reconciliation} -> 'lease' ->> 'expiresAt')::bigint <= ${Date.now()})`,
+						exists(
+							tx
+								.select({ id: sessions.id })
+								.from(sessions)
+								.where(
+									and(
+										eq(sessions.task_id, tasks.id),
+										eq(sessions.organization_id, organizationId),
+										eq(sessions.resource_owner_user_id, userId),
+										eq(sessions.host_id, hostId),
+										eq(sessions.archived, false),
+									),
+								),
+						),
+					),
+				)
+				.orderBy(asc(tasks.id))
+				.limit(24)
+				.for('no key update', { skipLocked: true })
+			for (const task of legacy) {
+				const action = await reconcileImplementation(tx, task, { hostId })
+				const alerts = await reserveDeliveryBlockerAlerts(tx, task)
+				if (action || alerts.length) return { action, alerts }
 			}
 			return { action: null, alerts: [] }
 		})
-		for (const dispatch of alerts) {
-			const slots = await db.transaction((tx) => validateSlackBlockerDispatch(tx, dispatch))
-			const unavailable = dispatch.slots.filter((slot) => !slots.includes(slot))
-			if (unavailable.length) {
-				await db.transaction((tx) =>
-					finishSlackBlockerDispatch(
-						tx,
-						{ ...dispatch, slots: unavailable },
-						{ kind: 'preflight', canceled: slots.length === 0 },
-					),
-				)
-			}
-			if (!slots.length) continue
-			const receipt = await effectRuntime.runPromise(
-				Effect.gen(function* () {
-					const slack = yield* SlackService
-					return yield* slack.sendDeliveryBlocker(dispatch)
-				}).pipe(
-					Effect.timeoutOption('5 seconds'),
-					Effect.map((result) => Option.getOrElse(result, () => ({ status: 'unknown' as const }))),
-					Effect.catchCause(() => Effect.succeed({ status: 'unknown' as const })),
-				),
-			)
-			await db.transaction((tx) =>
-				finishSlackBlockerDispatch(tx, { ...dispatch, slots }, { kind: 'provider', result: receipt }),
-			)
-		}
+		await dispatchDeliveryAlerts(db, effectRuntime, alerts)
 		return { action }
 	})
 
@@ -88,12 +101,33 @@ export const completeDeliveryProcedure = daemonBase.delivery.complete
 		const result = await context.services.db.transaction(async (tx) => {
 			const task = await lockDeliveryTask(tx, input.taskId, organizationId)
 			if (!task) throw errors.NOT_FOUND()
+			if (task.resource_owner_user_id !== userId) throw errors.FORBIDDEN()
+			const reconciliation = readTaskReconciliation(task)
+			if (reconciliation.lease?.id === input.leaseId) {
+				if (reconciliation.lease.hostId !== hostId) throw errors.FORBIDDEN()
+				const accepted = await completeImplementationInspection(tx, task, { ...input, hostId })
+				const recoverPublication =
+					accepted && input.inspectionIssue === 'pr-missing' && task.auto_advance_implementation_to_pr
+				return {
+					accepted,
+					archived: false,
+					alerts: recoverPublication ? [] : await reserveDeliveryBlockerAlerts(tx, task),
+					recoverPublication,
+				}
+			}
 			const delivery = decodeDelivery(task.automatic_delivery)
-			if (task.resource_owner_user_id !== userId || delivery?.hostId !== hostId) throw errors.FORBIDDEN()
+			if (!delivery) return { accepted: false, archived: false, alerts: [] }
+			if (delivery.hostId !== hostId) throw errors.FORBIDDEN()
 			const accepted = await completeTaskDelivery(tx, task, input.leaseId, input.heads, input.error)
 			const [updated] = await tx.select({ archived: tasks.archived }).from(tasks).where(eq(tasks.id, task.id))
-			return { accepted, archived: updated?.archived === true }
+			return { accepted, archived: updated?.archived === true, alerts: [] }
 		})
+		await dispatchDeliveryAlerts(context.services.db, context.services.effectRuntime, result.alerts)
+		if (result.recoverPublication)
+			await reconcileImplementationTask(context.services.db, context.services.effectRuntime, {
+				taskId: input.taskId,
+				organizationId,
+			})
 		if (result.archived)
 			context.services.effectRuntime.runFork(
 				Effect.gen(function* () {
@@ -113,6 +147,7 @@ export const validateDeliveryProcedure = daemonBase.delivery.validate
 			const delivery = decodeDelivery(task.automatic_delivery)
 			if (
 				!delivery ||
+				delivery.authorizedBy !== task.resource_owner_user_id ||
 				delivery.hostId !== context.auth.hostId ||
 				delivery.mode !== 'merge' ||
 				delivery.phase !== 'merge' ||

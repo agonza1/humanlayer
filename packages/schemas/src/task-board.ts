@@ -1,5 +1,6 @@
 import { SESSION_STATUSES, type SessionStatus } from './effect/session/session-status'
 import { AutomaticDeliverySchema, type DeliveryAlertReceipt } from './zod/automatic-delivery'
+import { decodeImplementationReconciliation, IMPLEMENTATION_BLOCKERS } from './zod/implementation-reconciliation'
 
 export const BOARD_COLUMNS = [
 	{ id: 'todo', title: 'To do', description: 'Tasks waiting to start' },
@@ -39,16 +40,20 @@ const REVIEW_LABEL = { name: 'rpi:review', title: 'review' }
 type RecordTime = bigint | number | string | null | undefined
 
 export type BoardDelivery =
-	| { status: 'queued' | 'running'; sessionId: string }
+	| { status: 'queued' | 'running'; sessionId: string; deadlineAt?: number }
+	| { status: 'verifying'; deadlineAt: number }
+	| { status: 'review' }
 	| {
 			status: 'blocked'
 			reason: string
 			publication?: boolean
+			stage?: 'implementation' | 'in-review'
 			alert?: { slack: DeliveryAlertReceipt['status']; origin: DeliveryAlertReceipt['status'] }
 	  }
 
 export interface BoardTaskInput {
 	automatic_delivery?: unknown
+	implementation_reconciliation?: unknown
 	is_draft?: boolean | null
 	created_at?: RecordTime
 	updated_at?: RecordTime
@@ -267,7 +272,48 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 	}
 
 	const stage = assignStage(activeSessions, latest)
-	const delivery = describeDelivery(task, activeSessions, latest)
-	if (delivery && (delivery.status !== 'blocked' || delivery.publication)) stage.columnId = 'implementation'
+	const stockDelivery = describeDelivery(task, activeSessions, latest)
+	const reconciliation = decodeImplementationReconciliation(task.implementation_reconciliation)
+	const decision = reconciliation?.decision
+	const receipts = reconciliation?.blockerAlert
+	let delivery: BoardDelivery | null = stockDelivery
+	const pendingBlocker =
+		status === 'needs_approval' ||
+		status === 'waiting_for_usage_limit' ||
+		status === 'ready_for_launch' ||
+		status === 'waiting_for_workspace'
+	if (
+		decision?.status === 'blocked' &&
+		(priority === 0 || pendingBlocker || decision.reason === 'writer-unknown') &&
+		stockDelivery?.status !== 'blocked'
+	) {
+		delivery = {
+			status: 'blocked',
+			reason: IMPLEMENTATION_BLOCKERS[decision.reason],
+			stage: decision.stage,
+			alert: receipts ? { slack: receipts.slack.status, origin: receipts.origin.status } : undefined,
+		}
+	} else if (
+		decision?.status === 'waiting-publication' &&
+		(!stockDelivery || (stockDelivery.status === 'queued' && stockDelivery.sessionId === decision.sessionId))
+	) {
+		const session = activeSessions.find((entry) => entry.id === decision.sessionId)
+		if (session && ['ready_for_launch', 'waiting_for_workspace'].includes(session.status ?? ''))
+			delivery = { status: 'queued', sessionId: decision.sessionId, deadlineAt: decision.deadlineAt }
+	} else if (
+		priority === 0 &&
+		(decision?.status === 'review' || decision?.status === 'verifying') &&
+		!stockDelivery
+	) {
+		delivery = decision.status === 'review' ? decision : { status: 'verifying', deadlineAt: decision.deadlineAt }
+	}
+	if (delivery?.status === 'blocked' && delivery.stage) stage.columnId = delivery.stage
+	else if (delivery?.status === 'review') stage.columnId = 'in-review'
+	else if (delivery && (delivery.status !== 'blocked' || delivery.publication)) stage.columnId = 'implementation'
+	if (
+		stage.columnId === 'in-review' &&
+		(delivery?.status === 'review' || (delivery?.status === 'blocked' && delivery.stage === 'in-review'))
+	)
+		stage.workflowLabel = REVIEW_LABEL
 	return { ...stage, status, lastUpdatedAtMs: updatedAt > 0 ? updatedAt : null, delivery }
 }

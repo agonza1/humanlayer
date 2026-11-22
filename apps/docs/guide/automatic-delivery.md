@@ -47,16 +47,24 @@ Supply one target object per repository. Inspect state with `humanlayer --local 
 
 The board and `humanlayer board` show the separate Describe PR session as queued, running or blocked on the same task. Describe PR stays in Implementation while publication is in progress. A session waiting for approval or capacity can resume and proceed to independent Review after GitHub verification.
 
-After delivery is enrolled, the task owner can opt the task into specific alert routes. Use the Slack automation ID for an enabled automation you own in the task workspace. Find IDs with `humanlayer --local api integrations slack list-automations`. Use the session ID from the task's originating HumanLayer conversation.
+On an active task, the owner can opt the task into specific alert routes independently of automatic delivery. Use the Slack automation ID for an enabled automation you own in the task workspace. Find IDs with `humanlayer --local api integrations slack list-automations`. Use the session ID from the task's originating HumanLayer conversation.
 
 ```sh
 humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
   --routes '{"slackAutomationId":"AUTOMATION_UUID","origin":{"kind":"session","sessionId":"SESSION_UUID"}}'
 ```
 
-For a task that originated in an existing Slack notification thread, set `origin` to `{"kind":"slack","automationId":"AUTOMATION_UUID"}`. HumanLayer resolves the ready thread for that automation on this task. The route object replaces the previous bindings. When only one requested route is authorized and available, HumanLayer keeps that route and shows the other gap on a blocked task. When none of the requested routes can be bound, the command returns an error. Pass `--routes '{}'` to clear the bindings. This configuration also works on existing enrolled tasks and preserves the current review budget and evidence. Tasks with delivery Off are outside blocker dispatch.
+For a task that originated in an existing Slack notification thread, set `origin` to `{"kind":"slack","automationId":"AUTOMATION_UUID"}`. HumanLayer resolves the ready thread for that automation on this task. The route object replaces the previous bindings. When only one requested route is authorized and available, HumanLayer keeps that route and shows the other gap on a blocked task. When none of the requested routes can be bound, the command returns an error. Pass `--routes '{}'` to clear the bindings. This configuration also works on existing enrolled tasks and preserves the current review budget and evidence. Delivery Off still allows visibility and explicitly authorized alerts.
 
 The task shows each route's outcome. A Slack receipt needs a matching Slack response. A HumanLayer receipt references the notice stored on the originating session. When both routes point to the same Slack thread, a single post supplies both receipts. A missing native session or unsupported external chat, including a Codex conversation, appears as unavailable while any other authorized route still runs. An uncertain Slack result stays unconfirmed so that a lost response cannot cause a duplicate post.
+
+## Idle implementation
+
+HumanLayer records the next action when implementation stops. On startup and reconnect, it reconciles older active cards in batches. Both boards and the board CLI show current-head verification, the stock Describe PR handoff, or a blocker with the owner's next action. Host and workflow deadlines keep pending work visible when a host stops responding.
+
+An existing task can enter Review after the stock host inspector verifies the task workspace, repository, branch, and exact PR heads. Independent review, merge, and archival use the existing task authorization and verification gates. Turning delivery off leaves inspection read-only. A legacy Describe PR opt-in can recover a missed handoff using the same task, workspace, and worker admission.
+
+The 24-hour card tint remains a display cue.
 
 ## Credentials and completion
 

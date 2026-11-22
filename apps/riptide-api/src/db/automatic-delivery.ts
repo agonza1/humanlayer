@@ -213,9 +213,21 @@ export async function deliveryAttention(
 /** Called only by the existing authenticated host heartbeat continuation. One atomic action reservation. */
 export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAction | null> {
 	const delivery = decodeDelivery(task.automatic_delivery)
-	if (!delivery || task.archived || delivery.phase === 'disabled' || delivery.phase === 'archived') return null
+	if (
+		!delivery ||
+		task.archived ||
+		delivery.authorizedBy !== task.resource_owner_user_id ||
+		delivery.phase === 'disabled' ||
+		delivery.phase === 'archived'
+	)
+		return null
 	const context = await deliveryContext(tx, task, delivery)
 	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
+	if (
+		source &&
+		(source.created_by !== delivery.authorizedBy || source.resource_owner_user_id !== task.resource_owner_user_id)
+	)
+		return null
 	if (!source || source.archived) {
 		if (delivery.phase !== 'attention')
 			await deliveryAttention(
@@ -444,7 +456,8 @@ export async function completeTaskDelivery(
 	error: string | null,
 ) {
 	const delivery = decodeDelivery(task.automatic_delivery)
-	if (!delivery?.lease || delivery.lease.id !== leaseId) return false
+	if (!delivery?.lease || delivery.authorizedBy !== task.resource_owner_user_id || delivery.lease.id !== leaseId)
+		return false
 	const lease = delivery.lease
 	const context = await deliveryContext(tx, task, delivery)
 	if (

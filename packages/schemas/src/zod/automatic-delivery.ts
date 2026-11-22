@@ -34,7 +34,18 @@ export const DeliveryHeadSchema = DeliveryTargetSchema.extend({
 	number: z.number().int().positive(),
 	sha: z.string().regex(/^[a-f0-9]{40}$/),
 	merged: z.boolean(),
+	// Older hosts do not report draft state. Read-only legacy reconciliation requires it.
+	draft: z.boolean().optional(),
 })
+export const DeliveryInspectionIssueSchema = z.enum([
+	'checkout',
+	'pr-missing',
+	'pr-ambiguous',
+	'pr-head-mismatch',
+	'remote-head-mismatch',
+])
+export type DeliveryInspectionIssue = z.infer<typeof DeliveryInspectionIssueSchema>
+
 export const DeliveryReviewSchema = z.object({
 	sessionId: z.uuid(),
 	source: z.enum(['automatic', 'local-qa']),
@@ -70,6 +81,7 @@ export const DeliveryAlertSlackRouteSchema = z.object({
 	teamId: z.string(),
 	threadId: z.uuid().optional(),
 	threadTs: z.string().optional(),
+	localRelay: z.literal(true).optional(),
 })
 export type DeliveryAlertSlackRoute = z.infer<typeof DeliveryAlertSlackRouteSchema>
 
@@ -79,6 +91,21 @@ const DeliveryAlertReceiptSchema = z.discriminatedUnion('status', [
 	z.object({ status: z.literal('delivered'), receipt: z.string().min(1), destination: z.string().optional() }),
 ])
 export type DeliveryAlertReceipt = z.infer<typeof DeliveryAlertReceiptSchema>
+
+export const DeliveryAlertRoutesSchema = z.object({
+	slack: DeliveryAlertSlackRouteSchema.optional(),
+	origin: z
+		.discriminatedUnion('kind', [
+			z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
+			z.object({ kind: z.literal('slack'), route: DeliveryAlertSlackRouteSchema }),
+		])
+		.optional(),
+})
+export const DeliveryBlockerAlertSchema = z.object({
+	id: z.uuid(),
+	slack: DeliveryAlertReceiptSchema,
+	origin: DeliveryAlertReceiptSchema,
+})
 
 export const AutomaticDeliverySchema = z.object({
 	version: z.literal(1),
@@ -111,24 +138,8 @@ export const AutomaticDeliverySchema = z.object({
 	reviews: z.array(DeliveryReviewSchema).max(3),
 	attention: z.string().nullable(),
 	attentionDuringPublication: z.boolean().optional(),
-	alertRoutes: z
-		.object({
-			slack: DeliveryAlertSlackRouteSchema.optional(),
-			origin: z
-				.discriminatedUnion('kind', [
-					z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
-					z.object({ kind: z.literal('slack'), route: DeliveryAlertSlackRouteSchema }),
-				])
-				.optional(),
-		})
-		.optional(),
-	blockerAlert: z
-		.object({
-			id: z.uuid(),
-			slack: DeliveryAlertReceiptSchema,
-			origin: DeliveryAlertReceiptSchema,
-		})
-		.optional(),
+	alertRoutes: DeliveryAlertRoutesSchema.optional(),
+	blockerAlert: DeliveryBlockerAlertSchema.optional(),
 	lease: z
 		.object({
 			id: z.uuid(),

@@ -13,6 +13,7 @@ import {
 import { and, desc, eq } from 'drizzle-orm'
 
 import { saveDelivery, type DeliveryTransaction } from './automatic-delivery'
+import { readTaskReconciliation } from './implementation-reconciliation'
 
 export async function enrollProjectDelivery(tx: DeliveryTransaction, task: typeof tasks.$inferSelect, hostId: string) {
 	if (
@@ -113,6 +114,7 @@ export async function enrollProjectDelivery(tx: DeliveryTransaction, task: typeo
 		heads: [],
 		reviews: [],
 		attention: null,
+		alertRoutes: readTaskReconciliation(task).alertRoutes,
 		lease: null,
 	}
 	await saveDelivery(tx, task, delivery)

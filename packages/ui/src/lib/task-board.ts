@@ -18,7 +18,12 @@ export function boardStatusLabel(status: BoardStatus): string {
 
 export function boardDeliveryLabel(delivery: BoardDelivery) {
 	if (delivery.status === 'blocked') return 'Needs attention'
-	return delivery.status === 'queued' ? 'Describe PR queued' : 'Describe PR running'
+	if (delivery.status === 'verifying') return `Verifying PR · Due ${FULL_DATE_AND_TIME.format(delivery.deadlineAt)}`
+	if (delivery.status === 'review') return 'Independent review verified'
+	if (delivery.status === 'running') return 'Describe PR running'
+	return delivery.deadlineAt === undefined
+		? 'Describe PR queued'
+		: `Describe PR queued · Due ${FULL_DATE_AND_TIME.format(delivery.deadlineAt)}`
 }
 
 const alertStateLabels = {

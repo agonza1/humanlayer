@@ -6,6 +6,10 @@ import {
 } from '@humanlayer/schemas/effect/taskconfiguration'
 import type { WorkspaceSpec, WorkspaceState } from '@humanlayer/schemas/effect/workspace'
 import { AutomaticDeliverySchema, TaskDeliverySnapshotSchema } from '@humanlayer/schemas/zod/automatic-delivery'
+import {
+	ImplementationReconciliationSchema,
+	type ImplementationReconciliation,
+} from '@humanlayer/schemas/zod/implementation-reconciliation'
 import { WorkspaceSpecSchema, WorkspaceStateSchema } from '@humanlayer/schemas/zod/workspace'
 import { sql } from 'drizzle-orm'
 import { bigint, boolean, index, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core'
@@ -99,6 +103,7 @@ export const tasks = pgTable(
 		auto_advance_implementation_to_pr: boolean('auto_advance_implementation_to_pr').default(false).notNull(),
 		automatic_delivery:
 			jsonb('automatic_delivery').$type<import('@humanlayer/schemas/zod/automatic-delivery').AutomaticDelivery>(),
+		implementation_reconciliation: jsonb().$type<ImplementationReconciliation>(),
 		delivery_snapshot: jsonb().$type<import('@humanlayer/schemas/zod/automatic-delivery').TaskDeliverySnapshot>(),
 
 		/**
@@ -117,6 +122,7 @@ export const tasks = pgTable(
 export const taskSelectSchema = createSelectSchema(tasks, {
 	delivery_snapshot: jsonbParser(TaskDeliverySnapshotSchema.nullable()).default(null),
 	automatic_delivery: jsonbParser(AutomaticDeliverySchema.nullable()).default(null),
+	implementation_reconciliation: jsonbParser(ImplementationReconciliationSchema.nullable()).default(null),
 	setup_status: z.enum(['pending', 'in_progress', 'completed', 'failed']).nullable(),
 	ticket_provider: z.enum(['linear', 'jira', 'github']).nullable(),
 	workflow_type: z.enum(TASK_WORKFLOW_TYPES),
@@ -129,6 +135,7 @@ export const taskSelectSchema = createSelectSchema(tasks, {
 export const taskInsertSchema = createInsertSchema(tasks, {
 	delivery_snapshot: z.never().optional(),
 	automatic_delivery: z.never().optional(),
+	implementation_reconciliation: z.never().optional(),
 	workspace_state: WorkspaceStateSchema.nullish(),
 	workspace_spec: WorkspaceSpecSchema.nullish(),
 	created_with_experiment_flags: CreatedWithExperimentFlagsSchema.nullish(),
@@ -136,6 +143,7 @@ export const taskInsertSchema = createInsertSchema(tasks, {
 export const taskUpdateSchema = createUpdateSchema(tasks, {
 	delivery_snapshot: z.never().optional(),
 	automatic_delivery: z.never().optional(),
+	implementation_reconciliation: z.never().optional(),
 	workspace_state: WorkspaceStateSchema.nullish(),
 	workspace_spec: WorkspaceSpecSchema.nullish(),
 	created_with_experiment_flags: CreatedWithExperimentFlagsSchema.nullish(),

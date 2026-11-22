@@ -1,4 +1,5 @@
 import { artifacts } from '@humanlayer/db/tables/artifacts'
+import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { taskUserSettings } from '@humanlayer/db/tables/task-user-settings'
 import { tasks } from '@humanlayer/db/tables/tasks'
@@ -8,7 +9,9 @@ import { and, eq, gt, not, sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { Effect } from 'effect'
 
+import { lockDeliveryTask } from '../../../db/automatic-delivery'
 import { createSessionForLaunch } from '../../../db/create-session-for-launch'
+import { mayRecoverStockPublication } from '../../../db/implementation-reconciliation'
 import type { AppRuntime } from '../../../effects/app-runtime'
 import { OnboardingService } from '../../../effects/services/onboarding/onboarding.service'
 import { Sentry } from '../../../instrument'
@@ -156,6 +159,7 @@ export async function checkAutoAdvance(
 	sessionId: string,
 	organizationId: string,
 	effectRuntime?: AppRuntime,
+	options?: { recoverOwnerPublication?: boolean },
 ) {
 	try {
 		// Load session with task join — select both auto-advance flags.
@@ -265,6 +269,8 @@ export async function checkAutoAdvance(
 		}
 
 		for (const baseTransition of transitions) {
+			if (options?.recoverOwnerPublication && (baseTransition.label !== 'rpi:implementation' || !isOwner))
+				continue
 			const workflowTransition = maybeOverrideAutoAdvanceTransitionFromTaskWorkflowType(
 				baseTransition,
 				session.task_workflow_type,
@@ -396,18 +402,14 @@ export async function checkAutoAdvance(
 			const currentTaskId = session.task_id
 
 			const lockedSourceSession = await db.transaction(async (tx) => {
-				const [currentTask] = await tx
-					.select({
-						id: tasks.id,
-						archived: tasks.archived,
-						automatic_delivery: tasks.automatic_delivery,
-						delivery_snapshot: tasks.delivery_snapshot,
-					})
-					.from(tasks)
-					.where(and(eq(tasks.id, currentTaskId), eq(tasks.organization_id, organizationId)))
-					.limit(1)
-					.for('no key update')
-				if (!currentTask || currentTask.archived || currentTask.automatic_delivery !== null) return null
+				const currentTask = await lockDeliveryTask(tx, currentTaskId, organizationId)
+				if (
+					!currentTask ||
+					currentTask.archived ||
+					currentTask.is_draft ||
+					currentTask.automatic_delivery !== null
+				)
+					return null
 				if (transition.label === 'rpi:implementation' && currentTask.delivery_snapshot) {
 					const snapshot =
 						typeof currentTask.delivery_snapshot === 'string'
@@ -444,6 +446,62 @@ export async function checkAutoAdvance(
 					currentSession.status !== 'ready_for_input'
 				)
 					return null
+
+				if (transition.label === 'rpi:implementation') {
+					const owner = currentSession.created_by === currentTask.resource_owner_user_id
+					if (
+						options?.recoverOwnerPublication &&
+						(!owner || (suggestedDirectory && suggestedDirectory !== currentSession.working_directory))
+					)
+						return null
+					const [preference] = owner
+						? []
+						: await tx
+								.select({
+									publish: taskUserSettings.auto_advance_implementation_to_pr,
+								})
+								.from(taskUserSettings)
+								.where(
+									and(
+										eq(taskUserSettings.organization_id, organizationId),
+										eq(taskUserSettings.task_id, currentTaskId),
+										eq(taskUserSettings.user_id, currentSession.created_by),
+									),
+								)
+								.for('key share')
+					if (!(preference?.publish ?? currentTask.auto_advance_implementation_to_pr)) return null
+					const [other] = await tx
+						.select({ id: sessions.id })
+						.from(sessions)
+						.where(
+							and(
+								eq(sessions.organization_id, organizationId),
+								eq(sessions.task_id, currentTaskId),
+								eq(sessions.archived, false),
+								not(eq(sessions.id, sessionId)),
+								sql`${sessions.status} not in ('draft', 'ready_for_input', 'failed', 'interrupted')`,
+							),
+						)
+						.limit(1)
+						.for('no key update')
+					const [pending] = await tx
+						.select({ id: queuedMessages.id })
+						.from(queuedMessages)
+						.where(
+							and(
+								eq(queuedMessages.organization_id, organizationId),
+								eq(queuedMessages.task_id, currentTaskId),
+								eq(queuedMessages.status, 'pending'),
+							),
+						)
+						.limit(1)
+					if (other || pending) return null
+					if (
+						options?.recoverOwnerPublication &&
+						!(await mayRecoverStockPublication(tx, currentTask, sessionId))
+					)
+						return null
+				}
 
 				// The optimistic check above is not sufficient: another completion callback
 				// can create the next session while this callback waits for the task lock.
