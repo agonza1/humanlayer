@@ -16,6 +16,12 @@ export function boardStatusLabel(status: BoardStatus): string {
 	return status === 'not_started' ? 'Not started' : SESSION_STATUS_LABELS[status]
 }
 
+export function boardIdleBackground(status: BoardStatus | undefined, updatedAtMs: number | null | undefined, nowMs: number) {
+	return status === 'ready_for_input' && updatedAtMs != null && nowMs - updatedAtMs > DAY_MS
+		? 'rgba(150, 24, 36, 0.09)'
+		: undefined
+}
+
 export function formatBoardUpdateTime(updatedAtMs: number, nowMs: number) {
 	const updatedAt = new Date(updatedAtMs)
 	const full = FULL_DATE_AND_TIME.format(updatedAt)

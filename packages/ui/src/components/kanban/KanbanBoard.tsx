@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useMountEffect } from '../../hooks/use-mount-effect'
-import { boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
+import { boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '../context-menu'
 import { SessionLabelBadge } from '../session-label-badge'
 import { renderSessionStatusIndicator, UnreadBullet } from '../sidebar/status-indicators'
@@ -56,6 +56,7 @@ export function KanbanCard({
       style={{
         fontFamily: '"IBM Plex Mono", monospace',
         borderRadius: 0,
+        backgroundColor: boardIdleBackground(card.status, card.updatedAtMs, nowMs),
       }}
     >
       <KanbanCardContent card={card} nowMs={nowMs} />

@@ -1,5 +1,5 @@
 import { BOARD_COLUMNS, type BoardStatus, describeBoardTask } from '@humanlayer/schemas/task-board'
-import { boardStatusLabel, formatBoardUpdateTime } from '@humanlayer/ui/lib/task-board'
+import { boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '@humanlayer/ui/lib/task-board'
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
@@ -79,6 +79,7 @@ function BoardCard({ row, status, lastUpdatedAtMs, nowMs }: BoardRow & { nowMs: 
 			params={{ taskId: row.task.id }}
 			onClick={closeSidebarOnNarrow}
 			className={`board-card${unread ? ' unread' : ''}`}
+			style={{ backgroundColor: boardIdleBackground(status, lastUpdatedAtMs, nowMs) }}
 			title={row.task.name}
 		>
 			<span className="board-card-name">{row.task.name}</span>
