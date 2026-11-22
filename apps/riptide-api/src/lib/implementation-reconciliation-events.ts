@@ -2,7 +2,7 @@ import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { sessionRepositories } from '@humanlayer/db/tables/session-repositories'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
-import { and, asc, eq, exists, gt, lte, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, exists, gt, isNotNull, lte, ne, or, sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import z from 'zod/v4'
 
@@ -88,9 +88,10 @@ export async function catchUpImplementationTasks(
 ) {
 	if (event?.scope === 'task') {
 		if (!isStopped()) await reconcileImplementationTask(db, effectRuntime, event)
-		return
+		return true
 	}
 	let after: string | undefined
+	let completed = true
 	while (!isStopped()) {
 		const keys: TaskKey[] = await db
 			.select({ taskId: tasks.id, organizationId: tasks.organization_id })
@@ -106,20 +107,29 @@ export async function catchUpImplementationTasks(
 					event?.scope === 'workspace' ? eq(tasks.workspace_id, event.workspaceId) : undefined,
 					event?.scope === 'project' ? eq(tasks.project_id, event.projectId) : undefined,
 					event?.scope === 'host' ? eq(tasks.resource_owner_user_id, event.ownerId) : undefined,
-					exists(
-						db
-							.select({ id: sessions.id })
-							.from(sessions)
-							.where(
-								and(
-									eq(sessions.task_id, tasks.id),
-									eq(sessions.organization_id, tasks.organization_id),
-									eq(sessions.archived, false),
-									ne(sessions.status, 'draft'),
-									event?.scope === 'host' ? eq(sessions.host_id, event.hostId) : undefined,
+					// A persisted deadline can outlive its last session while LISTEN is disconnected.
+					// Both startup and due sweeps must reconcile those tasks and clear the stale wake.
+					event?.scope === 'deadline'
+						? undefined
+						: or(
+								!event ? isNotNull(taskWakeAt) : undefined,
+								exists(
+									db
+										.select({ id: sessions.id })
+										.from(sessions)
+										.where(
+											and(
+												eq(sessions.task_id, tasks.id),
+												eq(sessions.organization_id, tasks.organization_id),
+												eq(sessions.archived, false),
+												ne(sessions.status, 'draft'),
+												event?.scope === 'host'
+													? eq(sessions.host_id, event.hostId)
+													: undefined,
+											),
+										),
 								),
 							),
-					),
 					event?.scope === 'branch'
 						? exists(
 								db
@@ -140,12 +150,16 @@ export async function catchUpImplementationTasks(
 			.orderBy(asc(tasks.id))
 			.limit(BATCH_SIZE)
 		for (const key of keys) {
-			if (isStopped()) return
-			await reconcileImplementationTask(db, effectRuntime, key).catch(capture)
+			if (isStopped()) return completed
+			await reconcileImplementationTask(db, effectRuntime, key).catch((error) => {
+				completed = false
+				capture(error)
+			})
 		}
-		if (keys.length < BATCH_SIZE) return
+		if (keys.length < BATCH_SIZE) return completed
 		after = keys.at(-1)?.taskId
 	}
+	return completed
 }
 
 /** One scoped observer in the API process. LISTEN reconnects also replay the bounded catch-up. */
@@ -166,31 +180,53 @@ export async function startImplementationReconciliation(
 	let draining: Promise<void> | undefined
 	const events = new Map<string, ReconciliationEvent>()
 	const isStopped = () => stopped
-	const armNextDeadline = async () => {
-		if (timer) clearTimeout(timer)
-		timer = undefined
-		deadlineChanged = false
-		const [row] = await db
-			.select({ next: sql<string | null>`min(${taskWakeAt})` })
-			.from(tasks)
-			.where(and(eq(tasks.archived, false), eq(tasks.is_draft, false)))
-		if (stopped || row?.next == null) return
-		const delay = Math.max(250, Number(row.next) - Date.now())
+	let consecutiveDeadlineFailures = 0
+	let retryDeadlinesAfter = 0
+	const postponeDeadlines = () => {
+		consecutiveDeadlineFailures = Math.min(consecutiveDeadlineFailures + 1, 7)
+		retryDeadlinesAfter = Date.now() + Math.min(60_000, 1_000 * 2 ** (consecutiveDeadlineFailures - 1))
+	}
+	const setDeadlineTimer = (next: number) => {
+		if (stopped) return
+		const delay = Math.max(250, Math.max(next, retryDeadlinesAfter) - Date.now())
 		timer = setTimeout(() => {
 			deadlineDue = true
 			wake()
 		}, delay)
 	}
+	const armNextDeadline = async () => {
+		if (timer) clearTimeout(timer)
+		timer = undefined
+		deadlineChanged = false
+		try {
+			const [row] = await db
+				.select({ next: sql<string | null>`min(${taskWakeAt})` })
+				.from(tasks)
+				.where(and(eq(tasks.archived, false), eq(tasks.is_draft, false)))
+			if (row?.next != null) setDeadlineTimer(Number(row.next))
+		} catch (error) {
+			capture(error)
+			postponeDeadlines()
+			setDeadlineTimer(retryDeadlinesAfter)
+		}
+	}
 	const drain = async () => {
 		while (!stopped && (pendingCatchUp || deadlineDue || events.size)) {
 			if (deadlineDue) {
 				deadlineDue = false
-				await catchUpImplementationTasks(
+				const completed = await catchUpImplementationTasks(
 					db,
 					effectRuntime,
 					{ scope: 'deadline', cutoff: Date.now() },
 					isStopped,
-				).catch(capture)
+				).catch((error) => {
+					capture(error)
+					return false
+				})
+				if (completed) {
+					consecutiveDeadlineFailures = 0
+					retryDeadlinesAfter = 0
+				} else postponeDeadlines()
 				continue
 			}
 			const next = events.entries().next().value
@@ -202,7 +238,7 @@ export async function startImplementationReconciliation(
 				await catchUpImplementationTasks(db, effectRuntime, undefined, isStopped).catch(capture)
 			}
 		}
-		if (!stopped) await armNextDeadline().catch(capture)
+		if (!stopped) await armNextDeadline()
 	}
 	const wake = () => {
 		if (stopped || draining) return

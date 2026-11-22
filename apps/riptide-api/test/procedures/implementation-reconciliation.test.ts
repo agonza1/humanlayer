@@ -291,6 +291,23 @@ describe('Implementation reconciliation', () => {
 		}
 	})
 
+	it('clears a wake whose last session disappeared while the API observer was disconnected', async () => {
+		const { db, databaseName } = testDb
+		const f = await fixture({ status: 'running' })
+		await f.plan()
+		expect((await f.state()).wakeAt).toEqual(expect.any(Number))
+		await db.delete(sessions).where(eq(sessions.id, f.sessionId))
+		const listener = postgres(formatPostgresDatabaseUrl(getExternalTestServicesConfig(), databaseName))
+		const stop = await startImplementationReconciliation(db, runtime, listener.listen)
+		try {
+			await expect.poll(async () => (await f.state()).wakeAt).toBeUndefined()
+			expect((await f.state()).decision).toBeNull()
+		} finally {
+			await stop()
+			await listener.end()
+		}
+	})
+
 	it('catches up old and recent unenrolled cards without age-driven decisions or fake review placement', async () => {
 		const old = await fixture({ label: 'rpi:describe-pr', age: 10 * 24 * 60 * 60_000, untracked: true })
 		const recent = await fixture({ untracked: true })
