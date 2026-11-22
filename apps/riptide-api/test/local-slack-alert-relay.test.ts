@@ -83,4 +83,9 @@ describe('local Slack delivery alert relay', () => {
 		writeFileSync(providerConfig, '{"botUserId":"UOTHER"}')
 		await expect(postLocalSlackDeliveryBlocker(alert)).resolves.toEqual({ status: 'unknown' })
 	})
+
+	it('keeps a receipt for a different alert ID unconfirmed even when the sender and destination match', async () => {
+		writeFileSync(providerConfig, '{"alertId":"01942730-8d4f-7368-afa4-a59b596df529"}')
+		await expect(postLocalSlackDeliveryBlocker(alert)).resolves.toEqual({ status: 'unknown' })
+	})
 })
