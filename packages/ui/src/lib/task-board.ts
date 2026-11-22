@@ -34,11 +34,19 @@ const alertStateLabels = {
 	unknown: 'unconfirmed',
 } as const
 
+const slackRouteLabels = {
+	standing: 'standing route',
+	specific: 'task route',
+	off: 'route off',
+	unavailable: 'no route',
+} as const
+
 export function boardDeliveryAlertLabel(delivery: BoardDelivery) {
 	if (delivery.status !== 'blocked' || !delivery.alert) return null
-	const { slack, origin } = delivery.alert
-	if (slack === 'delivered' && origin === 'delivered') return null
-	return `Slack alert ${alertStateLabels[slack]} · Origin alert ${alertStateLabels[origin]}`
+	const { slack, origin, slackRoute } = delivery.alert
+	if (!slackRoute && slack === 'delivered' && origin === 'delivered') return null
+	const route = slackRoute ? ` (${slackRouteLabels[slackRoute]})` : ''
+	return `Slack alert ${alertStateLabels[slack]}${route} · Origin alert ${alertStateLabels[origin]}`
 }
 
 export function boardIdleBackground(status: BoardStatus | undefined, updatedAtMs: number | null | undefined, nowMs: number) {

@@ -1,7 +1,12 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, it } from '@effect/vitest'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
+import { projects } from '@humanlayer/db/tables/projects'
 import { sessionRepositories } from '@humanlayer/db/tables/session-repositories'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { slackIntegrations } from '@humanlayer/db/tables/slack-integrations'
@@ -21,7 +26,7 @@ import { eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { Effect, Layer } from 'effect'
 import { uuidv7 } from 'uuidv7'
-import { afterAll, beforeAll, expect } from 'vitest'
+import { afterAll, beforeAll, expect, vi } from 'vitest'
 import type { z } from 'zod/v4'
 
 import {
@@ -30,6 +35,11 @@ import {
 	completeTaskDelivery,
 	lockDeliveryTask,
 } from '../../src/db/automatic-delivery'
+import {
+	finishSlackBlockerDispatch,
+	reserveDeliveryBlockerAlerts,
+	validateSlackBlockerDispatch,
+} from '../../src/db/delivery-blocker-alerts'
 import { guardTaskDeliveryMutation } from '../../src/db/guard-delivery-mutation'
 import { SlackService } from '../../src/effects/services/slack/slack.service'
 import { configureDeliveryAlertsProcedure } from '../../src/orpc/api/tasks/delivery'
@@ -252,6 +262,84 @@ describe('Persisted automatic delivery', () => {
 		}
 		return { ...f, configure, block, heartbeat, notices, origin, slackAutomationId, sends, thread }
 	}
+
+	it('reconciles an existing managed blocker and fences a grant revoked before dispatch', async () => {
+		const f = await fixture()
+		const [project] = await db
+			.insert(projects)
+			.values({
+				name: 'Personal delivery',
+				organization_id: organizationId,
+				created_by: 'owner',
+				resource_owner_user_id: 'owner',
+				repositories: [],
+			})
+			.returning()
+		await db
+			.update(tasks)
+			.set({
+				project_id: project!.id,
+				automatic_delivery: { ...(await f.state()), phase: 'attention', attention: 'Private diagnostic' },
+			})
+			.where(eq(tasks.id, f.taskId))
+		const dir = await mkdtemp(join(tmpdir(), 'standing-managed-slack-'))
+		const grant = join(dir, 'route.json')
+		const appOrigin = 'http://127.0.0.1:5175'
+		const route = {
+			schemaVersion: 2,
+			routeId: uuidv7(),
+			organizationId,
+			ownerId: 'owner',
+			projectIds: [project!.id],
+			appOrigin,
+			teamId: 'TSTANDING',
+			channelId: 'DSTANDING',
+			botUserId: 'USTANDINGBOT',
+			recipientUserId: 'USTANDINGOWNER',
+			executable: '/bin/false',
+			script: '/unused-provider',
+			providerConfigFile: '/unused-config',
+		}
+		vi.stubEnv('APP_ORIGIN', appOrigin)
+		vi.stubEnv('HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE', grant)
+		try {
+			expect(await f.locked(reserveDeliveryBlockerAlerts)).toEqual([])
+			const before = (await f.state()).blockerAlert!
+			expect(before.slack).toEqual({ status: 'unavailable' })
+
+			await writeFile(grant, JSON.stringify(route), { mode: 0o600 })
+			const [dispatch] = await f.locked(reserveDeliveryBlockerAlerts)
+			expect(dispatch).toMatchObject({
+				taskId: f.taskId,
+				alertId: before.id,
+				relayRouteId: route.routeId,
+				standing: { projectId: project!.id, taskLabel: 'Deliver' },
+				slots: ['slack'],
+			})
+			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual(['slack'])
+
+			await rm(grant)
+			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual([])
+			await f.locked((tx) => finishSlackBlockerDispatch(tx, dispatch!, { kind: 'preflight', canceled: true }))
+			await writeFile(grant, JSON.stringify({ ...route, routeId: uuidv7() }), { mode: 0o600 })
+			const [retry] = await f.locked(reserveDeliveryBlockerAlerts)
+			expect(retry).toMatchObject({ alertId: before.id, slots: ['slack'] })
+			await f.locked((tx) =>
+				finishSlackBlockerDispatch(tx, retry!, { kind: 'provider', result: { status: 'unknown' } }),
+			)
+
+			await writeFile(grant, JSON.stringify({ ...route, routeId: uuidv7() }), { mode: 0o600 })
+			expect(await f.locked(reserveDeliveryBlockerAlerts)).toEqual([])
+			expect((await f.state()).blockerAlert).toMatchObject({
+				id: before.id,
+				slackRoute: 'standing',
+				slack: { status: 'unknown' },
+			})
+		} finally {
+			vi.unstubAllEnvs()
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
 
 	it('confirms both authorized routes independently and does not repost on heartbeat replay', async () => {
 		const f = await alertFixture()

@@ -113,6 +113,7 @@ export async function catchUpImplementationTasks(
 						? undefined
 						: or(
 								!event ? isNotNull(tasks.implementation_reconciliation) : undefined,
+								!event ? isNotNull(tasks.automatic_delivery) : undefined,
 								exists(
 									db
 										.select({ id: sessions.id })

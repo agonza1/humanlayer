@@ -1,5 +1,5 @@
 import { SESSION_STATUSES, type SessionStatus } from './effect/session/session-status'
-import { AutomaticDeliverySchema, type DeliveryAlertReceipt } from './zod/automatic-delivery'
+import { AutomaticDeliverySchema, type AutomaticDelivery, type DeliveryAlertReceipt } from './zod/automatic-delivery'
 import { decodeImplementationReconciliation, IMPLEMENTATION_BLOCKERS } from './zod/implementation-reconciliation'
 
 export const BOARD_COLUMNS = [
@@ -38,6 +38,12 @@ const IMPLEMENTATION_LABEL = { name: 'rpi:implementation', title: 'implementatio
 const REVIEW_LABEL = { name: 'rpi:review', title: 'review' }
 
 type RecordTime = bigint | number | string | null | undefined
+type BlockerAlert = NonNullable<AutomaticDelivery['blockerAlert']>
+type BoardBlockerAlert = {
+	slack: DeliveryAlertReceipt['status']
+	origin: DeliveryAlertReceipt['status']
+	slackRoute?: BlockerAlert['slackRoute']
+}
 
 export type BoardDelivery =
 	| { status: 'queued' | 'running'; sessionId: string; deadlineAt?: number }
@@ -48,7 +54,7 @@ export type BoardDelivery =
 			reason: string
 			publication?: boolean
 			stage?: 'implementation' | 'in-review'
-			alert?: { slack: DeliveryAlertReceipt['status']; origin: DeliveryAlertReceipt['status'] }
+			alert?: BoardBlockerAlert
 	  }
 
 export interface BoardTaskInput {
@@ -170,6 +176,13 @@ export function getBoardColumn(sessions: readonly BoardSessionInput[]): BoardCol
 	return assignStage(sessions.filter((session) => !session.archived)).columnId
 }
 
+function describeBlockerAlert(receipts: BlockerAlert | undefined): BoardBlockerAlert | undefined {
+	if (!receipts) return undefined
+	const alert: BoardBlockerAlert = { slack: receipts.slack.status, origin: receipts.origin.status }
+	if (receipts.slackRoute) alert.slackRoute = receipts.slackRoute
+	return alert
+}
+
 function describeDelivery(
 	task: BoardTaskInput,
 	sessions: readonly BoardSessionInput[],
@@ -184,8 +197,7 @@ function describeDelivery(
 		}
 	}
 	const delivery = AutomaticDeliverySchema.safeParse(rawDelivery).data
-	const receipts = delivery?.blockerAlert
-	const alert = receipts ? { slack: receipts.slack.status, origin: receipts.origin.status } : undefined
+	const alert = describeBlockerAlert(delivery?.blockerAlert)
 	if (delivery?.phase === 'attention' && delivery.attention) {
 		return {
 			status: 'blocked',
@@ -275,7 +287,6 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 	const stockDelivery = describeDelivery(task, activeSessions, latest)
 	const reconciliation = decodeImplementationReconciliation(task.implementation_reconciliation)
 	const decision = reconciliation?.decision
-	const receipts = reconciliation?.blockerAlert
 	let delivery: BoardDelivery | null = stockDelivery
 	const pendingBlocker =
 		status === 'needs_approval' ||
@@ -291,7 +302,7 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 			status: 'blocked',
 			reason: IMPLEMENTATION_BLOCKERS[decision.reason],
 			stage: decision.stage,
-			alert: receipts ? { slack: receipts.slack.status, origin: receipts.origin.status } : undefined,
+			alert: describeBlockerAlert(reconciliation?.blockerAlert),
 		}
 	} else if (
 		decision?.status === 'waiting-publication' &&

@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizations } from '@humanlayer/db/tables/organizations'
@@ -17,7 +21,7 @@ import { call } from '@orpc/server'
 import { eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { uuidv7 } from 'uuidv7'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { lockDeliveryTask, type DeliveryTransaction } from '../../src/db/automatic-delivery'
 import {
@@ -96,6 +100,7 @@ describe('Implementation reconciliation', () => {
 			autoPublish?: boolean
 			draft?: boolean
 			archived?: boolean
+			projectId?: string
 		} = {},
 	) {
 		const { db } = testDb
@@ -119,7 +124,7 @@ describe('Implementation reconciliation', () => {
 			organization_id: organizationId,
 			created_by: ownerId,
 			resource_owner_user_id: ownerId,
-			project_id: projectId,
+			project_id: options.projectId ?? projectId,
 			created_at: updated,
 			updated_at: updated,
 			is_draft: options.draft,
@@ -367,6 +372,156 @@ describe('Implementation reconciliation', () => {
 			.from(conversationEvents)
 			.where(eq(conversationEvents.session_id, f.sessionId))
 		expect(messages.filter((event) => event.content?.includes('delivery_blocker'))).toHaveLength(2)
+	})
+
+	it('catches up legacy blockers through a standing private Slack route without replaying receipts', async () => {
+		const { db } = testDb
+		const standingProjectId = uuidv7()
+		const routeId = uuidv7()
+		const appOrigin = 'http://127.0.0.1:51969'
+		await db.insert(projects).values({
+			id: standingProjectId,
+			name: 'Standing route fixture',
+			organization_id: organizationId,
+			created_by: ownerId,
+			resource_owner_user_id: ownerId,
+			repositories: [],
+		})
+		const eligible = { projectId: standingProjectId, off: true, untracked: true }
+		const legacy = await fixture(eligible)
+		const optedOut = await fixture(eligible)
+		const muted = await fixture(eligible)
+		const archived = await fixture({ ...eligible, archived: true })
+		const excluded = await fixture({ off: true, untracked: true })
+		await db.update(tasks).set({ slack_notifications_muted: true }).where(eq(tasks.id, muted.taskId))
+		const opts = {
+			context: createMockApiContext({
+				auth: createMockApiAuth({ organizationId, userId: ownerId }),
+				services: { db, dbReadReplica: db, effectRuntime: runtime },
+			}),
+		}
+		const directory = mkdtempSync(join(tmpdir(), 'standing-slack-catch-up-'))
+		const grant = join(directory, 'local-grant.json')
+		const script = join(directory, 'fake-provider.mjs')
+		const requests = join(directory, 'requests.jsonl')
+		try {
+			vi.stubEnv('APP_ORIGIN', appOrigin)
+			vi.stubEnv('HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE', grant)
+			await call(
+				configureDeliveryAlertsProcedure,
+				{ taskId: legacy.taskId, routes: { origin: { kind: 'session', sessionId: legacy.sessionId } } },
+				opts,
+			)
+			await call(
+				configureDeliveryAlertsProcedure,
+				{ taskId: legacy.taskId, routes: { slackMode: 'inherit' } },
+				opts,
+			)
+			await call(
+				configureDeliveryAlertsProcedure,
+				{ taskId: optedOut.taskId, routes: { slackMode: 'off' } },
+				opts,
+			)
+			await catchUpImplementationTasks(db, runtime)
+			const first = (await legacy.state()).blockerAlert
+			expect(first).toMatchObject({
+				id: expect.any(String),
+				slack: { status: 'unavailable' },
+				origin: { status: 'delivered', receipt: expect.any(String) },
+			})
+			expect(existsSync(requests)).toBe(false)
+
+			writeFileSync(
+				script,
+				[
+					"import { appendFileSync, readFileSync } from 'node:fs';",
+					"const message = JSON.parse(readFileSync(0, 'utf8'));",
+					"appendFileSync(process.argv[2], JSON.stringify(message) + '\\n');",
+					'const { schemaVersion, routeId, projectId, taskId, alertId, teamId, channelId, botUserId } = message;',
+					"console.log(JSON.stringify({ status: 'delivered', schemaVersion, routeId, projectId, taskId, alertId, teamId, channelId, botUserId, messageTs: '1710000000.000001' }));",
+				].join('\n'),
+			)
+			writeFileSync(
+				grant,
+				JSON.stringify({
+					schemaVersion: 2,
+					routeId,
+					organizationId,
+					ownerId,
+					projectIds: [standingProjectId],
+					appOrigin,
+					teamId: 'TFIXTURE',
+					channelId: 'DFIXTURE',
+					botUserId: 'UBOT',
+					recipientUserId: 'URECIPIENT',
+					executable: process.execPath,
+					script,
+					providerConfigFile: requests,
+				}),
+				{ mode: 0o600 },
+			)
+			const ordinary = await fixture(eligible)
+			await catchUpImplementationTasks(db, runtime)
+			const settled = (await legacy.state()).blockerAlert
+			expect(settled).toMatchObject({
+				id: first?.id,
+				slackRoute: 'standing',
+				slack: { status: 'delivered', receipt: 'TFIXTURE/DFIXTURE/1710000000.000001' },
+				origin: first?.origin,
+			})
+			expect(await legacy.board()).toMatchObject({
+				delivery: {
+					status: 'blocked',
+					alert: { slack: 'delivered', origin: 'delivered', slackRoute: 'standing' },
+				},
+			})
+			expect((await ordinary.state()).blockerAlert).toMatchObject({
+				slackRoute: 'standing',
+				slack: { status: 'delivered' },
+				origin: { status: 'unavailable' },
+			})
+			for (const task of [legacy, ordinary])
+				expect(await task.read()).toMatchObject({
+					automatic_delivery: null,
+					delivery_snapshot: { mode: 'off' },
+				})
+			for (const task of [optedOut, muted])
+				expect((await task.state()).blockerAlert).toMatchObject({
+					slackRoute: 'off',
+					slack: { status: 'unavailable' },
+				})
+			expect((await excluded.state()).blockerAlert).toMatchObject({
+				slackRoute: 'unavailable',
+				slack: { status: 'unavailable' },
+			})
+			expect((await archived.read()).implementation_reconciliation).toBeNull()
+			await catchUpImplementationTasks(db, runtime)
+			expect((await legacy.state()).blockerAlert).toEqual(settled)
+			const posts = readFileSync(requests, 'utf8')
+				.trim()
+				.split('\n')
+				.map((line) => JSON.parse(line))
+			expect(posts).toMatchObject([
+				{
+					schemaVersion: 2,
+					routeId,
+					projectId: standingProjectId,
+					taskId: legacy.taskId,
+					alertId: first?.id,
+					taskLabel: 'Existing task',
+					blocker: 'workspace-required',
+				},
+				{ taskId: ordinary.taskId, alertId: (await ordinary.state()).blockerAlert?.id },
+			])
+			const events = await db
+				.select()
+				.from(conversationEvents)
+				.where(eq(conversationEvents.session_id, legacy.sessionId))
+			expect(events.filter((event) => event.content?.includes('delivery_blocker'))).toHaveLength(1)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(directory, { recursive: true, force: true })
+		}
 	})
 
 	it('serializes a non-mutating inspection, allows one expiry retry, and fences late responses and changed scope', async () => {
