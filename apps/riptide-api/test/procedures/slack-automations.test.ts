@@ -74,6 +74,7 @@ describe('Slack automation procedures', () => {
 						{ id: 'C_PUBLIC', name: 'general', isPrivate: false },
 						{ id: 'G_PRIVATE', name: 'eng-private', isPrivate: true },
 					]),
+				sendDeliveryBlocker: () => Effect.succeed({ status: 'unavailable' as const }),
 				dispatchArtifactEvent: () => Effect.void,
 				dispatchCommentEvent: () => Effect.void,
 				verifyInteractionRequest: () => Effect.die('verifyInteractionRequest not used'),

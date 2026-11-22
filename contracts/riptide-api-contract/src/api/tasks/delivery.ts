@@ -1,5 +1,6 @@
 import {
 	AutomaticDeliverySchema,
+	DeliveryAlertRoutesInputSchema,
 	DeliveryReviewSchema,
 	DeliveryTargetSchema,
 } from '@humanlayer/schemas/zod/automatic-delivery'
@@ -38,3 +39,8 @@ export const reportDeliveryReviewContract = contractBuilder
 export const getDeliveryContract = contractBuilder
 	.input(z.object({ taskId: z.uuidv7() }))
 	.output(z.object({ delivery: AutomaticDeliverySchema.nullable() }))
+
+export const configureDeliveryAlertsContract = contractBuilder
+	.errors({ CONFLICT: { status: 409 } })
+	.input(z.object({ taskId: z.uuidv7(), routes: DeliveryAlertRoutesInputSchema }))
+	.output(z.object({ delivery: AutomaticDeliverySchema }))

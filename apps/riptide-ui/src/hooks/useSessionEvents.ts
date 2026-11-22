@@ -10,6 +10,7 @@ import type { RunningSubAgent } from '@/components/InterruptConfirmDialog'
 import { useExpansionStore } from '@/hooks/stores/expansionStore'
 import { useAgentGrouping } from '@/hooks/useAgentGrouping'
 import type { OrgMember } from '@/hooks/useOrgMembers'
+import { deliveryBlockerNotice } from '@/lib/delivery-blocker-notice'
 import { getSenderPresentation, hasMultipleResolvedSenders } from '@/lib/sender-presentation'
 import { getCurrentTurnEventIds } from '@/utils/current-turn'
 import { getNextStepButtonLabel } from '@/utils/next-step-labels'
@@ -116,6 +117,7 @@ export function useSessionEvents({
 			.filter(
 				(e) =>
 					e.event_type !== 'system' ||
+					deliveryBlockerNotice(e.event_type, e.content) !== null ||
 					parseContextCompaction({ eventType: 'system', content: e.content ?? undefined }) !== null,
 			)
 			.sort((a, b) => {

@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useMountEffect } from '../../hooks/use-mount-effect'
-import { boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
+import { boardDeliveryAlertLabel, boardDeliveryLabel, boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '../context-menu'
 import { SessionLabelBadge } from '../session-label-badge'
 import { renderSessionStatusIndicator, UnreadBullet } from '../sidebar/status-indicators'
@@ -178,7 +178,7 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
         <span className="flex items-center gap-1.5">
           <span aria-hidden="true">{renderSessionStatusIndicator(status)}</span>
-          {boardStatusLabel(status)}
+          {card.delivery ? boardDeliveryLabel(card.delivery) : boardStatusLabel(status)}
         </span>
         {updated && (
           <time className="text-[var(--terminal-fg-dim)]" dateTime={updated.dateTime} title={updated.full}>
@@ -186,6 +186,9 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
           </time>
         )}
       </div>
+      {card.delivery?.status === 'blocked' && (
+        <p className="break-words text-xs">{card.delivery.reason}<br />{boardDeliveryAlertLabel(card.delivery)}</p>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import type { BoardStatus } from '@humanlayer/schemas/task-board'
+import type { BoardStatus, BoardDelivery } from '@humanlayer/schemas/task-board'
 import type { ReactNode } from 'react'
 import type { SessionLabel } from '../session-label-badge'
 
@@ -24,6 +24,7 @@ export interface KanbanCard {
   isDraft?: boolean
   workflowLabel: SessionLabel
   status?: BoardStatus
+  delivery?: BoardDelivery | null
   /** True when any of the task's sessions is unread — same calculation as the left-nav sidebar. */
   isUnread?: boolean
   commentCount?: number

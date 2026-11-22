@@ -1,5 +1,7 @@
+import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import { ArtifactFullscreenModal } from '@humanlayer/ui/components/artifact-fullscreen-modal'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@humanlayer/ui/components/resizable'
+import { boardDeliveryAlertLabel, boardDeliveryLabel } from '@humanlayer/ui/lib/task-board'
 import { useNavigate } from '@tanstack/react-router'
 
 import { AppBreadcrumb } from '@/components/AppBreadcrumb'
@@ -120,6 +122,16 @@ export function DesktopTaskDetailPage({
 	if (!task && (data.isTaskLoading || !data.isTaskReady)) return <TaskDetailLoading />
 	if (!task) return <TaskDetailNotFound />
 
+	const delivery = describeBoardTask(
+		task,
+		data.sessions.map((session) => ({
+			id: session.id,
+			archived: session.archived ?? false,
+			labels: session.labels ?? null,
+			status: session.status,
+			last_activity_at: session.lastActivityAt ? Date.parse(session.lastActivityAt) : null,
+		})),
+	).delivery
 	const loadedTaskDetail: LoadedTaskDetailPageState = { ...taskDetail, task }
 	const canShowTerminalPanel = isDesktop() && canEditTask && !!resolvedWorkingDirectory
 
@@ -171,6 +183,16 @@ export function DesktopTaskDetailPage({
 							/>
 						)}
 						<div className="flex flex-col h-full min-w-0 min-h-0">
+							{delivery && (
+								<div className="p-2 text-sm" role="status">
+									<strong>{boardDeliveryLabel(delivery)}</strong>
+									{delivery.status === 'blocked' && (
+										<p>
+											{delivery.reason} {boardDeliveryAlertLabel(delivery)}
+										</p>
+									)}
+								</div>
+							)}
 							<ResizablePanelGroup
 								orientation="horizontal"
 								disabled={diffFullscreenOpen}

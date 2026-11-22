@@ -1,4 +1,5 @@
-import { Clock, Context, Effect, Layer, Redacted } from 'effect'
+import type { DeliveryAlertReceipt } from '@humanlayer/schemas/zod/automatic-delivery'
+import { Clock, Context, Effect, Layer, Option, Redacted } from 'effect'
 import * as Config from 'effect/Config'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 
@@ -133,6 +134,52 @@ const SlackServiceImplementationLive = Layer.effect(
 				)
 				yield* Effect.annotateCurrentSpan({ channel_count: channels.length })
 				return channels
+			}),
+			sendDeliveryBlocker: Effect.fn('slack.send_delivery_blocker')(function* ({
+				organizationId,
+				taskId,
+				teamId,
+				channelId,
+				threadTs,
+			}) {
+				const connection = yield* requireSlackConnection(organizationId).pipe(Effect.option)
+				if (Option.isNone(connection) || connection.value.slack_team_id !== teamId) {
+					return { status: 'unavailable' } as const
+				}
+				const taskUrl = new URL(`/tasks/${taskId}`, appOrigin).toString()
+				const text = `HumanLayer delivery needs attention. <${taskUrl}|Open the task> for the blocker and next action.`
+				return yield* slack
+					.postMessage({
+						botToken: Redacted.make(connection.value.bot_access_token),
+						channelId,
+						threadTs,
+						text,
+						blocks: [
+							{
+								type: 'section',
+								text: {
+									type: 'mrkdwn',
+									text,
+								},
+							},
+						],
+					})
+					.pipe(
+						Effect.map(
+							({ channel, ts, threadTs: confirmedThread }): DeliveryAlertReceipt =>
+								channel === channelId && confirmedThread === threadTs && /^\d+\.\d+$/.test(ts)
+									? { status: 'delivered', receipt: `${teamId}/${channelId}/${ts}` }
+									: { status: 'unknown' },
+						),
+						Effect.catchTags({
+							SlackTokenRevokedError: () => Effect.succeed({ status: 'unavailable' } as const),
+							SlackMissingScopeError: () => Effect.succeed({ status: 'unavailable' } as const),
+							SlackNotInChannelError: () => Effect.succeed({ status: 'unavailable' } as const),
+							SlackChannelNotFoundError: () => Effect.succeed({ status: 'unavailable' } as const),
+							SlackRateLimitError: () => Effect.succeed({ status: 'failed' } as const),
+						}),
+						Effect.catch(() => Effect.succeed({ status: 'unknown' } as const)),
+					)
 			}),
 			dispatchArtifactEvent: Effect.fn('slack.dispatch_artifact_event')(function* (event) {
 				yield* Effect.annotateCurrentSpan({

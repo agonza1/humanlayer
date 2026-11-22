@@ -1,3 +1,4 @@
+import { deliveryBlockerNotice } from '@/lib/delivery-blocker-notice'
 import { toMs } from '@/minimalist/lib/format'
 import { isSyntheticSkillPromptMessage } from '@/utils/sidebar-transforms'
 
@@ -55,6 +56,7 @@ export type Turn =
 			endedAt: number
 	  }
 	| { kind: 'compaction'; id: string; at: number }
+	| { kind: 'delivery_blocker'; id: string; at: number; text: string }
 
 export function parseInput(value: unknown): Record<string, unknown> {
 	if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
@@ -177,6 +179,12 @@ export function buildTurns(rows: readonly EventRow[]): Turn[] {
 		if (isCompaction(row)) {
 			closeAgentTurn()
 			turns.push({ kind: 'compaction', id: row.id, at: toMs(row.created_at) })
+			continue
+		}
+		const blocker = deliveryBlockerNotice(row.event_type, row.content)
+		if (blocker) {
+			closeAgentTurn()
+			turns.push({ kind: 'delivery_blocker', id: row.id, at: toMs(row.created_at), text: blocker })
 			continue
 		}
 		if (row.event_type === 'system') continue

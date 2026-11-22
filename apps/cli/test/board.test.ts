@@ -60,3 +60,30 @@ test('reads the full project board and exports active session status and timesta
 		},
 	])
 })
+
+test.each([
+	['ready_for_launch', 'queued'],
+	['running', 'running'],
+	['failed', 'blocked'],
+])('shows a stock Describe PR session with %s status as %s on the same card', async (status, expected) => {
+	const tasks = vi.fn().mockResolvedValue({
+		rows: [{ id: 'task', name: 'Publish', project_id: null, is_draft: false }],
+	})
+	const sessions = vi.fn().mockResolvedValue({
+		rows: [
+			{
+				id: 'describe-pr',
+				task_id: 'task',
+				archived: false,
+				labels: [{ name: 'rpi:describe-pr', title: 'describe-pr' }],
+				status,
+				last_activity_at: '1754078400000',
+			},
+		],
+	})
+
+	const board = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000')
+	expect(board.columns.find((column) => column.id === 'implementation')?.cards).toMatchObject([
+		{ id: 'task', delivery: { status: expected } },
+	])
+})

@@ -10,6 +10,7 @@ import { useFocusStore } from '@/hooks/stores/focusStore'
 import { useArtifactSharingDialog } from '@/hooks/useArtifactSharingDialog'
 import { useOrgMembers } from '@/hooks/useOrgMembers'
 import { getCreatedFilePaths, isShareableConversationArtifact } from '@/lib/current-artifact-resolver'
+import { deliveryBlockerNotice } from '@/lib/delivery-blocker-notice'
 import { getSenderPresentation } from '@/lib/sender-presentation'
 import { bigintToNumber } from '@/utils/session-transforms'
 
@@ -208,6 +209,9 @@ export const WiredConversationEventRow = memo(
 		const shouldIgnoreMouseEvent = useCallback(() => useFocusStore.getState().focusSource !== 'mouse', [])
 
 		if (!event) return null
+
+		const blocker = deliveryBlockerNotice(event.eventType, event.content)
+		if (blocker) return <p className="whitespace-pre-wrap p-2 text-sm">Delivery needs attention. {blocker}</p>
 
 		const compaction = parseContextCompaction(event)
 		if (compaction) {

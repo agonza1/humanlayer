@@ -9,6 +9,7 @@ import { ChevronDown } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { type FC, useMemo, useState } from 'react'
 
+import { deliveryBlockerNotice } from '@/lib/delivery-blocker-notice'
 import { cn } from '@/lib/utils'
 import { MobileBreadcrumb, type MobileBreadcrumbDetail } from '@/mobile/components/pure/MobileBreadcrumb'
 import { MobileMessageRow } from '@/mobile/components/pure/MobileMessageRow'
@@ -318,6 +319,13 @@ const MobileSessionStream: FC<MobileSessionStreamProps> = ({
 							)
 						}
 						const event = item.event
+						const blocker = deliveryBlockerNotice(event.eventType, event.content)
+						if (blocker)
+							return (
+								<p key={event.id} className="whitespace-pre-wrap p-2 text-sm">
+									Delivery needs attention. {blocker}
+								</p>
+							)
 						return (
 							<MobileMessageRow
 								key={event.id}

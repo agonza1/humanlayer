@@ -1,4 +1,5 @@
 import { SESSION_STATUSES, type SessionStatus } from './effect/session/session-status'
+import { AutomaticDeliverySchema, type DeliveryAlertReceipt } from './zod/automatic-delivery'
 
 export const BOARD_COLUMNS = [
 	{ id: 'todo', title: 'To do', description: 'Tasks waiting to start' },
@@ -37,7 +38,17 @@ const REVIEW_LABEL = { name: 'rpi:review', title: 'review' }
 
 type RecordTime = bigint | number | string | null | undefined
 
+export type BoardDelivery =
+	| { status: 'queued' | 'running'; sessionId: string }
+	| {
+			status: 'blocked'
+			reason: string
+			publication?: boolean
+			alert?: { slack: DeliveryAlertReceipt['status']; origin: DeliveryAlertReceipt['status'] }
+	  }
+
 export interface BoardTaskInput {
+	automatic_delivery?: unknown
 	is_draft?: boolean | null
 	created_at?: RecordTime
 	updated_at?: RecordTime
@@ -154,6 +165,83 @@ export function getBoardColumn(sessions: readonly BoardSessionInput[]): BoardCol
 	return assignStage(sessions.filter((session) => !session.archived)).columnId
 }
 
+function describeDelivery(
+	task: BoardTaskInput,
+	sessions: readonly BoardSessionInput[],
+	latest?: BoardSessionInput,
+): BoardDelivery | null {
+	let rawDelivery = task.automatic_delivery
+	if (typeof rawDelivery === 'string') {
+		try {
+			rawDelivery = JSON.parse(rawDelivery)
+		} catch {
+			rawDelivery = null
+		}
+	}
+	const delivery = AutomaticDeliverySchema.safeParse(rawDelivery).data
+	const receipts = delivery?.blockerAlert
+	const alert = receipts ? { slack: receipts.slack.status, origin: receipts.origin.status } : undefined
+	if (delivery?.phase === 'attention' && delivery.attention) {
+		return {
+			status: 'blocked',
+			reason: delivery.attention,
+			publication: delivery.attentionDuringPublication,
+			alert,
+		}
+	}
+
+	// Automatic delivery pins the current successor. Older stock auto-advance
+	// sessions carry the Describe PR label on the original task.
+	const handoff =
+		delivery?.phase === 'pr'
+			? sessions.find((session) => session.id === delivery.managedSessionId)
+			: delivery == null && latest?.labels?.some((label) => label.name === 'rpi:describe-pr')
+				? latest
+				: undefined
+	if (!handoff?.id) {
+		return delivery?.phase === 'pr'
+			? {
+					status: 'blocked',
+					publication: true,
+					reason: 'Describe PR session is missing. Check the task before resuming.',
+				}
+			: null
+	}
+	switch (handoff.status) {
+		case 'ready_for_launch':
+		case 'waiting_for_workspace':
+			return { status: 'queued', sessionId: handoff.id }
+		case 'launching':
+		case 'resuming':
+		case 'running':
+			return { status: 'running', sessionId: handoff.id }
+		case 'needs_approval':
+			return {
+				status: 'blocked',
+				publication: true,
+				reason: 'Describe PR needs approval. Open the session to review the request.',
+				alert,
+			}
+		case 'waiting_for_usage_limit':
+			return {
+				status: 'blocked',
+				publication: true,
+				reason: 'Describe PR reached its usage limit. Check the session before resuming.',
+				alert,
+			}
+		case 'failed':
+		case 'lost':
+		case 'interrupted':
+			return {
+				status: 'blocked',
+				publication: true,
+				reason: 'Describe PR stopped before delivery was verified. Check the session before resuming.',
+			}
+		default:
+			return null
+	}
+}
+
 /** Shared by both board views and the CLI. The phase and current session state are independent. */
 export function describeBoardTask(task: BoardTaskInput, sessions: readonly BoardSessionInput[]) {
 	const activeSessions = sessions.filter((session) => !session.archived)
@@ -178,5 +266,8 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 		}
 	}
 
-	return { ...assignStage(activeSessions, latest), status, lastUpdatedAtMs: updatedAt > 0 ? updatedAt : null }
+	const stage = assignStage(activeSessions, latest)
+	const delivery = describeDelivery(task, activeSessions, latest)
+	if (delivery && (delivery.status !== 'blocked' || delivery.publication)) stage.columnId = 'implementation'
+	return { ...stage, status, lastUpdatedAtMs: updatedAt > 0 ? updatedAt : null, delivery }
 }

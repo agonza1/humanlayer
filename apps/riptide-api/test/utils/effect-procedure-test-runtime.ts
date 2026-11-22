@@ -187,6 +187,7 @@ export const fakeSlackLayer = Layer.succeed(SlackService, {
 	getStatus: () => Effect.die('getStatus not implemented in test runtime'),
 	disconnect: () => Effect.die('disconnect not implemented in test runtime'),
 	listChannels: () => Effect.die('listChannels not implemented in test runtime'),
+	sendDeliveryBlocker: () => Effect.succeed({ status: 'unavailable' as const }),
 	dispatchArtifactEvent: () => Effect.void,
 	dispatchCommentEvent: () => Effect.void,
 	verifyInteractionRequest: () => Effect.die('verifyInteractionRequest not implemented in test runtime'),

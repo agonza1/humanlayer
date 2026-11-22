@@ -1,5 +1,6 @@
 import type { slackNotificationAutomations } from '@humanlayer/db/tables/slack-notification-automations'
 import type { tasks } from '@humanlayer/db/tables/tasks'
+import type { DeliveryAlertReceipt } from '@humanlayer/schemas/zod/automatic-delivery'
 import type { Duration, Effect, Redacted } from 'effect'
 import * as Schema from 'effect/Schema'
 import * as SchemaTransformation from 'effect/SchemaTransformation'
@@ -36,12 +37,13 @@ export type SlackClientConfig = {
 export type SlackPostMessageInput = {
 	botToken: Redacted.Redacted<string>
 	channelId: string
+	text?: string
 	blocks: SlackBlock[]
 	threadTs?: string
 	broadcast?: boolean
 }
 
-export type SlackPostMessageResult = { ts: string }
+export type SlackPostMessageResult = { ts: string; channel?: string; threadTs?: string }
 
 export type SlackPostMessage = (
 	input: SlackPostMessageInput,
@@ -340,6 +342,13 @@ export type SlackServiceShape = {
 		SlackNotConnectedError | SlackNeedsReauthError | SlackIntegrationUnavailableError,
 		PostgresDb
 	>
+	sendDeliveryBlocker: (input: {
+		organizationId: string
+		taskId: string
+		teamId: string
+		channelId: string
+		threadTs?: string
+	}) => Effect.Effect<DeliveryAlertReceipt, never, PostgresDb>
 	dispatchArtifactEvent: (event: SlackArtifactEvent) => Effect.Effect<void, never, PostgresDb | WorkosService>
 	dispatchCommentEvent: (event: SlackCommentEvent) => Effect.Effect<void, never, PostgresDb | WorkosService>
 	/**

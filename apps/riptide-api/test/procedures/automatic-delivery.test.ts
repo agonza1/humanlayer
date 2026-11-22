@@ -1,16 +1,28 @@
 import { describe, it } from '@effect/vitest'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
+import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { sessionRepositories } from '@humanlayer/db/tables/session-repositories'
 import { sessions } from '@humanlayer/db/tables/sessions'
+import { slackIntegrations } from '@humanlayer/db/tables/slack-integrations'
+import { slackNotificationAutomations } from '@humanlayer/db/tables/slack-notification-automations'
+import { slackNotificationThreads } from '@humanlayer/db/tables/slack-notification-threads'
 import { tasks } from '@humanlayer/db/tables/tasks'
-import { decodeDelivery, type AutomaticDelivery, type DeliveryReview } from '@humanlayer/schemas/zod/automatic-delivery'
+import { describeBoardTask } from '@humanlayer/schemas/task-board'
+import {
+	decodeDelivery,
+	type DeliveryAlertReceipt,
+	type DeliveryAlertRoutesInputSchema,
+	type AutomaticDelivery,
+	type DeliveryReview,
+} from '@humanlayer/schemas/zod/automatic-delivery'
 import { call } from '@orpc/server'
 import { eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
-import { Effect } from 'effect'
+import { Effect, Layer } from 'effect'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, expect } from 'vitest'
+import type { z } from 'zod/v4'
 
 import {
 	acceptDeliveryReview,
@@ -19,9 +31,12 @@ import {
 	lockDeliveryTask,
 } from '../../src/db/automatic-delivery'
 import { guardTaskDeliveryMutation } from '../../src/db/guard-delivery-mutation'
+import { SlackService } from '../../src/effects/services/slack/slack.service'
+import { configureDeliveryAlertsProcedure } from '../../src/orpc/api/tasks/delivery'
 import { upsertArtifactProcedure } from '../../src/orpc/daemon/artifacts/upsert'
 import { claimDeliveryProcedure } from '../../src/orpc/daemon/delivery'
-import { createMockDaemonAuth, createMockDaemonContext } from '../mocks'
+import { createMockApiAuth, createMockApiContext, createMockDaemonAuth, createMockDaemonContext } from '../mocks'
+import { createRuntimeWithTestPostgresLayer, fakeSlackLayer } from '../utils/effect-procedure-test-runtime'
 import { requireExternalTestServices } from '../utils/external-test-services'
 import { createTestDb } from '../utils/test-db'
 
@@ -148,6 +163,289 @@ describe('Persisted automatic delivery', () => {
 		}
 		return { taskId, source: source!, locked, claim, state, idle, complete, reachReview, review }
 	}
+
+	const confirmed = { status: 'delivered', receipt: 'T_TEST/C_TEST/1710000000.000002' } as const
+
+	async function alertFixture(send: () => Promise<DeliveryAlertReceipt> = async () => confirmed) {
+		const hostId = uuidv7()
+		const f = await fixture('pr-only', hostId)
+		await db
+			.insert(organizationSettings)
+			.values({
+				organization_id: organizationId,
+				slack_integration_enabled: true,
+			})
+			.onConflictDoUpdate({
+				target: organizationSettings.organization_id,
+				set: { slack_integration_enabled: true },
+			})
+		await db
+			.insert(slackIntegrations)
+			.values({
+				organization_id: organizationId,
+				slack_team_id: 'T_TEST',
+				bot_access_token: 'test-only',
+				bot_user_id: 'B_TEST',
+				scopes: 'chat:write',
+				connected_by_user_id: 'owner',
+			})
+			.onConflictDoNothing()
+		const [automation] = await db
+			.insert(slackNotificationAutomations)
+			.values({
+				name: 'Test blocker routing',
+				organization_id: organizationId,
+				channel_id: 'C_TEST',
+				event_types: ['comment'],
+				created_by_user_id: 'owner',
+			})
+			.returning()
+		const sends: Array<{ channelId: string; threadTs?: string }> = []
+		const slack = Layer.effect(
+			SlackService,
+			Effect.gen(function* () {
+				const service = yield* SlackService
+				return {
+					...service,
+					sendDeliveryBlocker: (input: Parameters<typeof service.sendDeliveryBlocker>[0]) =>
+						Effect.promise(() => {
+							sends.push(input)
+							return send()
+						}),
+				}
+			}),
+		).pipe(Layer.provide(fakeSlackLayer))
+		const runtime = createRuntimeWithTestPostgresLayer(db, { slack })
+		const context = createMockDaemonContext({
+			auth: createMockDaemonAuth({ organizationId, userId: 'owner', hostId }),
+			services: { db, dbReadReplica: db, effectRuntime: runtime },
+		})
+		const configure = (routes: z.infer<typeof DeliveryAlertRoutesInputSchema>, userId = 'owner') =>
+			call(
+				configureDeliveryAlertsProcedure,
+				{ taskId: f.taskId, routes },
+				{
+					context: createMockApiContext({
+						auth: createMockApiAuth({ organizationId, userId }),
+						services: { db, dbReadReplica: db },
+					}),
+				},
+			)
+		const origin = { kind: 'session' as const, sessionId: f.source.id }
+		const slackAutomationId = automation!.id
+		const heartbeat = () => call(claimDeliveryProcedure, {}, { context })
+		const block = () => db.update(sessions).set({ status: 'failed' }).where(eq(sessions.id, f.source.id))
+		const notices = async () =>
+			(await db.select().from(conversationEvents).where(eq(conversationEvents.session_id, f.source.id))).filter(
+				(event) => event.event_type === 'system' && event.content?.includes('delivery_blocker'),
+			)
+		const thread = async () => {
+			await db.insert(slackNotificationThreads).values({
+				automation_id: slackAutomationId,
+				task_id: f.taskId,
+				organization_id: organizationId,
+				channel_id: 'C_TEST',
+				root_thread_ts: '1710000000.000001',
+				status: 'ready',
+			})
+			return { kind: 'slack' as const, automationId: slackAutomationId }
+		}
+		return { ...f, configure, block, heartbeat, notices, origin, slackAutomationId, sends, thread }
+	}
+
+	it('confirms both authorized routes independently and does not repost on heartbeat replay', async () => {
+		const f = await alertFixture()
+		await expect(
+			f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin }, 'non-owner'),
+		).rejects.toMatchObject({ code: 'FORBIDDEN' })
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await f.block()
+		await f.heartbeat()
+		await f.heartbeat()
+		const [notice] = await f.notices()
+		expect(await f.notices()).toHaveLength(1)
+		expect((await f.state()).blockerAlert).toMatchObject({
+			slack: confirmed,
+			origin: { status: 'delivered', receipt: notice!.id },
+		})
+		expect(f.sends).toHaveLength(1)
+	})
+
+	it('confirms Slack and retains the unavailable external origin gap', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId })
+		await f.block()
+		await f.heartbeat()
+		expect((await f.state()).blockerAlert).toMatchObject({ slack: confirmed, origin: { status: 'unavailable' } })
+		expect(await f.notices()).toHaveLength(0)
+	})
+
+	it('keeps the valid Slack route when the requested conversation belongs to a different task', async () => {
+		const f = await alertFixture()
+		const unrelated = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: unrelated.origin })
+		await f.block()
+		await f.heartbeat()
+		expect((await f.state()).blockerAlert).toMatchObject({
+			slack: confirmed,
+			origin: { status: 'unavailable' },
+		})
+		expect(await unrelated.notices()).toHaveLength(0)
+	})
+
+	it('keeps the valid native origin when the requested Slack automation is unavailable', async () => {
+		const f = await alertFixture()
+		await db
+			.update(slackNotificationAutomations)
+			.set({ enabled: false })
+			.where(eq(slackNotificationAutomations.id, f.slackAutomationId))
+		await expect(f.configure({ slackAutomationId: f.slackAutomationId })).rejects.toMatchObject({
+			code: 'FORBIDDEN',
+		})
+		expect(await f.configure({})).toMatchObject({ delivery: { alertRoutes: {} } })
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await f.block()
+		await f.heartbeat()
+		expect((await f.state()).blockerAlert).toMatchObject({
+			slack: { status: 'unavailable' },
+			origin: { status: 'delivered' },
+		})
+		expect(f.sends).toHaveLength(0)
+		expect(await f.notices()).toHaveLength(1)
+	})
+
+	it('rejects Slack channel drift while confirming the authorized native origin', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await db
+			.update(slackNotificationAutomations)
+			.set({ channel_id: 'C_DIFFERENT' })
+			.where(eq(slackNotificationAutomations.id, f.slackAutomationId))
+		await f.block()
+		await f.heartbeat()
+		expect((await f.state()).blockerAlert).toMatchObject({
+			slack: { status: 'unavailable' },
+			origin: { status: 'delivered' },
+		})
+		expect(f.sends).toHaveLength(0)
+		expect(await f.notices()).toHaveLength(1)
+	})
+
+	for (const status of ['failed', 'unknown'] as const) {
+		it(`retains the ${status} Slack result and confirms the independently delivered native event`, async () => {
+			const f = await alertFixture(async () => ({ status }))
+			await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+			await f.block()
+			await f.heartbeat()
+			await f.heartbeat()
+			expect((await f.state()).blockerAlert).toMatchObject({ slack: { status }, origin: { status: 'delivered' } })
+			expect(f.sends).toHaveLength(1)
+			expect(await f.notices()).toHaveLength(1)
+		})
+	}
+
+	it('shares one Slack receipt when a task thread is bound for both routes, including late binding', async () => {
+		for (const late of [false, true]) {
+			const f = await alertFixture()
+			const origin = await f.thread()
+			await f.configure({ slackAutomationId: f.slackAutomationId, origin: late ? undefined : origin })
+			await f.block()
+			await f.heartbeat()
+			if (late) {
+				await f.configure({ slackAutomationId: f.slackAutomationId, origin })
+				await f.heartbeat()
+			}
+			expect(f.sends).toHaveLength(1)
+			expect(f.sends[0]?.threadTs).toBe('1710000000.000001')
+			expect((await f.state()).blockerAlert).toMatchObject({ slack: confirmed, origin: confirmed })
+		}
+	})
+
+	it('confirms a matching origin bound while its Slack post is already in flight', async () => {
+		const started = Promise.withResolvers<void>()
+		const provider = Promise.withResolvers<DeliveryAlertReceipt>()
+		const f = await alertFixture(() => {
+			started.resolve()
+			return provider.promise
+		})
+		const origin = await f.thread()
+		await f.configure({ slackAutomationId: f.slackAutomationId })
+		await f.block()
+		const posting = f.heartbeat()
+		try {
+			await Promise.race([
+				started.promise,
+				posting.then(() => {
+					throw new Error('Expected pending Slack post')
+				}),
+			])
+			await f.configure({ slackAutomationId: f.slackAutomationId, origin })
+			await f.heartbeat()
+			expect((await f.state()).blockerAlert).toMatchObject({
+				slack: { status: 'unknown' },
+				origin: { status: 'unknown' },
+			})
+		} finally {
+			provider.resolve(confirmed)
+			await posting
+		}
+		expect(f.sends).toHaveLength(1)
+		expect((await f.state()).blockerAlert).toMatchObject({ slack: confirmed, origin: confirmed })
+	})
+
+	it('keeps Describe PR on the task through queued, blocked, resumed, and verification states', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		expect(await f.claim()).toBeNull()
+		const initial = await f.state()
+		expect(initial.phase).toBe('pr')
+		expect(initial.managedSessionId).not.toBe(f.source.id)
+		const describe = async () =>
+			describeBoardTask(
+				{ automatic_delivery: await f.state() },
+				await db.select().from(sessions).where(eq(sessions.task_id, f.taskId)),
+			)
+		expect(await describe()).toMatchObject({ columnId: 'implementation', delivery: { status: 'queued' } })
+		const status = (status: typeof sessions.$inferSelect.status) =>
+			db.update(sessions).set({ status }).where(eq(sessions.id, initial.managedSessionId!))
+		await status('needs_approval')
+		await f.heartbeat()
+		expect(await describe()).toMatchObject({
+			columnId: 'implementation',
+			delivery: { status: 'blocked', alert: { slack: 'delivered', origin: 'delivered' } },
+		})
+		expect((await f.state()).phase).toBe('pr')
+		await status('running')
+		await f.heartbeat()
+		expect(await describe()).toMatchObject({ columnId: 'implementation', delivery: { status: 'running' } })
+		await status('ready_for_input')
+		const next = await f.claim()
+		expect(next?.kind).toBe('inspect')
+		await f.complete(next!.leaseId, [], 'Missing verified pull request.')
+		expect(await describe()).toMatchObject({
+			columnId: 'implementation',
+			delivery: { status: 'blocked', reason: expect.stringContaining('Missing verified pull request.') },
+		})
+	})
+
+	it('sends fresh alerts when a delivered Describe PR hold becomes a terminal blocker', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await f.claim()
+		const sessionId = (await f.state()).managedSessionId!
+		await db.update(sessions).set({ status: 'waiting_for_usage_limit' }).where(eq(sessions.id, sessionId))
+		await f.heartbeat()
+		const held = (await f.state()).blockerAlert
+		expect(held).toMatchObject({ slack: confirmed, origin: { status: 'delivered' } })
+		await db.update(sessions).set({ status: 'failed' }).where(eq(sessions.id, sessionId))
+		await f.heartbeat()
+		const terminal = await f.state()
+		expect(terminal.attention).toContain('Describe PR stopped')
+		expect(terminal.blockerAlert).toMatchObject({ slack: confirmed, origin: { status: 'delivered' } })
+		expect(terminal.blockerAlert?.id).not.toBe(held?.id)
+		expect(f.sends).toHaveLength(2)
+		expect(await f.notices()).toHaveLength(2)
+	})
 
 	for (const repair of [false, true]) {
 		it.effect(`verifies archive-only work without reopening a merged branch (repair=${repair})`, () =>

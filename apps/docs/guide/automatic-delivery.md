@@ -43,6 +43,21 @@ Supply one target object per repository. Inspect state with `humanlayer --local 
 
 `pr-only` performs review/repair and waits for a manual merge before verification and archive. `archive-only` starts with already merged PRs, obtains independent evidence and never merges. Manual-merge and PR-only task instructions and required human checkpoints remain binding.
 
+## Publication and blocker alerts
+
+The board and `humanlayer board` show the separate Describe PR session as queued, running or blocked on the same task. Describe PR stays in Implementation while publication is in progress. A session waiting for approval or capacity can resume and proceed to independent Review after GitHub verification.
+
+After delivery is enrolled, the task owner can opt the task into specific alert routes. Use the Slack automation ID for an enabled automation you own in the task workspace. Find IDs with `humanlayer --local api integrations slack list-automations`. Use the session ID from the task's originating HumanLayer conversation.
+
+```sh
+humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
+  --routes '{"slackAutomationId":"AUTOMATION_UUID","origin":{"kind":"session","sessionId":"SESSION_UUID"}}'
+```
+
+For a task that originated in an existing Slack notification thread, set `origin` to `{"kind":"slack","automationId":"AUTOMATION_UUID"}`. HumanLayer resolves the ready thread for that automation on this task. The route object replaces the previous bindings. When only one requested route is authorized and available, HumanLayer keeps that route and shows the other gap on a blocked task. When none of the requested routes can be bound, the command returns an error. Pass `--routes '{}'` to clear the bindings. This configuration also works on existing enrolled tasks and preserves the current review budget and evidence. Tasks with delivery Off are outside blocker dispatch.
+
+The task shows each route's outcome. A Slack receipt needs a matching Slack response. A HumanLayer receipt references the notice stored on the originating session. When both routes point to the same Slack thread, a single post supplies both receipts. A missing native session or unsupported external chat, including a Codex conversation, appears as unavailable while any other authorized route still runs. An uncertain Slack result stays unconfirmed so that a lost response cannot cause a duplicate post.
+
 ## Credentials and completion
 
 The host uses its existing GitHub CLI access. It checks repository/branch identity, a clean checkout and exact local/remote/PR heads. A normal GitHub merge enforces repository-required protections without another CI polling loop or an admin bypass. Merge commits are preferred when allowed; other repository-supported merge methods are used when necessary. The read-only GitHub App does not receive write permissions.
