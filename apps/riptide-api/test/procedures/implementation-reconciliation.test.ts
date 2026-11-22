@@ -291,17 +291,20 @@ describe('Implementation reconciliation', () => {
 		}
 	})
 
-	it('clears a wake whose last session disappeared while the API observer was disconnected', async () => {
+	it('clears decisions and wakes whose last session disappeared while the API observer was disconnected', async () => {
 		const { db, databaseName } = testDb
-		const f = await fixture({ status: 'running' })
-		await f.plan()
-		expect((await f.state()).wakeAt).toEqual(expect.any(Number))
-		await db.delete(sessions).where(eq(sessions.id, f.sessionId))
+		const live = await fixture({ status: 'running' })
+		const blocked = await fixture({ untracked: true })
+		await live.plan()
+		await blocked.plan()
+		expect((await live.state()).wakeAt).toEqual(expect.any(Number))
+		expect((await blocked.state()).decision?.status).toBe('blocked')
+		for (const f of [live, blocked]) await db.delete(sessions).where(eq(sessions.id, f.sessionId))
 		const listener = postgres(formatPostgresDatabaseUrl(getExternalTestServicesConfig(), databaseName))
 		const stop = await startImplementationReconciliation(db, runtime, listener.listen)
 		try {
-			await expect.poll(async () => (await f.state()).wakeAt).toBeUndefined()
-			expect((await f.state()).decision).toBeNull()
+			await expect.poll(async () => (await live.state()).wakeAt).toBeUndefined()
+			await expect.poll(async () => (await blocked.state()).decision).toBeNull()
 		} finally {
 			await stop()
 			await listener.end()

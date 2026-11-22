@@ -112,7 +112,7 @@ export async function catchUpImplementationTasks(
 					event?.scope === 'deadline'
 						? undefined
 						: or(
-								!event ? isNotNull(taskWakeAt) : undefined,
+								!event ? isNotNull(tasks.implementation_reconciliation) : undefined,
 								exists(
 									db
 										.select({ id: sessions.id })
