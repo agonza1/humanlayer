@@ -52,6 +52,12 @@ export function Transcript({
 							onFork={index > firstUser ? onFork : undefined}
 						/>
 					)
+				if (turn.kind === 'delivery_blocker')
+					return (
+						<p key={turn.id} className="compact-divider">
+							Delivery needs attention. {turn.text}
+						</p>
+					)
 				if (turn.kind === 'compaction')
 					return (
 						<div key={turn.id} className="compact-divider">

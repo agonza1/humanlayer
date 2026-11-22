@@ -1,4 +1,4 @@
-import type { BoardStatus } from '@humanlayer/schemas/task-board'
+import type { BoardStatus, BoardDelivery } from '@humanlayer/schemas/task-board'
 
 import { SESSION_STATUS_LABELS } from './session-status-labels'
 
@@ -14,6 +14,26 @@ const FULL_DATE_AND_TIME = new Intl.DateTimeFormat(undefined, { dateStyle: 'medi
 
 export function boardStatusLabel(status: BoardStatus): string {
 	return status === 'not_started' ? 'Not started' : SESSION_STATUS_LABELS[status]
+}
+
+export function boardDeliveryLabel(delivery: BoardDelivery) {
+	if (delivery.status === 'blocked') return 'Needs attention'
+	return delivery.status === 'queued' ? 'Describe PR queued' : 'Describe PR running'
+}
+
+const alertStateLabels = {
+	delivered: 'delivered',
+	pending: 'pending',
+	failed: 'failed',
+	unavailable: 'unavailable',
+	unknown: 'unconfirmed',
+} as const
+
+export function boardDeliveryAlertLabel(delivery: BoardDelivery) {
+	if (delivery.status !== 'blocked' || !delivery.alert) return null
+	const { slack, origin } = delivery.alert
+	if (slack === 'delivered' && origin === 'delivered') return null
+	return `Slack alert ${alertStateLabels[slack]} · Origin alert ${alertStateLabels[origin]}`
 }
 
 export function boardIdleBackground(status: BoardStatus | undefined, updatedAtMs: number | null | undefined, nowMs: number) {

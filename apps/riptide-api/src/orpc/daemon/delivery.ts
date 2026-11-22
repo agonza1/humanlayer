@@ -1,10 +1,16 @@
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { decodeDelivery, deliveryReviewVerdict, sameDeliveryHeads } from '@humanlayer/schemas/zod/automatic-delivery'
 import { and, eq, isNotNull, or } from 'drizzle-orm'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 
 import { claimTaskDelivery, completeTaskDelivery, deliveryContext, lockDeliveryTask } from '../../db/automatic-delivery'
+import {
+	finishSlackBlockerDispatch,
+	reserveDeliveryBlockerAlerts,
+	validateSlackBlockerDispatch,
+} from '../../db/delivery-blocker-alerts'
 import { enrollProjectDelivery } from '../../db/project-delivery'
+import { SlackService } from '../../effects/services/slack/slack.service'
 import { TaskDiffService } from '../../effects/services/task-diff-durable-streams/task-diff-durable-streams.service'
 import { daemonBase, requiresDaemonBillingMiddleware } from '../base'
 
@@ -12,7 +18,8 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 	.use(requiresDaemonBillingMiddleware)
 	.handler(async ({ context }) => {
 		const { organizationId, userId, hostId } = context.auth
-		return context.services.db.transaction(async (tx) => {
+		const { db, effectRuntime } = context.services
+		const { action, alerts } = await db.transaction(async (tx) => {
 			const candidates = await tx
 				.select()
 				.from(tasks)
@@ -35,10 +42,43 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 				await enrollProjectDelivery(tx, task, hostId)
 				if (decodeDelivery(task.automatic_delivery)?.hostId !== hostId) continue
 				const action = await claimTaskDelivery(tx, task)
-				if (action) return { action }
+				if (action) return { action, alerts: [] }
+				const updated = await lockDeliveryTask(tx, task.id, organizationId)
+				const current = decodeDelivery(updated?.automatic_delivery)
+				if (!updated || !current) continue
+				const alerts = await reserveDeliveryBlockerAlerts(tx, updated, current)
+				if (alerts.length) return { action: null, alerts }
 			}
-			return { action: null }
+			return { action: null, alerts: [] }
 		})
+		for (const dispatch of alerts) {
+			const slots = await db.transaction((tx) => validateSlackBlockerDispatch(tx, dispatch))
+			const unavailable = dispatch.slots.filter((slot) => !slots.includes(slot))
+			if (unavailable.length) {
+				await db.transaction((tx) =>
+					finishSlackBlockerDispatch(
+						tx,
+						{ ...dispatch, slots: unavailable },
+						{ kind: 'preflight', canceled: slots.length === 0 },
+					),
+				)
+			}
+			if (!slots.length) continue
+			const receipt = await effectRuntime.runPromise(
+				Effect.gen(function* () {
+					const slack = yield* SlackService
+					return yield* slack.sendDeliveryBlocker(dispatch)
+				}).pipe(
+					Effect.timeoutOption('5 seconds'),
+					Effect.map((result) => Option.getOrElse(result, () => ({ status: 'unknown' as const }))),
+					Effect.catchCause(() => Effect.succeed({ status: 'unknown' as const })),
+				),
+			)
+			await db.transaction((tx) =>
+				finishSlackBlockerDispatch(tx, { ...dispatch, slots }, { kind: 'provider', result: receipt }),
+			)
+		}
+		return { action }
 	})
 
 export const completeDeliveryProcedure = daemonBase.delivery.complete

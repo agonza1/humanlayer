@@ -3,6 +3,7 @@ import { decodeDelivery, type AutomaticDelivery } from '@humanlayer/schemas/zod/
 import { eq } from 'drizzle-orm'
 
 import { acceptDeliveryReview, deliveryContext, lockDeliveryTask, saveDelivery } from '../../../db/automatic-delivery'
+import { bindDeliveryAlertRoutes } from '../../../db/delivery-blocker-alerts'
 import { checkTaskWritePermission } from '../../../db/task-auth'
 import { apiBaseOrgRequired, requiresBillingMiddleware } from '../../base'
 
@@ -102,5 +103,34 @@ export const reportDeliveryReviewProcedure = apiBaseOrgRequired.tasks.delivery.r
 			if (!task || task.archived) throw errors.NOT_FOUND()
 			if (task.resource_owner_user_id !== context.auth.userId) throw errors.FORBIDDEN()
 			return { accepted: await acceptDeliveryReview(tx, task, input.review) }
+		})
+	})
+
+export const configureDeliveryAlertsProcedure = apiBaseOrgRequired.tasks.delivery.configureAlerts
+	.use(requiresBillingMiddleware)
+	.handler(async ({ input, context, errors }) => {
+		return context.services.db.transaction(async (tx) => {
+			const task = await lockDeliveryTask(tx, input.taskId, context.auth.organizationId)
+			if (!task || task.archived) throw errors.NOT_FOUND()
+			if (task.resource_owner_user_id !== context.auth.userId) throw errors.FORBIDDEN()
+			const delivery = decodeDelivery(task.automatic_delivery)
+			if (!delivery || delivery.phase === 'disabled' || delivery.phase === 'archived') {
+				throw errors.CONFLICT({ message: 'Enable task delivery before configuring blocker alerts.' })
+			}
+			const routes = await bindDeliveryAlertRoutes(tx, task, delivery, input.routes)
+			if (!routes)
+				throw errors.FORBIDDEN({
+					message: 'No requested alert route is authorized and available for this task.',
+				})
+			delivery.alertRoutes = routes
+			const alert = delivery.blockerAlert
+			if (alert) {
+				// Unavailable routes have never been attempted. Preserve receipts and
+				// unresolved attempts, even when the owner updates their bindings.
+				if (routes.slack && alert.slack.status === 'unavailable') alert.slack = { status: 'pending' }
+				if (routes.origin && alert.origin.status === 'unavailable') alert.origin = { status: 'pending' }
+			}
+			await saveDelivery(tx, task, delivery)
+			return { delivery }
 		})
 	})

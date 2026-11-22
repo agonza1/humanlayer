@@ -88,7 +88,7 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 	}
 
 	for (const task of input.tasks) {
-		const { columnId, workflowLabel, stageActivityMs, status, lastUpdatedAtMs } = describeBoardTask(
+		const { columnId, workflowLabel, stageActivityMs, status, lastUpdatedAtMs, delivery } = describeBoardTask(
 			task,
 			task.sessions,
 		)
@@ -114,6 +114,7 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 				isDraft: task.is_draft ?? false,
 				workflowLabel,
 				status,
+				delivery,
 				isUnread,
 			},
 		})

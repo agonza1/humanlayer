@@ -54,6 +54,32 @@ export const DeliveryReviewSchema = z.object({
 		.max(100),
 	evidence: z.string().min(1).max(30000),
 })
+export const DeliveryAlertRoutesInputSchema = z.object({
+	slackAutomationId: z.uuid().optional(),
+	origin: z
+		.discriminatedUnion('kind', [
+			z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
+			z.object({ kind: z.literal('slack'), automationId: z.uuid() }),
+		])
+		.optional(),
+})
+
+export const DeliveryAlertSlackRouteSchema = z.object({
+	automationId: z.uuid(),
+	channelId: z.string(),
+	teamId: z.string(),
+	threadId: z.uuid().optional(),
+	threadTs: z.string().optional(),
+})
+export type DeliveryAlertSlackRoute = z.infer<typeof DeliveryAlertSlackRouteSchema>
+
+const DeliveryAlertReceiptSchema = z.discriminatedUnion('status', [
+	z.object({ status: z.enum(['pending', 'unavailable', 'failed']) }),
+	z.object({ status: z.literal('unknown'), destination: z.string().optional() }),
+	z.object({ status: z.literal('delivered'), receipt: z.string().min(1), destination: z.string().optional() }),
+])
+export type DeliveryAlertReceipt = z.infer<typeof DeliveryAlertReceiptSchema>
+
 export const AutomaticDeliverySchema = z.object({
 	version: z.literal(1),
 	authorizedBy: z.string(),
@@ -84,6 +110,25 @@ export const AutomaticDeliverySchema = z.object({
 	heads: z.array(DeliveryHeadSchema),
 	reviews: z.array(DeliveryReviewSchema).max(3),
 	attention: z.string().nullable(),
+	attentionDuringPublication: z.boolean().optional(),
+	alertRoutes: z
+		.object({
+			slack: DeliveryAlertSlackRouteSchema.optional(),
+			origin: z
+				.discriminatedUnion('kind', [
+					z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
+					z.object({ kind: z.literal('slack'), route: DeliveryAlertSlackRouteSchema }),
+				])
+				.optional(),
+		})
+		.optional(),
+	blockerAlert: z
+		.object({
+			id: z.uuid(),
+			slack: DeliveryAlertReceiptSchema,
+			origin: DeliveryAlertReceiptSchema,
+		})
+		.optional(),
 	lease: z
 		.object({
 			id: z.uuid(),

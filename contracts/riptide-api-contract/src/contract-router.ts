@@ -217,7 +217,12 @@ import { upsertTaskUserSettingsContract } from './api/task-user-settings/upsert'
 import { archiveTaskContract } from './api/tasks/archive'
 import { createTaskContract } from './api/tasks/create'
 import { createTaskDraftContract } from './api/tasks/createDraft'
-import { configureDeliveryContract, getDeliveryContract, reportDeliveryReviewContract } from './api/tasks/delivery'
+import {
+	configureDeliveryAlertsContract,
+	configureDeliveryContract,
+	getDeliveryContract,
+	reportDeliveryReviewContract,
+} from './api/tasks/delivery'
 import { launchTaskDraftContract } from './api/tasks/launch-draft'
 import { listTasksContract } from './api/tasks/list'
 import { reassignTaskOwnerContract } from './api/tasks/reassign-owner'
@@ -428,6 +433,7 @@ export const RiptideApiContract = {
 	tasks: {
 		delivery: {
 			configure: configureDeliveryContract,
+			configureAlerts: configureDeliveryAlertsContract,
 			get: getDeliveryContract,
 			reportReview: reportDeliveryReviewContract,
 		},

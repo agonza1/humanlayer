@@ -71,7 +71,10 @@ export const SlackProviderClientLive = Layer.effect(
 						redirectUri: config.oauthRedirectUrl,
 					}),
 				),
-			postMessage: (input) => provideHttp(chatPostMessage(input)).pipe(Effect.map(({ ts }) => ({ ts }))),
+			postMessage: (input) =>
+				provideHttp(chatPostMessage(input)).pipe(
+					Effect.map(({ ts, channel, message }) => ({ ts, channel, threadTs: message?.thread_ts })),
+				),
 			paginateChannels,
 		})
 	}),

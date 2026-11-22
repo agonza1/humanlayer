@@ -44,11 +44,14 @@ export const SlackPostMessageResponseSchema = Schema.Struct({
 	needed: Schema.optional(Schema.String),
 	provided: Schema.optional(Schema.String),
 	ts: Schema.optional(Schema.String),
+	channel: Schema.optional(Schema.String),
+	message: Schema.optional(Schema.Struct({ thread_ts: Schema.optional(Schema.String) })),
 })
 export type SlackPostMessageResponse = Schema.Schema.Type<typeof SlackPostMessageResponseSchema>
 
 export const SlackPostMessageRequestSchema = Schema.Struct({
 	channel: Schema.String,
+	text: Schema.optional(Schema.String),
 	blocks: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 	unfurl_links: Schema.Boolean,
 	unfurl_media: Schema.Boolean,

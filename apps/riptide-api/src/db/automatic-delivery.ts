@@ -12,6 +12,7 @@ import {
 	type DeliveryHead,
 	type DeliveryReview,
 } from '@humanlayer/schemas/zod/automatic-delivery'
+import * as Sentry from '@sentry/node'
 import { and, desc, eq, notInArray } from 'drizzle-orm'
 import type { PgDatabase } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
@@ -186,13 +187,20 @@ export async function deliveryAttention(
 	message: string,
 	history: Session[],
 ) {
+	if (delivery.phase !== 'attention') {
+		delivery.attentionDuringPublication =
+			delivery.phase === 'pr' ||
+			(delivery.phase === 'inspect' && delivery.mode !== 'archive-only' && delivery.heads.length === 0)
+	}
 	delivery.phase = 'attention'
+	if (delivery.attention !== message) delivery.blockerAlert = undefined
 	delivery.attention = message
 	delivery.lease = null
 	const source = history.find((session) => session.id === delivery.sourceSessionId)
 	if (
 		delivery.recoveryAttempts === 0 &&
 		source &&
+		!source.archived &&
 		history.every((session) => ['ready_for_input', 'failed', 'lost', 'interrupted'].includes(session.status))
 	) {
 		delivery.recoveryAttempts = 1
@@ -208,7 +216,17 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 	if (!delivery || task.archived || delivery.phase === 'disabled' || delivery.phase === 'archived') return null
 	const context = await deliveryContext(tx, task, delivery)
 	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
-	if (!source) return null
+	if (!source || source.archived) {
+		if (delivery.phase !== 'attention')
+			await deliveryAttention(
+				tx,
+				task,
+				delivery,
+				'Implementation source session is unavailable. Check the task before resuming.',
+				context.history,
+			)
+		return null
+	}
 	if (
 		delivery.phase === 'implementation' &&
 		['failed', 'lost', 'interrupted', 'needs_approval'].includes(source.status)
@@ -261,10 +279,15 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 		}
 		delivery.lease = null
 	}
+	if (delivery.phase === 'pr' && !delivery.managedSessionId) {
+		await deliveryAttention(tx, task, delivery, 'The Describe PR session is missing.', context.history)
+		return null
+	}
 	if (delivery.managedSessionId) {
 		const managed = context.history.find((session) => session.id === delivery.managedSessionId)
 		if (
 			!managed ||
+			managed.archived ||
 			['failed', 'lost', 'interrupted'].includes(managed.status) ||
 			Date.now() - delivery.managedAt > 30 * 60_000
 		) {
@@ -272,10 +295,26 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 				tx,
 				task,
 				delivery,
-				'Managed continuation failed or exceeded its 30-minute bound.',
+				delivery.phase === 'pr'
+					? 'Describe PR stopped or exceeded its 30-minute deadline. Check the session before resuming.'
+					: 'Managed continuation failed or exceeded its 30-minute bound.',
 				context.history,
 			)
 			return null
+		}
+		if (delivery.phase === 'pr') {
+			const hold =
+				managed.status === 'needs_approval'
+					? 'Describe PR needs approval. Open the session to review the request.'
+					: managed.status === 'waiting_for_usage_limit'
+						? 'Describe PR reached its usage limit. Check the session before resuming.'
+						: null
+			if (hold !== delivery.attention) {
+				delivery.attention = hold
+				delivery.blockerAlert = undefined
+				await saveDelivery(tx, task, delivery)
+			}
+			if (hold) return null
 		}
 		if (managed.status !== 'ready_for_input') return null
 		if (delivery.phase === 'repair' && managed.title?.startsWith('delivery review:')) {
@@ -313,7 +352,14 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 		delivery.workRevision = context.revision
 		delivery.phase = delivery.mode === 'archive-only' ? 'inspect' : 'pr'
 		if (delivery.phase === 'pr') {
-			await launchDeliverySession(tx, task, delivery, source, 'pr')
+			try {
+				await tx.transaction((savepoint) => launchDeliverySession(savepoint, task, delivery, source, 'pr'))
+			} catch (error) {
+				Sentry.captureException(error)
+				delivery.phase = 'attention'
+				delivery.attentionDuringPublication = true
+				delivery.attention = 'Could not queue Describe PR. Check the task host and workspace.'
+			}
 			await saveDelivery(tx, task, delivery)
 			return null
 		}

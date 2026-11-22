@@ -11,6 +11,7 @@ import type { SlackBlock, SlackProviderError } from '../slack.types'
 export type SlackChatPostMessageInput = {
 	botToken: Redacted.Redacted<string>
 	channelId: string
+	text?: string
 	blocks: SlackBlock[]
 	threadTs?: string
 	broadcast?: boolean
@@ -19,6 +20,7 @@ export type SlackChatPostMessageResult = SlackPostMessageResponse & { readonly t
 
 type SlackChatPostMessageBody = {
 	channel: string
+	text?: string
 	blocks: SlackBlock[]
 	unfurl_links: boolean
 	unfurl_media: boolean
@@ -34,6 +36,7 @@ export const chatPostMessage: (
 	const slackHttp = yield* SlackHttpClient
 	const body: SlackChatPostMessageBody = {
 		channel: input.channelId,
+		text: input.text,
 		blocks: input.blocks,
 		unfurl_links: false,
 		unfurl_media: false,

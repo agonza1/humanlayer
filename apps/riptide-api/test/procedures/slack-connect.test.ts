@@ -40,6 +40,7 @@ describe('Slack connect procedures', () => {
 						disconnectCalls += 1
 					}),
 				listChannels: () => Effect.die('listChannels not used'),
+				sendDeliveryBlocker: () => Effect.succeed({ status: 'unavailable' as const }),
 				dispatchArtifactEvent: () => Effect.void,
 				dispatchCommentEvent: () => Effect.void,
 				verifyInteractionRequest: () => Effect.die('verifyInteractionRequest not used'),
@@ -100,6 +101,7 @@ describe('Slack connect procedures', () => {
 				getStatus: () => Effect.fail(new SlackIntegrationUnavailableError({ cause: 'db-down' })),
 				disconnect: () => Effect.fail(new SlackIntegrationUnavailableError({ cause: 'db-down' })),
 				listChannels: () => Effect.die('listChannels not used'),
+				sendDeliveryBlocker: () => Effect.succeed({ status: 'unavailable' as const }),
 				dispatchArtifactEvent: () => Effect.void,
 				dispatchCommentEvent: () => Effect.void,
 				verifyInteractionRequest: () => Effect.die('verifyInteractionRequest not used'),

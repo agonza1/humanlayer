@@ -1,4 +1,6 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
+import { describeBoardTask } from '@humanlayer/schemas/task-board'
+import { boardDeliveryAlertLabel, boardDeliveryLabel } from '@humanlayer/ui/lib/task-board'
 import { Link } from '@tanstack/react-router'
 import { MessageSquare, PanelLeft, PanelRightClose } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
@@ -29,6 +31,7 @@ import { WorkspaceSetup } from './WorkspaceSetup'
 
 export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sessionId?: string }) {
 	const { task, sessions, isReady } = useTask(taskId)
+	const delivery = task ? describeBoardTask(task, sessions).delivery : null
 	const artifacts = useTaskArtifacts(taskId)
 	const session = chooseTaskSession(sessions, sessionId, rememberedSession(taskId))
 	const { canSendPrompt } = useSessionAccess(session ?? undefined)
@@ -231,7 +234,21 @@ export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sess
 					onClick={toggleTaskSidebar}
 				/>
 			) : null}
-			{body}
+			{delivery ? (
+				<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+					<div className="p-2 text-sm" role="status">
+						<strong>{boardDeliveryLabel(delivery)}</strong>
+						{delivery.status === 'blocked' && (
+							<p>
+								{delivery.reason} {boardDeliveryAlertLabel(delivery)}
+							</p>
+						)}
+					</div>
+					{body}
+				</div>
+			) : (
+				body
+			)}
 		</div>
 	)
 	return task && (session || canReview(task)) ? (

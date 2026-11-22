@@ -1,5 +1,11 @@
-import { BOARD_COLUMNS, type BoardStatus, describeBoardTask } from '@humanlayer/schemas/task-board'
-import { boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '@humanlayer/ui/lib/task-board'
+import { BOARD_COLUMNS, type BoardStatus, type BoardDelivery, describeBoardTask } from '@humanlayer/schemas/task-board'
+import {
+	boardDeliveryAlertLabel,
+	boardDeliveryLabel,
+	boardIdleBackground,
+	boardStatusLabel,
+	formatBoardUpdateTime,
+} from '@humanlayer/ui/lib/task-board'
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
@@ -18,6 +24,7 @@ const SCOPES: Array<{ value: TaskTreeScope; label: string }> = [
 type BoardRow = {
 	row: TaskRow
 	status: BoardStatus
+	delivery: BoardDelivery | null
 	lastUpdatedAtMs: number | null
 }
 
@@ -29,8 +36,8 @@ export function BoardPage() {
 	const columns = BOARD_COLUMNS.map((column) => ({ ...column, rows: [] as BoardRow[] }))
 	const byId = new Map(columns.map((column) => [column.id, column]))
 	for (const row of rows) {
-		const { columnId, status, lastUpdatedAtMs } = describeBoardTask(row.task, row.sessions)
-		byId.get(columnId)?.rows.push({ row, status, lastUpdatedAtMs })
+		const { columnId, status, lastUpdatedAtMs, delivery } = describeBoardTask(row.task, row.sessions)
+		byId.get(columnId)?.rows.push({ row, status, lastUpdatedAtMs, delivery })
 	}
 	return (
 		<main className="main board">
@@ -68,7 +75,7 @@ export function BoardPage() {
 	)
 }
 
-function BoardCard({ row, status, lastUpdatedAtMs, nowMs }: BoardRow & { nowMs: number }) {
+function BoardCard({ row, status, lastUpdatedAtMs, delivery, nowMs }: BoardRow & { nowMs: number }) {
 	const unread = useTaskUnread(row.sessions)
 	const setupFailed = status === 'waiting_for_workspace' && row.workspaceSetupFailed
 	const updated = lastUpdatedAtMs === null ? null : formatBoardUpdateTime(lastUpdatedAtMs, nowMs)
@@ -90,8 +97,12 @@ function BoardCard({ row, status, lastUpdatedAtMs, nowMs }: BoardRow & { nowMs: 
 				{unread && <span className="dot" role="img" aria-label="Unread" />}
 			</span>
 			<span className="board-card-status">
-				<span data-status={setupFailed ? 'failed' : status}>
-					{setupFailed ? 'Workspace setup failed' : boardStatusLabel(status)}
+				<span data-status={setupFailed || delivery?.status === 'blocked' ? 'failed' : status}>
+					{delivery
+						? boardDeliveryLabel(delivery)
+						: setupFailed
+							? 'Workspace setup failed'
+							: boardStatusLabel(status)}
 				</span>
 				{updated && (
 					<time dateTime={updated.dateTime} title={updated.full}>
@@ -99,6 +110,12 @@ function BoardCard({ row, status, lastUpdatedAtMs, nowMs }: BoardRow & { nowMs: 
 					</time>
 				)}
 			</span>
+			{delivery?.status === 'blocked' && (
+				<span className="board-card-status">
+					<span>{delivery.reason}</span>
+					<span>{boardDeliveryAlertLabel(delivery)}</span>
+				</span>
+			)}
 		</Link>
 	)
 }

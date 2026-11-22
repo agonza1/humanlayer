@@ -69,6 +69,7 @@ export async function readBoard(sync: BoardSync, appOrigin: string, projectId?: 
 			title: task.name,
 			projectId: task.project_id,
 			status: state.status,
+			delivery: state.delivery,
 			workflowLabel: state.workflowLabel,
 			lastUpdatedAt: state.lastUpdatedAtMs === null ? null : new Date(state.lastUpdatedAtMs).toISOString(),
 			url: new URL(`/tasks/${task.id}`, appOrigin).href,

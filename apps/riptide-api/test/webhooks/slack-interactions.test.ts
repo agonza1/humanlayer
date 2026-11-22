@@ -234,6 +234,7 @@ describe('POST /webhooks/slack/interactions', () => {
 			getStatus: () => Effect.die('getStatus not used'),
 			disconnect: () => Effect.die('disconnect not used'),
 			listChannels: () => Effect.die('listChannels not used'),
+			sendDeliveryBlocker: () => Effect.succeed({ status: 'unavailable' as const }),
 			dispatchArtifactEvent: () => Effect.void,
 			dispatchCommentEvent: () => Effect.void,
 			verifyInteractionRequest: () => Effect.succeed(fakePayload),
