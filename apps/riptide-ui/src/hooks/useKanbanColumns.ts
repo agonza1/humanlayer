@@ -56,6 +56,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 					id: tasks.id,
 					name: tasks.name,
 					created_at: tasks.created_at,
+					updated_at: tasks.updated_at,
 					archived: tasks.archived,
 					is_draft: tasks.is_draft,
 					resource_owner_user_id: tasks.resource_owner_user_id,
@@ -80,6 +81,8 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 					labels: sessions.labels,
 					archived: sessions.archived,
 					last_activity_at: sessions.last_activity_at,
+					created_at: sessions.created_at,
+					updated_at: sessions.updated_at,
 					status: sessions.status,
 				}))
 		},
@@ -136,6 +139,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 			id: task.id,
 			name: task.name,
 			created_at: task.created_at,
+			updated_at: task.updated_at,
 			is_draft: task.is_draft ?? false,
 			resource_owner_user_id: task.resource_owner_user_id,
 			sessions: (sessionsByTaskId.get(task.id) ?? []).map(
@@ -144,6 +148,8 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 					archived: s.archived ?? false,
 					labels: (s.labels as SessionLabel[] | null) ?? null,
 					last_activity_at: s.last_activity_at,
+					created_at: s.created_at,
+					updated_at: s.updated_at,
 					resource_owner_user_id: s.resource_owner_user_id,
 					status: s.status,
 				}),

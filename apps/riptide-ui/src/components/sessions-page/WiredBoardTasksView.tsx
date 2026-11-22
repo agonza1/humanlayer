@@ -235,7 +235,12 @@ export function WiredBoardTasksView() {
 			<div className="min-h-0 flex-1">
 				<KanbanBoard>
 					{columns.map((column) => (
-						<KanbanColumn key={column.id} title={column.title} count={column.cards.length}>
+						<KanbanColumn
+							key={column.id}
+							title={column.title}
+							description={column.description}
+							count={column.cards.length}
+						>
 							{column.cards.map((card) => {
 								const isCurrentUserOwner = !!user?.id && ownerByTaskId.get(card.id) === user.id
 								const isAdminNonOwner = isAdmin && !!user?.id && !isCurrentUserOwner

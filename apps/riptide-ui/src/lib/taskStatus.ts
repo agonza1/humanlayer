@@ -14,8 +14,7 @@ export interface TaskStatusSessionInput {
  *
  *   needs_approval > failed (most-recent session) > lost > running > pending > interrupt_requested
  *
- * Returns `undefined` (no indicator) when none apply. Shared by the sidebar task
- * tree and the Kanban board so the two stay in lockstep.
+ * Returns `undefined` (no indicator) when none apply.
  */
 export function aggregateTaskStatus(sessions: ReadonlyArray<TaskStatusSessionInput>): TaskStatus | undefined {
 	let needsApprovalCount = 0

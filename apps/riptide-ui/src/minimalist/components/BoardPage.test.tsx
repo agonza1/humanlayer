@@ -13,8 +13,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/minimalist/components/Avatar', () => ({ WiredUserAvatar: () => null }))
 vi.mock('@/minimalist/components/SettingsControls', () => ({ Segmented: () => null }))
-vi.mock('@/minimalist/components/TaskItem', () => ({ TaskMark: () => null }))
-vi.mock('@/minimalist/lib/status', () => ({ statusText: () => null }))
+vi.mock('@/hooks/useMinuteClock', () => ({ useMinuteClock: () => Date.UTC(2026, 10, 21, 20) }))
 vi.mock('@/minimalist/lib/ui-state', () => ({ useUi: () => ({ closeSidebarOnNarrow: vi.fn() }) }))
 vi.mock('@/minimalist/lib/use-unread', () => ({ useTaskUnread: () => false }))
 
@@ -30,17 +29,17 @@ test('moves an unlabeled card from Todo through implementation to review as live
 	}
 	useTaskTree.mockReturnValue({ recent: [row], isReady: true })
 	const { rerender } = render(<BoardPage />)
-	expect(
-		within(screen.getByRole('region', { name: 'Todo / Draft' })).getByRole('link', { name: /Canary/ }),
-	).toBeTruthy()
+	expect(within(screen.getByRole('region', { name: 'To do' })).getByRole('link', { name: /Canary/ })).toBeTruthy()
 	row.sessions[0].status = 'running'
 	rerender(<BoardPage />)
 	expect(
-		within(screen.getByRole('region', { name: 'Implementation' })).getByRole('link', { name: /Canary/ }),
+		within(screen.getByRole('region', { name: 'Implementation' })).getByRole('link', { name: /Canary.*Running/ }),
 	).toBeTruthy()
 	row.sessions[0].status = 'ready_for_input'
 	rerender(<BoardPage />)
-	expect(within(screen.getByRole('region', { name: 'In Review' })).getByRole('link', { name: /Canary/ })).toBeTruthy()
+	const review = within(screen.getByRole('region', { name: 'In review' }))
+	expect(review.getByText('Check results and pull requests')).toBeTruthy()
+	expect(review.getByRole('link', { name: /Canary.*Idle/ })).toBeTruthy()
 	useTaskTree.mockReturnValue({ recent: [], isReady: true })
 	rerender(<BoardPage />)
 	expect(screen.queryByRole('link', { name: /Canary/ })).toBeNull()
@@ -55,11 +54,36 @@ test('keeps idle work in review until archived data leaves the active board, wit
 	useTaskTree.mockReturnValue({ recent: [row], isReady: true })
 	const { rerender } = render(<BoardPage />)
 	expect(
-		within(screen.getByRole('region', { name: 'In Review' })).getByRole('link', { name: /Merged delivery/ }),
+		within(screen.getByRole('region', { name: 'In review' })).getByRole('link', { name: /Merged delivery/ }),
 	).toBeTruthy()
 	expect(screen.queryByRole('region', { name: 'Done' })).toBeNull()
 	expect(useTaskTree).toHaveBeenLastCalledWith(false, 'everyone')
 	useTaskTree.mockReturnValue({ recent: [], isReady: true })
 	rerender(<BoardPage />)
 	expect(screen.queryByRole('link', { name: /Merged delivery/ })).toBeNull()
+})
+
+test('shows the local update time and includes the date for cards at least a day old', () => {
+	const recent = Date.UTC(2026, 10, 21, 19, 5)
+	const old = Date.UTC(2026, 10, 20, 18, 45)
+	useTaskTree.mockReturnValue({
+		recent: [
+			{ task: { id: 'recent', name: 'Today', updated_at: BigInt(recent) }, sessions: [] },
+			{ task: { id: 'old', name: 'Older', updated_at: BigInt(old) }, sessions: [] },
+		],
+		isReady: true,
+	})
+	render(<BoardPage />)
+
+	const clock = { hour: 'numeric', minute: '2-digit' } as const
+	const recentTime = screen.getByRole('link', { name: /Today/ }).querySelector('time')
+	expect(recentTime?.textContent).toContain(new Intl.DateTimeFormat(undefined, clock).format(recent))
+	expect(recentTime?.textContent).not.toContain(new Intl.DateTimeFormat(undefined, { month: 'short' }).format(recent))
+	expect(recentTime?.dateTime).toBe(new Date(recent).toISOString())
+
+	const oldTime = screen.getByRole('link', { name: /Older/ }).querySelector('time')
+	expect(oldTime?.textContent).toContain(
+		new Intl.DateTimeFormat(undefined, { ...clock, month: 'short', day: 'numeric' }).format(old),
+	)
+	expect(oldTime?.dateTime).toBe(new Date(old).toISOString())
 })

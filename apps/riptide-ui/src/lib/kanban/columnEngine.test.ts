@@ -1,4 +1,3 @@
-import { formatKanbanCardAge, formatKanbanCardAgeLong } from '@humanlayer/ui/components/kanban'
 import { RPI_LABELS, type SessionLabel } from '@humanlayer/ui/components/session-label-badge'
 import { describe, expect, test } from 'vitest'
 
@@ -91,7 +90,8 @@ describe('assignColumn', () => {
 		).toBe('planning')
 	})
 
-	test('maps every RPI_LABELS entry to its column per LABEL_TO_COLUMN', () => {
+	test('matches the RPI label order and maps every label to its board column', () => {
+		expect(Object.keys(LABEL_TO_COLUMN)).toEqual(RPI_LABELS.map((entry) => entry.name))
 		for (const rpiLabel of RPI_LABELS) {
 			// Every known RPI label must have an explicit column mapping in source.
 			const expected = LABEL_TO_COLUMN[rpiLabel.name]
@@ -264,7 +264,7 @@ describe('buildKanbanColumns', () => {
 		expect(columns.find((column) => column.id === 'implementation')?.cards).toEqual([])
 		expect(columns.find((column) => column.id === 'in-review')?.cards[0]).toMatchObject({
 			id: 'repair',
-			ageTimestampMs: 120_000,
+			updatedAtMs: 120_000,
 			workflowLabel: { name: 'rpi:review' },
 		})
 		expect(repair.labels).toEqual([label('rpi:implementation')])
@@ -278,7 +278,7 @@ describe('buildKanbanColumns', () => {
 		})
 		expect(columns.find((column) => column.id === 'in-review')?.cards[0]).toMatchObject({
 			id: 'oneshot',
-			ageTimestampMs: 60_000,
+			updatedAtMs: 60_000,
 			workflowLabel: { name: 'rpi:review' },
 		})
 		expect(input.labels).toBeNull()
@@ -501,21 +501,28 @@ describe('buildKanbanColumns', () => {
 		])
 	})
 
-	test('uses winning session activity for card age display', () => {
-		const tasks: KanbanTaskInput[] = [
-			{
-				id: 't1',
-				name: 'Aged',
-				created_at: 1_700_000_000_000n,
-				resource_owner_user_id: 'u1',
-				sessions: [session({ labels: [label('rpi:plan')], last_activity_at: 1_700_000_100_000n })],
-			},
-		]
-		const card = buildKanbanColumns({ tasks, resolveOwner }).find((c) => c.id === 'planning')?.cards[0]
-		expect(card?.ageTimestampMs).toBe(1_700_000_100_000)
+	test('shows the latest task or session update independently of the stage label', () => {
+		const task: KanbanTaskInput = {
+			id: 't1',
+			name: 'Planning task',
+			created_at: 1_700_000_000_000n,
+			updated_at: 1_700_000_400_000n,
+			resource_owner_user_id: 'u1',
+			sessions: [
+				session({ labels: [label('rpi:plan')], last_activity_at: 1_700_000_100_000n }),
+				session({ last_activity_at: 1_700_000_200_000n, updated_at: 1_700_000_300_000n }),
+				session({ archived: true, last_activity_at: 1_700_000_500_000n }),
+			],
+		}
+		const getPlanningCard = () =>
+			buildKanbanColumns({ tasks: [task], resolveOwner }).find((column) => column.id === 'planning')?.cards[0]
+		expect(getPlanningCard()?.updatedAtMs).toBe(1_700_000_400_000)
+
+		task.updated_at = 1_700_000_250_000n
+		expect(getPlanningCard()?.updatedAtMs).toBe(1_700_000_300_000)
 	})
 
-	test('uses exact activity to choose the winning session, column, and age within one minute', () => {
+	test('uses exact activity to choose the winning session, column, and update time within one minute', () => {
 		const minute = 1_700_000_040_000n
 		const tasks: KanbanTaskInput[] = [
 			{
@@ -534,10 +541,10 @@ describe('buildKanbanColumns', () => {
 			?.cards[0]
 
 		expect(card?.workflowLabel.name).toBe('rpi:implementation')
-		expect(card?.ageTimestampMs).toBe(Number(minute + 50_000n))
+		expect(card?.updatedAtMs).toBe(Number(minute + 50_000n))
 	})
 
-	test('falls back to task creation time when no labeled session sets card activity', () => {
+	test('falls back to task creation time when the card has no updates', () => {
 		const tasks: KanbanTaskInput[] = [
 			{
 				id: 't1',
@@ -548,27 +555,10 @@ describe('buildKanbanColumns', () => {
 			},
 		]
 		const card = buildKanbanColumns({ tasks, resolveOwner }).find((c) => c.id === 'todo')?.cards[0]
-		expect(card?.ageTimestampMs).toBe(1_700_000_000_000)
+		expect(card?.updatedAtMs).toBe(1_700_000_000_000)
 	})
 
-	test('formats card ages with minute, hour, day, and month units', () => {
-		const now = 1_700_000_000_000
-		expect(formatKanbanCardAge(now - 5 * 60 * 1000, now)).toBe('5m')
-		expect(formatKanbanCardAge(now - 2 * 60 * 60 * 1000, now)).toBe('2h')
-		expect(formatKanbanCardAge(now - 20 * 24 * 60 * 60 * 1000, now)).toBe('20d')
-		expect(formatKanbanCardAge(now - 60 * 24 * 60 * 60 * 1000, now)).toBe('2mo')
-	})
-
-	test('formats long card ages for timestamp tooltips', () => {
-		const now = 1_700_000_000_000
-		expect(formatKanbanCardAgeLong(now - 1 * 60 * 1000, now)).toBe('1 minute')
-		expect(formatKanbanCardAgeLong(now - 6 * 60 * 1000, now)).toBe('6 minutes')
-		expect(formatKanbanCardAgeLong(now - 2 * 60 * 60 * 1000, now)).toBe('2 hours')
-		expect(formatKanbanCardAgeLong(now - 20 * 24 * 60 * 60 * 1000, now)).toBe('20 days')
-		expect(formatKanbanCardAgeLong(now - 60 * 24 * 60 * 60 * 1000, now)).toBe('2 months')
-	})
-
-	test('aggregates a live status indicator across the task’s sessions (sidebar precedence)', () => {
+	test('keeps a live session visible alongside a more recently failed session', () => {
 		const tasks: KanbanTaskInput[] = [
 			{
 				id: 't1',
@@ -577,11 +567,11 @@ describe('buildKanbanColumns', () => {
 				sessions: [
 					session({ labels: [label('rpi:plan')], last_activity_at: 5n, status: 'running' }),
 					session({ labels: [label('rpi:research')], last_activity_at: 1n, status: 'ready_for_launch' }),
+					session({ last_activity_at: 10n, status: 'failed' }),
 				],
 			},
 		]
 		const card = buildKanbanColumns({ tasks, resolveOwner }).find((c) => c.id === 'planning')?.cards[0]
-		// running beats pending
 		expect(card?.status).toBe('running')
 	})
 
@@ -598,16 +588,16 @@ describe('buildKanbanColumns', () => {
 			},
 		]
 		const card = buildKanbanColumns({ tasks, resolveOwner }).find((c) => c.id === 'planning')?.cards[0]
-		expect(card?.status).toBeUndefined()
+		expect(card?.status).toBe('ready_for_input')
 	})
 
-	test('draft task with no sessions has no status and lands in todo', () => {
+	test('shows a saved draft as Draft in To do', () => {
 		const tasks: KanbanTaskInput[] = [
 			{ id: 'd1', name: 'Draft', is_draft: true, resource_owner_user_id: 'u1', sessions: [] },
 		]
 		const todo = buildKanbanColumns({ tasks, resolveOwner }).find((c) => c.id === 'todo')
 		expect(todo?.cards.map((c) => c.id)).toEqual(['d1'])
-		expect(todo?.cards[0]?.status).toBeUndefined()
+		expect(todo?.cards[0]?.status).toBe('draft')
 		expect(todo?.cards[0]?.isDraft).toBe(true)
 	})
 

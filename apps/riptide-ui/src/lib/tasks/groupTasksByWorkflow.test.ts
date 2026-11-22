@@ -46,11 +46,11 @@ describe('groupTasksByWorkflow', () => {
 			'todo',
 		])
 		expect(groups.map((group) => group.title)).toEqual([
-			'In Review',
+			'In review',
 			'Implementation',
 			'Planning',
-			'Research & Design',
-			'Todo / Draft',
+			'Research and design',
+			'To do',
 		])
 	})
 
@@ -93,7 +93,7 @@ describe('groupTasksByWorkflow', () => {
 		expect(planning?.taskIds).toEqual(['newest', 'middle', 'oldest'])
 	})
 
-	test('lands drafts and session-less tasks in Todo / Draft', () => {
+	test('lands drafts and session-less tasks in To do', () => {
 		const groups = groupTasksByWorkflow([task('draft', [], true), task('no-sessions', [])])
 
 		const todo = groups.find((group) => group.id === 'todo')

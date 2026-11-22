@@ -44,6 +44,7 @@
         "@humanlayer/fold-xai": "0.1.32",
         "@humanlayer/riptide-api-contract": "workspace:*",
         "@humanlayer/riptide-daemon": "workspace:*",
+        "@humanlayer/schemas": "workspace:*",
         "@orpc/client": "catalog:",
         "@orpc/contract": "catalog:",
         "@orpc/openapi-client": "catalog:",

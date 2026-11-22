@@ -1,6 +1,6 @@
+import type { BoardStatus } from '@humanlayer/schemas/task-board'
 import type { ReactNode } from 'react'
 import type { SessionLabel } from '../session-label-badge'
-import type { TaskStatus } from '../sidebar/types'
 
 export interface KanbanCommenter {
   name: string
@@ -16,15 +16,14 @@ export interface KanbanOwner {
 export interface KanbanCard {
   id: string
   title: string
-  ageTimestampMs?: number
+  updatedAtMs?: number
   ownerInitials: string
   ownerAvatarUrl?: string
   owners?: KanbanOwner[]
   /** Draft task (not yet launched) — shown with a `[draft]` tag, opens the new-task form. */
   isDraft?: boolean
   workflowLabel: SessionLabel
-  /** Live task status — same model/precedence as the left-nav sidebar. */
-  status?: TaskStatus
+  status?: BoardStatus
   /** True when any of the task's sessions is unread — same calculation as the left-nav sidebar. */
   isUnread?: boolean
   commentCount?: number
@@ -34,6 +33,7 @@ export interface KanbanCard {
 export interface KanbanColumn {
   id: string
   title: string
+  description?: string
   cards: KanbanCard[]
 }
 
@@ -41,6 +41,7 @@ export type KanbanColumns = KanbanColumn[]
 
 export interface KanbanCardProps {
   card: KanbanCard
+  nowMs?: number
   /** Whether this card is currently focused (keyboard navigation). Used in Phase 4. */
   isFocused?: boolean
   onMouseEnter?: () => void
@@ -98,6 +99,7 @@ export interface KanbanBoardProps {
 
 export interface KanbanColumnProps {
   title: string
+  description?: string
   /** Card count shown in the column header badge. */
   count: number
   /** The cards rendered into the column's scrollable stack. */

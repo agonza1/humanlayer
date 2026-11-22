@@ -16,11 +16,11 @@ export const KANBAN_FIXTURE_COLUMNS: KanbanColumns = [
       {
         id: 'c1',
         title: 'Add OAuth2 support for GitHub',
-        ageTimestampMs: Date.now() - 5 * 60 * 1000,
+        updatedAtMs: Date.now() - 5 * 60 * 1000,
         ownerInitials: 'DW',
         ownerAvatarUrl: AVATARS.DW,
         workflowLabel: { name: 'rpi:todo', title: 'todo' },
-        status: 'idle',
+        status: 'ready_for_input',
       },
       {
         id: 'c2',
@@ -28,7 +28,7 @@ export const KANBAN_FIXTURE_COLUMNS: KanbanColumns = [
         ownerInitials: 'KH',
         ownerAvatarUrl: AVATARS.KH,
         workflowLabel: { name: 'rpi:todo', title: 'todo' },
-        status: 'idle',
+        status: 'ready_for_input',
       },
     ],
   },
@@ -39,7 +39,7 @@ export const KANBAN_FIXTURE_COLUMNS: KanbanColumns = [
       {
         id: 'c3',
         title: 'Implement kanban board',
-        ageTimestampMs: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        updatedAtMs: Date.now() - 20 * 24 * 60 * 60 * 1000,
         ownerInitials: 'DW',
         ownerAvatarUrl: AVATARS.DW,
         workflowLabel: { name: 'rpi:design', title: 'design' },
@@ -70,7 +70,7 @@ export const KANBAN_FIXTURE_COLUMNS: KanbanColumns = [
         ownerInitials: 'DW',
         ownerAvatarUrl: AVATARS.DW,
         workflowLabel: { name: 'rpi:plan', title: 'plan' },
-        status: 'pending',
+        status: 'ready_for_launch',
       },
       {
         id: 'c6',
@@ -94,7 +94,7 @@ export const KANBAN_FIXTURE_COLUMNS: KanbanColumns = [
       {
         id: 'c7',
         title: 'Add webhook retry mechanism',
-        ageTimestampMs: Date.now() - 2 * 30 * 24 * 60 * 60 * 1000,
+        updatedAtMs: Date.now() - 2 * 30 * 24 * 60 * 60 * 1000,
         ownerInitials: 'KH',
         ownerAvatarUrl: AVATARS.KH,
         workflowLabel: { name: 'rpi:implementation', title: 'implementation' },

@@ -1,4 +1,4 @@
-export { formatKanbanCardAge, formatKanbanCardAgeLong, KanbanBoard, KanbanCard, KanbanColumn } from './KanbanBoard'
+export { KanbanBoard, KanbanCard, KanbanColumn } from './KanbanBoard'
 export type {
   KanbanBoardProps,
   KanbanCard as KanbanCardModel,
