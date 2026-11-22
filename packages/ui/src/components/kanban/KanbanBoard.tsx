@@ -1,9 +1,9 @@
 import { useRef } from 'react'
 import { useMountEffect } from '../../hooks/use-mount-effect'
+import { boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '../context-menu'
 import { SessionLabelBadge } from '../session-label-badge'
-import { renderTaskStatusIndicator, UnreadBullet } from '../sidebar/status-indicators'
-import { Tooltip, TooltipContent, TooltipTrigger } from '../tooltip'
+import { renderSessionStatusIndicator, UnreadBullet } from '../sidebar/status-indicators'
 import type {
   KanbanBoardProps,
   KanbanCard as KanbanCardModel,
@@ -11,34 +11,6 @@ import type {
   KanbanColumnProps,
   KanbanOwner,
 } from './types'
-
-const MINUTE_MS = 60 * 1000
-const HOUR_MS = 60 * MINUTE_MS
-const DAY_MS = 24 * HOUR_MS
-const MONTH_MS = 30 * DAY_MS
-const OLD_TASK_AGE_MS = 14 * DAY_MS
-
-export function formatKanbanCardAge(createdAtMs: number, nowMs = Date.now()): string {
-  const ageMs = Math.max(0, nowMs - createdAtMs)
-
-  if (ageMs < HOUR_MS) return `${Math.max(1, Math.floor(ageMs / MINUTE_MS))}m`
-  if (ageMs < DAY_MS) return `${Math.floor(ageMs / HOUR_MS)}h`
-  if (ageMs < MONTH_MS) return `${Math.floor(ageMs / DAY_MS)}d`
-  return `${Math.floor(ageMs / MONTH_MS)}mo`
-}
-
-export function formatKanbanCardAgeLong(createdAtMs: number, nowMs = Date.now()): string {
-  const ageMs = Math.max(0, nowMs - createdAtMs)
-
-  if (ageMs < HOUR_MS) return formatAgeUnit(Math.max(1, Math.floor(ageMs / MINUTE_MS)), 'minute')
-  if (ageMs < DAY_MS) return formatAgeUnit(Math.floor(ageMs / HOUR_MS), 'hour')
-  if (ageMs < MONTH_MS) return formatAgeUnit(Math.floor(ageMs / DAY_MS), 'day')
-  return formatAgeUnit(Math.floor(ageMs / MONTH_MS), 'month')
-}
-
-function formatAgeUnit(value: number, unit: string): string {
-  return `${value} ${unit}${value === 1 ? '' : 's'}`
-}
 
 /**
  * Pure presentational kanban card.
@@ -49,6 +21,7 @@ function formatAgeUnit(value: number, unit: string): string {
  */
 export function KanbanCard({
   card,
+  nowMs = Date.now(),
   isFocused,
   onMouseEnter,
   onClick,
@@ -85,7 +58,7 @@ export function KanbanCard({
         borderRadius: 0,
       }}
     >
-      <KanbanCardContent card={card} />
+      <KanbanCardContent card={card} nowMs={nowMs} />
     </div>
   )
 
@@ -149,11 +122,10 @@ export function KanbanCard({
   )
 }
 
-function KanbanCardContent({ card }: { card: KanbanCardModel }) {
+function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: number }) {
   const owners = card.owners && card.owners.length > 0 ? card.owners : [{ initials: card.ownerInitials, avatarUrl: card.ownerAvatarUrl }]
-  const ageLabel = card.ageTimestampMs === undefined ? null : formatKanbanCardAge(card.ageTimestampMs)
-  const ageTooltip = card.ageTimestampMs === undefined ? null : `Last updated ${formatKanbanCardAgeLong(card.ageTimestampMs)} ago`
-  const isOld = card.ageTimestampMs !== undefined && Date.now() - card.ageTimestampMs >= OLD_TASK_AGE_MS
+  const updated = card.updatedAtMs === undefined ? null : formatBoardUpdateTime(card.updatedAtMs, nowMs)
+  const status = card.status ?? (card.isDraft ? 'draft' : 'not_started')
 
   return (
     <div className="flex flex-col gap-2">
@@ -170,27 +142,6 @@ function KanbanCardContent({ card }: { card: KanbanCardModel }) {
 
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
-          {ageLabel && ageTooltip && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  className={isOld ? 'px-1 py-0.5 text-[10px] leading-none' : 'text-xs leading-none'}
-                  style={
-                    isOld
-                      ? {
-                          border: '1px solid color-mix(in srgb, var(--terminal-warning) 35%, transparent)',
-                          backgroundColor: 'color-mix(in srgb, var(--terminal-warning) 8%, transparent)',
-                          color: 'color-mix(in srgb, var(--terminal-warning) 80%, var(--terminal-fg))',
-                        }
-                      : { color: 'color-mix(in srgb, var(--terminal-fg) 80%, transparent)' }
-                  }
-                >
-                  {ageLabel}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{ageTooltip}</TooltipContent>
-            </Tooltip>
-          )}
           {card.isDraft ? (
             <SessionLabelBadge label={{ name: 'rpi:todo', title: 'draft' }} />
           ) : (
@@ -200,7 +151,6 @@ function KanbanCardContent({ card }: { card: KanbanCardModel }) {
 
         <div className="flex items-center gap-2">
           {card.isUnread === true && <UnreadBullet />}
-          {renderTaskStatusIndicator(card.status)}
 
           {card.commentCount !== undefined && card.commentCount > 0 && (
             <div className="flex items-center gap-1.5">
@@ -222,6 +172,18 @@ function KanbanCardContent({ card }: { card: KanbanCardModel }) {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
+        <span className="flex items-center gap-1.5">
+          <span aria-hidden="true">{renderSessionStatusIndicator(status)}</span>
+          {boardStatusLabel(status)}
+        </span>
+        {updated && (
+          <time className="text-[var(--terminal-fg-dim)]" dateTime={updated.dateTime} title={updated.full}>
+            Updated {updated.label}
+          </time>
+        )}
       </div>
     </div>
   )
@@ -277,11 +239,11 @@ function OwnerAvatarStack({ owners }: { owners: KanbanOwner[] }) {
  * stack of cards passed as `children`. Card composition is owned by the caller,
  * so wired callers can pass connected cards without a render-prop.
  */
-export function KanbanColumn({ title, count, children }: KanbanColumnProps) {
+export function KanbanColumn({ title, description, count, children }: KanbanColumnProps) {
   return (
     <div className="flex h-full min-w-72 flex-1 flex-col" style={{ fontFamily: '"IBM Plex Mono", monospace' }}>
-      <div className="flex items-center justify-between px-2 pb-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--terminal-fg)' }}>
+      <div className="flex items-center justify-between gap-2 px-2 pb-1">
+        <h3 className="text-sm font-semibold" style={{ color: 'var(--terminal-fg)' }}>
           {title}
         </h3>
         <span
@@ -294,6 +256,7 @@ export function KanbanColumn({ title, count, children }: KanbanColumnProps) {
           {count}
         </span>
       </div>
+      {description && <p className="px-2 pb-3 text-xs text-[var(--terminal-fg-dim)]">{description}</p>}
 
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-2 py-0.5">{children}</div>
     </div>

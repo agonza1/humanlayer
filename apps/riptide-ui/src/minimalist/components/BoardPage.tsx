@@ -1,12 +1,12 @@
+import { BOARD_COLUMNS, type BoardStatus, describeBoardTask } from '@humanlayer/schemas/task-board'
+import { boardStatusLabel, formatBoardUpdateTime } from '@humanlayer/ui/lib/task-board'
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
-import { assignColumn, KANBAN_COLUMN_DEFS } from '@/lib/kanban/columnEngine'
+import { useMinuteClock } from '@/hooks/useMinuteClock'
 import { WiredUserAvatar } from '@/minimalist/components/Avatar'
 import { Segmented } from '@/minimalist/components/SettingsControls'
-import { TaskMark } from '@/minimalist/components/TaskItem'
 import { type TaskRow, type TaskTreeScope, useTaskTree } from '@/minimalist/lib/data'
-import { statusText } from '@/minimalist/lib/status'
 import { useUi } from '@/minimalist/lib/ui-state'
 import { useTaskUnread } from '@/minimalist/lib/use-unread'
 
@@ -15,23 +15,22 @@ const SCOPES: Array<{ value: TaskTreeScope; label: string }> = [
 	{ value: 'everyone', label: 'Everyone' },
 ]
 
-/** Tasks as a board, one column per RPI phase, placed the same way as the standard board. */
+type BoardRow = {
+	row: TaskRow
+	status: BoardStatus
+	lastUpdatedAtMs: number | null
+}
+
+/** Tasks grouped by workflow phase. */
 export function BoardPage() {
 	const [scope, setScope] = useState<TaskTreeScope>('everyone')
 	const { recent: rows, isReady } = useTaskTree(false, scope)
-	const columns = KANBAN_COLUMN_DEFS.map((column) => ({ ...column, rows: [] as TaskRow[] }))
+	const nowMs = useMinuteClock()
+	const columns = BOARD_COLUMNS.map((column) => ({ ...column, rows: [] as BoardRow[] }))
 	const byId = new Map(columns.map((column) => [column.id, column]))
 	for (const row of rows) {
-		const id = assignColumn(
-			row.task,
-			row.sessions.map((session) => ({
-				status: session.status,
-				archived: session.archived,
-				labels: session.labels,
-				last_activity_at: session.last_activity_at,
-			})),
-		)
-		byId.get(id)?.rows.push(row)
+		const { columnId, status, lastUpdatedAtMs } = describeBoardTask(row.task, row.sessions)
+		byId.get(columnId)?.rows.push({ row, status, lastUpdatedAtMs })
 	}
 	return (
 		<main className="main board">
@@ -55,9 +54,10 @@ export function BoardPage() {
 								{column.title}
 								<span className="meta">{column.rows.length}</span>
 							</div>
+							<p className="board-column-description">{column.description}</p>
 							<div className="board-cards">
-								{column.rows.map((row) => (
-									<BoardCard key={row.task.id} row={row} />
+								{column.rows.map((card) => (
+									<BoardCard key={card.row.task.id} {...card} nowMs={nowMs} />
 								))}
 							</div>
 						</section>
@@ -68,9 +68,10 @@ export function BoardPage() {
 	)
 }
 
-function BoardCard({ row }: { row: TaskRow }) {
+function BoardCard({ row, status, lastUpdatedAtMs, nowMs }: BoardRow & { nowMs: number }) {
 	const unread = useTaskUnread(row.sessions)
-	const status = statusText(row, unread)
+	const setupFailed = status === 'waiting_for_workspace' && row.workspaceSetupFailed
+	const updated = lastUpdatedAtMs === null ? null : formatBoardUpdateTime(lastUpdatedAtMs, nowMs)
 	const { closeSidebarOnNarrow } = useUi()
 	return (
 		<Link
@@ -81,14 +82,21 @@ function BoardCard({ row }: { row: TaskRow }) {
 			title={row.task.name}
 		>
 			<span className="board-card-name">{row.task.name}</span>
-			{status ? <span className="sr-only">, {status}</span> : null}
 			<span className="board-card-meta">
 				<span className="ell">{row.projectName}</span>
 				<span className="sp" />
 				<WiredUserAvatar userId={row.task.resource_owner_user_id} size={18} />
-				<span className="rowmeta" aria-hidden="true">
-					<TaskMark row={row} unread={unread} selected={false} />
+				{unread && <span className="dot" role="img" aria-label="Unread" />}
+			</span>
+			<span className="board-card-status">
+				<span data-status={setupFailed ? 'failed' : status}>
+					{setupFailed ? 'Workspace setup failed' : boardStatusLabel(status)}
 				</span>
+				{updated && (
+					<time dateTime={updated.dateTime} title={updated.full}>
+						Updated {updated.label}
+					</time>
+				)}
 			</span>
 		</Link>
 	)

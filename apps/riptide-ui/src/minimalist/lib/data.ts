@@ -34,6 +34,7 @@ export type TaskRow = {
 	sessions: Session[]
 	latest: Session | null
 	attention: Attention
+	workspaceSetupFailed?: boolean
 	lastActivity: number
 	/** The project or repository it sits under in the sidebar. */
 	projectName: string
@@ -163,6 +164,7 @@ export function useTaskTree(archived = false, scope: TaskTreeScope = 'mine') {
 				rollupAttention(taskSessions.map((session) => session.status)),
 				setupFailed.has(task.id),
 			),
+			workspaceSetupFailed: setupFailed.has(task.id),
 			lastActivity: Math.max(toMs(task.updated_at), latest ? sessionActivity(latest) : 0),
 			projectName: name,
 		}

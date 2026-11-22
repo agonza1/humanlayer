@@ -8,6 +8,7 @@ import { useSync } from '@/components/providers/SyncProvider'
 import { useKanbanFocusStore } from '@/hooks/stores/kanbanFocusStore'
 import { useCommandPaletteAction } from '@/hooks/useCommandPaletteAction'
 import { useKeybindingDisplays } from '@/hooks/useKeybindingDisplays'
+import { useMinuteClock } from '@/hooks/useMinuteClock'
 import { useOrgMembers } from '@/hooks/useOrgMembers'
 import { hotkeysCatalog } from '@/hotkeysCatalog'
 import { summarizeTaskComments } from '@/lib/kanban/summarizeTaskComments'
@@ -54,6 +55,7 @@ export function WiredKanbanCard({
 	const { membersMap } = useOrgMembers()
 	const navigate = useNavigate()
 	const keybindingDisplays = useKeybindingDisplays()
+	const nowMs = useMinuteClock()
 
 	// Per-card boolean selector: a focus change re-renders only the previously- and
 	// newly-focused cards, not the whole board.
@@ -198,6 +200,7 @@ export function WiredKanbanCard({
 			// reactive one (react.dev "resetting all state when a prop changes").
 			key={isFocused ? 'focused' : 'blurred'}
 			card={cardWithComments}
+			nowMs={nowMs}
 			isFocused={isFocused}
 			onCreateSession={card.isDraft ? null : handleCreateSessionSelect}
 			// Right-click "Archive" menu — same owner-gated handler the palette action

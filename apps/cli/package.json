@@ -28,6 +28,7 @@
   "dependencies": {
     "@humanlayer/riptide-api-contract": "workspace:*",
     "@humanlayer/riptide-daemon": "workspace:*",
+    "@humanlayer/schemas": "workspace:*",
     "@humanlayer/agentlayer-provider-auth": "catalog:",
     "@humanlayer/agentlayer-provider-github-copilot": "catalog:",
     "@humanlayer/agentlayer-provider-openai-codex": "catalog:",

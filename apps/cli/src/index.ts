@@ -8,6 +8,7 @@ import { Command } from 'commander'
 import { registerApiCommand } from './api'
 import { registerAgentsAuthCommands, registerFoldAuthCommands } from './commands/agents-auth'
 import { automationRunCommand } from './commands/automation-run'
+import { registerBoardCommand } from './commands/board'
 import { daemonLaunchCommand } from './commands/daemon-launch'
 import { loginCommand } from './commands/login'
 import { logoutCommand } from './commands/logout'
@@ -89,6 +90,7 @@ automation
 	})
 
 registerApiCommand(program, getEnv)
+registerBoardCommand(program, getEnv)
 
 const agents = program.command('agents').description('Manage AI agents and providers')
 registerAgentsAuthCommands(agents)
