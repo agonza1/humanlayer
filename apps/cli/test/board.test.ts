@@ -87,3 +87,36 @@ test.each([
 		{ id: 'task', delivery: { status: expected } },
 	])
 })
+
+test.each([
+	['standing', { slack: 'unavailable', origin: 'delivered', slackRoute: 'standing' }],
+	['specific', { slack: 'unavailable', origin: 'delivered', slackRoute: 'specific' }],
+	['off', { slack: 'unavailable', origin: 'delivered', slackRoute: 'off' }],
+	['unavailable', { slack: 'unavailable', origin: 'delivered', slackRoute: 'unavailable' }],
+	[undefined, { slack: 'unavailable', origin: 'delivered' }],
+])('exports the effective Slack route %s on the blocked card', async (slackRoute, expectedAlert) => {
+	const tasks = vi.fn().mockResolvedValue({
+		rows: [
+			{
+				id: 'task',
+				name: 'Publish',
+				project_id: null,
+				is_draft: false,
+				implementation_reconciliation: {
+					version: 1,
+					decision: { status: 'blocked', reason: 'pr-not-ready', stage: 'implementation' },
+					blockerAlert: {
+						id: '22222222-2222-4222-8222-222222222222',
+						slack: { status: 'unavailable' },
+						origin: { status: 'delivered', receipt: 'native-receipt' },
+						slackRoute,
+					},
+				},
+			},
+		],
+	})
+	const sessions = vi.fn().mockResolvedValue({ rows: [] })
+	const board = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000')
+	const delivery = board.columns.find((column) => column.id === 'implementation')?.cards[0]?.delivery
+	expect(delivery?.status === 'blocked' && delivery.alert).toEqual(expectedAlert)
+})

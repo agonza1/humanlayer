@@ -54,9 +54,28 @@ humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
   --routes '{"slackAutomationId":"AUTOMATION_UUID","origin":{"kind":"session","sessionId":"SESSION_UUID"}}'
 ```
 
-For a task that originated in an existing Slack notification thread, set `origin` to `{"kind":"slack","automationId":"AUTOMATION_UUID"}`. HumanLayer resolves the ready thread for that automation on this task. The route object replaces the previous bindings. When only one requested route is authorized and available, HumanLayer keeps that route and shows the other gap on a blocked task. When none of the requested routes can be bound, the command returns an error. Pass `--routes '{}'` to clear the bindings. This configuration also works on existing enrolled tasks and preserves the current review budget and evidence. Delivery Off still allows visibility and explicitly authorized alerts.
+For a task that originated in an existing Slack notification thread, set `origin` to `{"kind":"slack","automationId":"AUTOMATION_UUID"}`. HumanLayer resolves the ready thread for that automation on this task. A route object without a Slack mode replaces the previous bindings. When only one requested route is authorized and available, HumanLayer keeps that route and shows the other gap on a blocked task. When none of the requested routes can be bound, the command returns an error. Pass `--routes '{}'` to clear the bindings. This configuration also works on existing enrolled tasks and preserves the current review budget and evidence. Delivery Off still allows visibility and explicitly authorized alerts.
 
 The task shows each route's outcome. A Slack receipt needs a matching Slack response. A HumanLayer receipt references the notice stored on the originating session. When both routes point to the same Slack thread, a single post supplies both receipts. A missing native session or unsupported external chat, including a Codex conversation, appears as unavailable while any other authorized route still runs. An uncertain Slack result stays unconfirmed so that a lost response cannot cause a duplicate post.
+
+### Standing Slack route for local personal projects
+
+The task owner can authorize a private Slack DM for their tasks in selected personal projects. Eligible active tasks inherit that route, including older tasks and tasks with automatic delivery Off. The local host relay can use the reviewed Slack bridge to deliver these DMs while HumanLayer's native Slack integration is disconnected.
+
+Set `HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE` to the absolute path of a host-owned mode-0600 JSON grant file. The grant uses `schemaVersion: 2` and lists the permitted project UUIDs in `projectIds`. It specifies the route ID, HumanLayer organization and owner IDs, loopback app origin, Slack workspace, sender, private DM and recipient, plus the absolute paths to the executable, provider script and provider config file. The provider config uses the same version, route, scope and destination with the path to the reviewed bridge launch configuration. Credentials remain in the bridge's private host configuration. The existing task-specific grant uses its existing format and environment variable.
+
+Use the same organization, owner, route ID, project allowlist and private DM identities in both grant files. Apply an approved grant by atomically installing the matching files and starting the existing local API with the standing route configured. Replace the files and rotate the route ID when changing or repairing the grant. Startup and reconnect reconcile active blockers in batches. Slack retries are limited to confirmed unsent blockers with a newly available or changed route. Delivered and unconfirmed sends keep their existing receipts and blocker identity.
+
+An explicit task Slack route overrides the standing route. Existing empty or origin-only bindings preserve their Slack opt-out, and task mutes take precedence. Change only the Slack mode to keep the existing authorized origin.
+
+```sh
+humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
+  --routes '{"slackMode":"inherit"}'
+humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
+  --routes '{"slackMode":"off"}'
+```
+
+On a blocked task, the board and board CLI report the effective Slack route and the outcome of each alert. The DM includes a safe task reference, the blocker and the next action so the owner can act while the local board is unreachable. For rollout, verify a confirmed receipt on an ordinary opted-in task with no task-specific Slack binding.
 
 ## Idle implementation
 

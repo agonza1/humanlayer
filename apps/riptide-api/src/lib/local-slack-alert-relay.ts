@@ -1,21 +1,36 @@
 import { execFile } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
 import type { DeliveryAlertReceipt } from '@humanlayer/schemas/zod/automatic-delivery'
+import {
+	IMPLEMENTATION_BLOCKERS,
+	type ImplementationBlocker,
+} from '@humanlayer/schemas/zod/implementation-reconciliation'
 import { z } from 'zod/v4'
 
 type RouteScope = { routeId: string; organizationId: string; ownerId: string; taskId: string }
+type StandingScope = Omit<RouteScope, 'routeId'> & { projectId: string }
 type LocalSlackAlert = RouteScope & {
 	alertId: string
 	teamId: string
 	channelId: string
 	reason?: 'publication' | 'implementation' | 'review' | 'delivery'
+	standing?: {
+		projectId: string
+		taskLabel: string
+		blocker?: ImplementationBlocker
+		revision: string
+	}
 }
 
+const MAX_ROUTE_FILE_BYTES = 4096
+const MAX_TASK_LABEL_LENGTH = 120
+const id = z.uuid()
 const localRouteSchema = z.object({
-	routeId: z.uuid(),
-	taskId: z.uuid(),
+	routeId: id,
+	taskId: id,
 	organizationId: z.string().min(1),
 	ownerId: z.string().min(1),
 	appOrigin: z.url(),
@@ -28,48 +43,121 @@ const localRouteSchema = z.object({
 	providerConfigFile: z.string().refine(isAbsolute),
 })
 
-const localReceiptSchema = z.discriminatedUnion('status', [
-	z.object({
-		status: z.literal('delivered'),
-		taskId: z.uuid(),
-		alertId: z.uuid(),
-		teamId: z.string(),
-		channelId: z.string(),
-		botUserId: z.string(),
-		messageTs: z.string().regex(/^\d+\.\d+$/),
-	}),
-	z.object({ status: z.enum(['unavailable', 'failed', 'unknown']) }),
+const standingRouteSchema = localRouteSchema
+	.omit({ taskId: true })
+	.extend({
+		schemaVersion: z.literal(2),
+		projectIds: z
+			.array(id)
+			.min(1)
+			.refine((projects) => new Set(projects).size === projects.length),
+	})
+	.strict()
+
+const deliveredReceiptSchema = z.object({
+	status: z.literal('delivered'),
+	taskId: id,
+	alertId: id,
+	teamId: z.string(),
+	channelId: z.string(),
+	botUserId: z.string(),
+	messageTs: z.string().regex(/^\d+\.\d+$/),
+})
+const undeliveredReceiptSchema = z.object({ status: z.enum(['unavailable', 'failed', 'unknown']) })
+const localReceiptSchema = z.discriminatedUnion('status', [deliveredReceiptSchema, undeliveredReceiptSchema])
+const standingReceiptSchema = z.discriminatedUnion('status', [
+	deliveredReceiptSchema
+		.extend({
+			schemaVersion: z.literal(2),
+			projectId: id,
+			routeId: id,
+			messageTs: z.string().regex(/^\d{10,16}\.\d{6}$/),
+		})
+		.strict(),
+	undeliveredReceiptSchema,
 ])
 
-function readLocalRoute(scope: RouteScope) {
-	const path = process.env.HUMANLAYER_LOCAL_SLACK_ALERT_RELAY_FILE
+function readPrivateRouteFile<Schema extends z.ZodType>(path: string | undefined, schema: Schema) {
 	if (!path || !isAbsolute(path)) return null
 	try {
-		const metadata = lstatSync(path)
-		if (
-			!metadata.isFile() ||
-			metadata.uid !== process.getuid?.() ||
-			(metadata.mode & 0o077) !== 0 ||
-			metadata.size > 4096
-		)
-			return null
-		const route = localRouteSchema.parse(JSON.parse(readFileSync(path, 'utf8')))
-		const origin = new URL(route.appOrigin)
-		if (
-			!['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname) ||
-			!['http:', 'https:'].includes(origin.protocol) ||
-			route.appOrigin !== origin.origin ||
-			route.appOrigin !== process.env.APP_ORIGIN ||
-			route.routeId !== scope.routeId ||
-			route.organizationId !== scope.organizationId ||
-			route.ownerId !== scope.ownerId ||
-			route.taskId !== scope.taskId
-		)
-			return null
-		return route
+		const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+		try {
+			const before = fstatSync(fd)
+			if (
+				!before.isFile() ||
+				before.nlink !== 1 ||
+				before.uid !== process.getuid?.() ||
+				(before.mode & 0o077) !== 0 ||
+				before.size > MAX_ROUTE_FILE_BYTES
+			)
+				return null
+			const bytes = Buffer.alloc(MAX_ROUTE_FILE_BYTES + 1)
+			let length = 0
+			while (length < bytes.length) {
+				const count = readSync(fd, bytes, length, bytes.length - length, null)
+				if (count === 0) break
+				length += count
+			}
+			const after = fstatSync(fd)
+			if (
+				length !== before.size ||
+				before.size !== after.size ||
+				before.mtimeMs !== after.mtimeMs ||
+				before.ctimeMs !== after.ctimeMs
+			)
+				return null
+			return schema.parse(JSON.parse(bytes.toString('utf8', 0, length)))
+		} finally {
+			closeSync(fd)
+		}
 	} catch {
 		return null
 	}
+}
+
+function matchesLocalAppOrigin(appOrigin: string) {
+	const origin = new URL(appOrigin)
+	return (
+		['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname) &&
+		['http:', 'https:'].includes(origin.protocol) &&
+		appOrigin === origin.origin &&
+		appOrigin === process.env.APP_ORIGIN
+	)
+}
+
+function readLocalRoute(scope: RouteScope) {
+	const route = readPrivateRouteFile(process.env.HUMANLAYER_LOCAL_SLACK_ALERT_RELAY_FILE, localRouteSchema)
+	if (
+		!route ||
+		!matchesLocalAppOrigin(route.appOrigin) ||
+		route.routeId !== scope.routeId ||
+		route.organizationId !== scope.organizationId ||
+		route.ownerId !== scope.ownerId ||
+		route.taskId !== scope.taskId
+	)
+		return null
+	return route
+}
+
+function readStandingRoute(scope: StandingScope) {
+	const route = readPrivateRouteFile(
+		process.env.HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE,
+		standingRouteSchema,
+	)
+	if (
+		!route ||
+		!matchesLocalAppOrigin(route.appOrigin) ||
+		route.botUserId === route.recipientUserId ||
+		route.organizationId !== scope.organizationId ||
+		route.ownerId !== scope.ownerId ||
+		!route.projectIds.includes(scope.projectId) ||
+		!id.safeParse(scope.taskId).success
+	)
+		return null
+	const revision = createHash('sha256')
+		.update(JSON.stringify({ ...route, projectIds: [...new Set(route.projectIds)].sort() }))
+		.digest('hex')
+	return { route, revision }
 }
 
 export function resolveLocalSlackAlertRoute(scope: RouteScope) {
@@ -77,18 +165,62 @@ export function resolveLocalSlackAlertRoute(scope: RouteScope) {
 	return route ? { teamId: route.teamId, channelId: route.channelId } : null
 }
 
-/** The local runner owns the Slack token. Only IDs, an allowlisted reason, and a receipt cross this boundary. */
+export function resolveStandingLocalSlackAlertRoute(scope: StandingScope) {
+	const standing = readStandingRoute(scope)
+	if (!standing) return null
+	const { routeId, teamId, channelId } = standing.route
+	return { routeId, teamId, channelId, revision: standing.revision }
+}
+
+function normalizeTaskLabel(label: string, taskId: string) {
+	const normalized = label
+		.replace(/[\p{C}<>&]/gu, ' ')
+		.replace(/\s+/gu, ' ')
+		.trim()
+		.slice(0, MAX_TASK_LABEL_LENGTH)
+		.replace(/\p{Cs}$/u, '')
+		.trimEnd()
+	return normalized || `Task ${taskId.slice(-8)}`
+}
+
+/** The local runner owns the Slack token. The relay receives only the approved destination and notice fields. */
 export function postLocalSlackDeliveryBlocker(input: LocalSlackAlert): Promise<DeliveryAlertReceipt> {
-	const route = readLocalRoute(input)
-	if (!route || route.teamId !== input.teamId || route.channelId !== input.channelId)
+	const { standing } = input
+	const standingRoute = standing ? readStandingRoute({ ...input, projectId: standing.projectId }) : null
+	const route = standing ? standingRoute?.route : readLocalRoute(input)
+	if (
+		!route ||
+		route.routeId !== input.routeId ||
+		route.teamId !== input.teamId ||
+		route.channelId !== input.channelId ||
+		(standing &&
+			(standingRoute?.revision !== standing.revision ||
+				(standing.blocker !== undefined && !Object.hasOwn(IMPLEMENTATION_BLOCKERS, standing.blocker))))
+	)
 		return Promise.resolve({ status: 'unavailable' })
 
-	const request = {
-		...input,
+	const commonRequest = {
+		routeId: input.routeId,
+		organizationId: input.organizationId,
+		ownerId: input.ownerId,
+		taskId: input.taskId,
+		alertId: input.alertId,
+		teamId: input.teamId,
+		channelId: input.channelId,
+		reason: input.reason,
 		botUserId: route.botUserId,
 		recipientUserId: route.recipientUserId,
 		taskUrl: new URL(`/tasks/${input.taskId}`, route.appOrigin).toString(),
 	}
+	const request = standing
+		? {
+				...commonRequest,
+				schemaVersion: 2,
+				projectId: standing.projectId,
+				taskLabel: normalizeTaskLabel(standing.taskLabel, input.taskId),
+				blocker: standing.blocker,
+			}
+		: commonRequest
 	return new Promise((resolve) => {
 		const child = execFile(
 			route.executable,
@@ -97,14 +229,19 @@ export function postLocalSlackDeliveryBlocker(input: LocalSlackAlert): Promise<D
 			(error, output) => {
 				try {
 					if (error) return resolve({ status: 'unknown' })
-					const result = localReceiptSchema.parse(JSON.parse(output))
+					const result = (standing ? standingReceiptSchema : localReceiptSchema).parse(JSON.parse(output))
 					if (result.status !== 'delivered') return resolve(result)
 					if (
 						result.taskId !== input.taskId ||
 						result.alertId !== input.alertId ||
 						result.teamId !== input.teamId ||
 						result.channelId !== input.channelId ||
-						result.botUserId !== route.botUserId
+						result.botUserId !== route.botUserId ||
+						(standing &&
+							(!('routeId' in result) ||
+								!('projectId' in result) ||
+								result.routeId !== input.routeId ||
+								result.projectId !== standing.projectId))
 					)
 						return resolve({ status: 'unknown' })
 					return resolve({

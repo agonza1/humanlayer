@@ -65,15 +65,22 @@ export const DeliveryReviewSchema = z.object({
 		.max(100),
 	evidence: z.string().min(1).max(30000),
 })
-export const DeliveryAlertRoutesInputSchema = z.object({
-	slackAutomationId: z.uuid().optional(),
-	origin: z
-		.discriminatedUnion('kind', [
-			z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
-			z.object({ kind: z.literal('slack'), automationId: z.uuid() }),
-		])
-		.optional(),
-})
+const SlackAlertModeSchema = z.enum(['inherit', 'off'])
+
+export const DeliveryAlertRoutesInputSchema = z
+	.object({
+		slackAutomationId: z.uuid().optional(),
+		slackMode: SlackAlertModeSchema.optional(),
+		origin: z
+			.discriminatedUnion('kind', [
+				z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
+				z.object({ kind: z.literal('slack'), automationId: z.uuid() }),
+			])
+			.optional(),
+	})
+	.refine((routes) => !routes.slackAutomationId || !routes.slackMode, {
+		message: 'Choose either a specific Slack automation or a Slack mode.',
+	})
 
 export const DeliveryAlertSlackRouteSchema = z.object({
 	automationId: z.uuid(),
@@ -94,6 +101,7 @@ export type DeliveryAlertReceipt = z.infer<typeof DeliveryAlertReceiptSchema>
 
 export const DeliveryAlertRoutesSchema = z.object({
 	slack: DeliveryAlertSlackRouteSchema.optional(),
+	slackMode: SlackAlertModeSchema.optional(),
 	origin: z
 		.discriminatedUnion('kind', [
 			z.object({ kind: z.literal('session'), sessionId: z.uuid() }),
@@ -105,6 +113,8 @@ export const DeliveryBlockerAlertSchema = z.object({
 	id: z.uuid(),
 	slack: DeliveryAlertReceiptSchema,
 	origin: DeliveryAlertReceiptSchema,
+	slackRoute: z.enum(['standing', 'specific', 'off', 'unavailable']).optional(),
+	standingSlackAttempt: z.string().optional(),
 })
 
 export const AutomaticDeliverySchema = z.object({

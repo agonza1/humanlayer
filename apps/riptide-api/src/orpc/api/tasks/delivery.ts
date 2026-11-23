@@ -123,12 +123,14 @@ export const configureDeliveryAlertsProcedure = apiBaseOrgRequired.tasks.deliver
 					message: 'No requested alert route is authorized and available for this task.',
 				})
 			const reconciliation = readTaskReconciliation(task)
+			if (input.routes.slackMode && !input.routes.origin)
+				routes.origin = (reconciliation.alertRoutes ?? delivery?.alertRoutes)?.origin
 			for (const state of [delivery, reconciliation]) {
 				if (!state) continue
 				state.alertRoutes = routes
 				const alert = state.blockerAlert
 				if (alert) {
-					// Unavailable routes have never been attempted; preserve settled or in-flight receipts.
+					// Explicitly rebound routes can retry unavailable receipts while preserving settled or in-flight sends.
 					if (routes.slack && alert.slack.status === 'unavailable') alert.slack = { status: 'pending' }
 					if (routes.origin && alert.origin.status === 'unavailable') alert.origin = { status: 'pending' }
 				}

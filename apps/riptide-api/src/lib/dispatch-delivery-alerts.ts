@@ -38,6 +38,7 @@ export async function dispatchDeliveryAlerts(
 					teamId: dispatch.teamId,
 					channelId: dispatch.channelId,
 					reason: dispatch.relayReason,
+					standing: dispatch.standing,
 				})
 			: await effectRuntime.runPromise(
 					Effect.gen(function* () {
