@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -70,6 +70,61 @@ describe('implementation to PR evidence', () => {
 		expect(await readFile(join(cwd, '.git/runs'), 'utf8')).toBe('x')
 		expect(await verificationHandoff(cwd, 'task')).toContain('"passed":true')
 		expect(await verificationHandoff(cwd, 'another-task')).toContain('unavailable')
+	})
+	it('reuses exact-SHA evidence through a symlink alias of the same physical directory', async () => {
+		const aliasRoot = await mkdtemp(join(tmpdir(), 'verification-alias-'))
+		const alias = join(aliasRoot, 'checkout')
+		try {
+			await symlink(cwd, alias, 'dir')
+			expect(await realpath(alias)).toBe(await realpath(cwd))
+			expect((await git('status', '--porcelain', '--untracked-files=all')).stdout).toBe('')
+			expect(await check()).toContain('"passed":true')
+			const executions = vi.mocked(runOwnedCommand).mock.calls.length
+			const result = await check({ cwd: alias, allowReuse: true, session: 'describe-pr' })
+			expect(result).toContain('Reused successful verification evidence')
+			expect(result).toContain((await git('rev-parse', 'HEAD')).stdout.trim())
+			expect(result).toContain('"passed":true')
+			expect(vi.mocked(runOwnedCommand).mock.calls.length).toBe(executions)
+			expect(await readFile(join(cwd, '.git/runs'), 'utf8')).toBe('x')
+			expect((await git('status', '--porcelain', '--untracked-files=all')).stdout).toBe('')
+		} finally {
+			await rm(aliasRoot, { recursive: true, force: true })
+		}
+	})
+	it('does not reuse successful evidence from another directory in the same clean checkout', async () => {
+		const nested = join(cwd, 'nested')
+		await mkdir(nested)
+		const directoryCommand = `${JSON.stringify(process.execPath)} -e 'console.log("passed")'`
+		const executor = vi.mocked(runOwnedCommand)
+		executor.mockClear()
+		const revision = (await git('rev-parse', 'HEAD')).stdout.trim()
+		expect((await git('status', '--porcelain', '--untracked-files=all')).stdout).toBe('')
+
+		expect(await check({ command: directoryCommand })).toContain('"passed":true')
+		expect(executor).toHaveBeenCalledTimes(1)
+		expect(await check({ command: directoryCommand, allowReuse: true })).toContain(
+			'Reused successful verification evidence',
+		)
+		expect(executor).toHaveBeenCalledTimes(1)
+
+		const result = await check({ command: directoryCommand, cwd: nested, allowReuse: true })
+		expect(result).not.toContain('Reused')
+		expect(result).toContain('"passed":true')
+		expect(result).toContain(revision)
+		expect(executor).toHaveBeenCalledTimes(2)
+		expect(executor).toHaveBeenNthCalledWith(
+			2,
+			directoryCommand,
+			expect.objectContaining({ cwd: await realpath(nested) }),
+		)
+		expect((await git('rev-parse', 'HEAD')).stdout.trim()).toBe(revision)
+		expect((await git('status', '--porcelain', '--untracked-files=all')).stdout).toBe('')
+	})
+	it('does not reuse successful evidence from another task', async () => {
+		expect(await check()).toContain('"passed":true')
+		const result = await check({ allowReuse: true, task: 'another-task', session: 'describe-pr' })
+		expect(result).not.toContain('Reused')
+		expect(await readFile(join(cwd, '.git/runs'), 'utf8')).toBe('xx')
 	})
 	it('independent QA executes instead of reusing implementation checks', async () => {
 		await check()
