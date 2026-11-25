@@ -4,7 +4,7 @@ import { deliveryReviewVerdict, type DeliveryReview } from '@humanlayer/schemas/
 import { Effect } from 'effect'
 import { expect } from 'vitest'
 
-import { executeDeliveryAction, type DeliveryCommands } from './automatic-delivery'
+import { executeDeliveryAction, inspectCommittedImplementation, type DeliveryCommands } from './automatic-delivery'
 
 describe('Exact-head delivery host adapter', () => {
 	const target = { repository: 'test/repo', branch: 'feature', base: 'main', directory: '/tmp/repo' }
@@ -15,6 +15,51 @@ describe('Exact-head delivery host adapter', () => {
 		kind: 'merge',
 		targets: [target],
 		heads: [{ ...target, number: 1, sha, merged: false }],
+	}
+	for (const [failure, message] of [
+		['dirty', 'Local checkout'],
+		['empty', 'No committed implementation'],
+		['diverged', 'not an ancestor'],
+		['closed', 'incompatible'],
+	] as const) {
+		it.effect(`blocks ${failure} interrupted implementation evidence`, () =>
+			Effect.promise(async () => {
+				const baseSha = 'b'.repeat(40)
+				const remoteSha = 'c'.repeat(40)
+				const commands: DeliveryCommands = {
+					run: async (binary, args) => {
+						if (binary === 'gh')
+							return JSON.stringify([
+								{
+									number: 1,
+									headRefOid: remoteSha,
+									headRefName: target.branch,
+									baseRefName: target.base,
+									state: 'CLOSED',
+									isDraft: false,
+									mergeStateStatus: '',
+									reviewDecision: '',
+									labels: [],
+								},
+							])
+						if (args[0] === 'status') return failure === 'dirty' ? ' M file' : ''
+						if (args[0] === 'branch') return target.branch
+						if (args[0] === 'rev-parse') return sha
+						if (args[0] === 'remote') return 'git@github.com:test/repo.git'
+						if (args[0] === 'ls-remote')
+							return `${baseSha}\trefs/heads/main\n${remoteSha}\trefs/heads/feature`
+						if (args[0] === 'rev-list') return failure === 'empty' ? '' : sha
+						if (args[0] === 'merge-base') {
+							if (args[1] === '--is-ancestor' && failure === 'diverged')
+								throw new Error('not an ancestor')
+							return baseSha
+						}
+						throw new Error(`Unexpected command: ${binary} ${args.join(' ')}`)
+					},
+				}
+				await expect(inspectCommittedImplementation([target], commands)).rejects.toThrow(message)
+			}),
+		)
 	}
 	for (const priority of ['P0', 'P1', 'P2', 'P3'] as const) {
 		it.effect(`triages unrelated verified ${priority} without losing evidence`, () =>

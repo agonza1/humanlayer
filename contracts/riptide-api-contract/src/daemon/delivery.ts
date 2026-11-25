@@ -1,4 +1,5 @@
 import {
+	DeliveryCommitSchema,
 	DeliveryHeadSchema,
 	DeliveryInspectionIssueSchema,
 	DeliveryTargetSchema,
@@ -10,7 +11,7 @@ import { contractBuilder } from '../contract-builder'
 export const DeliveryActionSchema = z.object({
 	taskId: z.uuidv7(),
 	leaseId: z.uuid(),
-	kind: z.enum(['inspect', 'merge', 'archive']),
+	kind: z.enum(['inspect', 'merge', 'archive', 'recover']),
 	targets: z.array(DeliveryTargetSchema),
 	heads: z.array(DeliveryHeadSchema),
 })
@@ -27,6 +28,7 @@ export const completeDeliveryContract = contractBuilder
 			taskId: z.uuidv7(),
 			leaseId: z.uuid(),
 			heads: z.array(DeliveryHeadSchema),
+			recoveredCommits: z.array(DeliveryCommitSchema).max(10).optional(),
 			error: z.string().max(30000).nullable(),
 			inspectionIssue: DeliveryInspectionIssueSchema.optional(),
 		}),

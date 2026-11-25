@@ -4,6 +4,7 @@ import { promisify } from 'node:util'
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import {
 	sameDeliveryHeads,
+	type DeliveryCommit,
 	type DeliveryHead,
 	type DeliveryInspectionIssue,
 	type DeliveryTarget,
@@ -48,11 +49,7 @@ const liveCommands: DeliveryCommands = {
 	},
 }
 
-async function inspectTarget(
-	commands: DeliveryCommands,
-	target: DeliveryTarget,
-	merging: boolean,
-): Promise<DeliveryHead> {
+async function inspectCheckout(commands: DeliveryCommands, target: DeliveryTarget): Promise<string> {
 	const cwd = target.directory
 	const [dirty, branch, localSha, origin] = await Promise.all([
 		commands.run('git', ['status', '--porcelain'], cwd),
@@ -70,6 +67,10 @@ async function inspectTarget(
 			'checkout',
 			'Local checkout has newer/uncommitted work, a different branch, or a different repository',
 		)
+	return localSha
+}
+
+async function readPullRequests(commands: DeliveryCommands, target: DeliveryTarget) {
 	const json = await commands.run(
 		'gh',
 		[
@@ -88,9 +89,63 @@ async function inspectTarget(
 			'--json',
 			'number,headRefOid,headRefName,baseRefName,state,isDraft,mergeStateStatus,reviewDecision,labels',
 		],
-		cwd,
+		target.directory,
 	)
-	const prs = PullRequestsSchema.parse(JSON.parse(json))
+	return PullRequestsSchema.parse(JSON.parse(json))
+}
+
+export async function inspectCommittedImplementation(
+	targets: DeliveryTarget[],
+	commands: DeliveryCommands,
+): Promise<DeliveryCommit[]> {
+	const deadline = Date.now() + 90_000
+	const commits: DeliveryCommit[] = []
+	for (const target of targets) {
+		if (Date.now() > deadline) throw new Error('Implementation recovery inspection exceeded its bound')
+		const { directory, branch, base } = target
+		if (branch === base) throw new Error('Implementation recovery requires a separate task branch')
+		const sha = await inspectCheckout(commands, target)
+		const baseRef = `refs/heads/${base}`
+		const branchRef = `refs/heads/${branch}`
+		const refs = await commands.run('git', ['ls-remote', '--refs', 'origin', baseRef, branchRef], directory)
+		const refSha = (ref: string) =>
+			refs
+				.split('\n')
+				.find((line) => line.split('\t')[1] === ref)
+				?.split('\t')[0]
+		const baseSha = refSha(baseRef)
+		const remoteSha = refSha(branchRef)
+		if (!baseSha) throw new Error('Could not verify the base branch for implementation recovery')
+		// An unavailable object or unrelated history fails closed. No fetch writes to the task checkout.
+		await commands.run('git', ['merge-base', baseSha, sha], directory)
+		const unique = await commands.run('git', ['rev-list', '--max-count=1', sha, '--not', baseSha], directory)
+		if (!unique) throw new Error('No committed implementation exists beyond the base')
+		if (remoteSha) await commands.run('git', ['merge-base', '--is-ancestor', remoteSha, sha], directory)
+		const prs = await readPullRequests(commands, target)
+		if (
+			prs.length > 1 ||
+			prs.some(
+				(pr) =>
+					pr.state !== 'OPEN' ||
+					pr.headRefName !== branch ||
+					pr.baseRefName !== base ||
+					pr.headRefOid !== remoteSha,
+			)
+		)
+			throw new Error('Existing PR state is ambiguous or incompatible with the recovered implementation')
+		commits.push({ ...target, sha })
+	}
+	return commits
+}
+
+async function inspectTarget(
+	commands: DeliveryCommands,
+	target: DeliveryTarget,
+	merging: boolean,
+): Promise<DeliveryHead> {
+	const cwd = target.directory
+	const localSha = await inspectCheckout(commands, target)
+	const prs = await readPullRequests(commands, target)
 	if (prs.length !== 1)
 		throw new DeliveryInspectionError(
 			prs.length ? 'pr-ambiguous' : 'pr-missing',
@@ -195,27 +250,31 @@ export function createDeliveryHeartbeatContinuation(orpc: ORPCClient, onError: (
 			const { action } = await orpc.delivery.claim({}, { signal: AbortSignal.timeout(15_000) })
 			if (!action) return
 			let heads: DeliveryHead[] = []
+			let recoveredCommits: DeliveryCommit[] | undefined
 			let error: string | null = null
 			let inspectionIssue: DeliveryInspectionIssue | undefined
 			try {
-				heads = await executeDeliveryAction(
-					action,
-					liveCommands,
-					async () =>
-						(
-							await orpc.delivery.validate(
-								{ taskId: action.taskId, leaseId: action.leaseId },
-								{ signal: AbortSignal.timeout(15_000) },
-							)
-						).authorized,
-				)
+				if (action.kind === 'recover')
+					recoveredCommits = await inspectCommittedImplementation(action.targets, liveCommands)
+				else
+					heads = await executeDeliveryAction(
+						action,
+						liveCommands,
+						async () =>
+							(
+								await orpc.delivery.validate(
+									{ taskId: action.taskId, leaseId: action.leaseId },
+									{ signal: AbortSignal.timeout(15_000) },
+								)
+							).authorized,
+					)
 			} catch (cause) {
 				onError(cause)
 				inspectionIssue = cause instanceof DeliveryInspectionError ? cause.issue : undefined
 				error = cause instanceof Error ? cause.message : 'Delivery worker failed'
 			}
 			await orpc.delivery.complete(
-				{ taskId: action.taskId, leaseId: action.leaseId, heads, error, inspectionIssue },
+				{ taskId: action.taskId, leaseId: action.leaseId, heads, error, inspectionIssue, recoveredCommits },
 				{ signal: AbortSignal.timeout(15_000) },
 			)
 		} catch (error) {

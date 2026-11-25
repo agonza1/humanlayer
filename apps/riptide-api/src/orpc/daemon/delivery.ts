@@ -118,7 +118,14 @@ export const completeDeliveryProcedure = daemonBase.delivery.complete
 			const delivery = decodeDelivery(task.automatic_delivery)
 			if (!delivery) return { accepted: false, archived: false, alerts: [] }
 			if (delivery.hostId !== hostId) throw errors.FORBIDDEN()
-			const accepted = await completeTaskDelivery(tx, task, input.leaseId, input.heads, input.error)
+			const accepted = await completeTaskDelivery(
+				tx,
+				task,
+				input.leaseId,
+				input.heads,
+				input.error,
+				input.recoveredCommits,
+			)
 			const [updated] = await tx.select({ archived: tasks.archived }).from(tasks).where(eq(tasks.id, task.id))
 			return { accepted, archived: updated?.archived === true, alerts: [] }
 		})
@@ -152,6 +159,7 @@ export const validateDeliveryProcedure = daemonBase.delivery.validate
 				delivery.mode !== 'merge' ||
 				delivery.phase !== 'merge' ||
 				delivery.lease?.id !== input.leaseId ||
+				delivery.lease.kind !== 'merge' ||
 				delivery.lease.expiresAt < Date.now()
 			)
 				return { authorized: false }
