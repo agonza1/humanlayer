@@ -30,9 +30,11 @@ export const DeliveryTargetSchema = z.object({
 	base: z.string().min(1).max(255),
 	directory: z.string().min(1),
 })
-export const DeliveryHeadSchema = DeliveryTargetSchema.extend({
-	number: z.number().int().positive(),
+export const DeliveryCommitSchema = DeliveryTargetSchema.extend({
 	sha: z.string().regex(/^[a-f0-9]{40}$/),
+})
+export const DeliveryHeadSchema = DeliveryCommitSchema.extend({
+	number: z.number().int().positive(),
 	merged: z.boolean(),
 	// Older hosts do not report draft state. Read-only legacy reconciliation requires it.
 	draft: z.boolean().optional(),
@@ -145,6 +147,7 @@ export const AutomaticDeliverySchema = z.object({
 	deliverySessionIds: z.array(z.uuid()).max(10),
 	workRevision: z.string(),
 	heads: z.array(DeliveryHeadSchema),
+	recoveredCommits: z.array(DeliveryCommitSchema).min(1).max(10).optional(),
 	reviews: z.array(DeliveryReviewSchema).max(3),
 	attention: z.string().nullable(),
 	attentionDuringPublication: z.boolean().optional(),
@@ -153,7 +156,7 @@ export const AutomaticDeliverySchema = z.object({
 	lease: z
 		.object({
 			id: z.uuid(),
-			kind: z.enum(['inspect', 'merge', 'archive']),
+			kind: z.enum(['inspect', 'merge', 'archive', 'recover']),
 			expiresAt: z.number(),
 			revision: z.string(),
 		})
@@ -161,6 +164,7 @@ export const AutomaticDeliverySchema = z.object({
 })
 export type AutomaticDelivery = z.infer<typeof AutomaticDeliverySchema>
 export type DeliveryHead = z.infer<typeof DeliveryHeadSchema>
+export type DeliveryCommit = z.infer<typeof DeliveryCommitSchema>
 export type DeliveryTarget = z.infer<typeof DeliveryTargetSchema>
 export type DeliveryReview = z.infer<typeof DeliveryReviewSchema>
 

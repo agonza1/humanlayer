@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
 
 import { describe, it } from '@effect/vitest'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
@@ -13,12 +15,15 @@ import { slackIntegrations } from '@humanlayer/db/tables/slack-integrations'
 import { slackNotificationAutomations } from '@humanlayer/db/tables/slack-notification-automations'
 import { slackNotificationThreads } from '@humanlayer/db/tables/slack-notification-threads'
 import { tasks } from '@humanlayer/db/tables/tasks'
+import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import {
 	decodeDelivery,
 	type DeliveryAlertReceipt,
 	type DeliveryAlertRoutesInputSchema,
 	type AutomaticDelivery,
+	type DeliveryCommit,
+	type DeliveryHead,
 	type DeliveryReview,
 } from '@humanlayer/schemas/zod/automatic-delivery'
 import { call } from '@orpc/server'
@@ -44,13 +49,23 @@ import { guardTaskDeliveryMutation } from '../../src/db/guard-delivery-mutation'
 import { SlackService } from '../../src/effects/services/slack/slack.service'
 import { configureDeliveryAlertsProcedure } from '../../src/orpc/api/tasks/delivery'
 import { upsertArtifactProcedure } from '../../src/orpc/daemon/artifacts/upsert'
-import { claimDeliveryProcedure } from '../../src/orpc/daemon/delivery'
+import {
+	claimDeliveryProcedure,
+	completeDeliveryProcedure,
+	validateDeliveryProcedure,
+} from '../../src/orpc/daemon/delivery'
+import { shutdownEffectProcedure } from '../../src/orpc/daemon/hosts/shutdown.effect'
 import { createMockApiAuth, createMockApiContext, createMockDaemonAuth, createMockDaemonContext } from '../mocks'
-import { createRuntimeWithTestPostgresLayer, fakeSlackLayer } from '../utils/effect-procedure-test-runtime'
+import {
+	bindProcedureToRuntime,
+	createRuntimeWithTestPostgresLayer,
+	fakeSlackLayer,
+} from '../utils/effect-procedure-test-runtime'
 import { requireExternalTestServices } from '../utils/external-test-services'
 import { createTestDb } from '../utils/test-db'
 
 await requireExternalTestServices()
+const exec = promisify(execFile)
 
 describe('Persisted automatic delivery', () => {
 	let db: PostgresJsDatabase
@@ -71,7 +86,7 @@ describe('Persisted automatic delivery', () => {
 	}, 30000)
 	afterAll(async () => cleanup?.())
 
-	async function fixture(mode: AutomaticDelivery['mode'] = 'merge', assignedHost = hostId) {
+	async function fixture(mode: AutomaticDelivery['mode'] = 'merge', assignedHost = hostId, workspace = target) {
 		const [task] = await db
 			.insert(tasks)
 			.values({
@@ -89,7 +104,7 @@ describe('Persisted automatic delivery', () => {
 				created_by: 'owner',
 				resource_owner_user_id: 'owner',
 				host_id: assignedHost,
-				working_directory: target.directory,
+				working_directory: workspace.directory,
 				status: 'ready_for_input',
 				coding_agent: 'claude',
 				provider: 'anthropic',
@@ -101,9 +116,9 @@ describe('Persisted automatic delivery', () => {
 			task_id: task!.id,
 			session_id: source!.id,
 			host_id: assignedHost,
-			local_path: target.directory,
-			repo_full_name: target.repository,
-			branch: target.branch,
+			local_path: workspace.directory,
+			repo_full_name: workspace.repository,
+			branch: workspace.branch,
 		})
 		const delivery: AutomaticDelivery = {
 			version: 1,
@@ -112,7 +127,7 @@ describe('Persisted automatic delivery', () => {
 			mode,
 			hostId: assignedHost,
 			sourceSessionId: source!.id,
-			targets: [target],
+			targets: [workspace],
 			policyAcknowledgement: 'Repository permits this task',
 			phase: 'implementation',
 			passes: 0,
@@ -173,6 +188,237 @@ describe('Persisted automatic delivery', () => {
 		}
 		return { taskId, source: source!, locked, claim, state, idle, complete, reachReview, review }
 	}
+
+	it('recovers an unreported commit across host restarts, repairs on the same branch and reaches the merge gate', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'delivery-exit-'))
+		try {
+			const workspace = { ...target, directory }
+			const remote = join(directory, '..', `${directory.split('/').at(-1)}.git`)
+			const git = async (...args: string[]) => (await exec('git', args, { cwd: directory })).stdout.trim()
+			await git('init', '--bare', remote)
+			try {
+				await git('init', '-b', 'main')
+				await git('config', 'user.name', 'Delivery Fixture')
+				await git('config', 'user.email', 'fixture@example.invalid')
+				await writeFile(join(directory, 'answer.txt'), 'original\n')
+				await git('add', 'answer.txt')
+				await git('commit', '-m', 'Base')
+				const baseSha = await git('rev-parse', 'HEAD')
+				await git('remote', 'add', 'origin', remote)
+				await git('push', 'origin', 'main')
+				await git('switch', '-c', target.branch)
+				const f = await fixture('merge', uuidv7(), workspace)
+				await db
+					.update(sessions)
+					.set({
+						status: 'running',
+						coding_agent: 'codelayer',
+						provider: 'codex',
+						model: 'gpt-5.4',
+					})
+					.where(eq(sessions.id, f.source.id))
+				// A fixture worker leaves a real local commit and exits before any completion message.
+				await expect(
+					exec(
+						'/bin/sh',
+						['-ec', "printf 'wrong\\n' > answer.txt; git commit -am 'Implement answer'; exit 42"],
+						{
+							cwd: directory,
+						},
+					),
+				).rejects.toMatchObject({ code: 42 })
+				const originalSha = await git('rev-parse', 'HEAD')
+				expect(await git('ls-remote', 'origin', 'refs/heads/feature')).toBe('')
+				await db.update(sessions).set({ status: 'failed' }).where(eq(sessions.id, f.source.id))
+
+				const hostId = f.source.host_id!
+				const effectRuntime = createRuntimeWithTestPostgresLayer(db)
+				const context = createMockDaemonContext({
+					auth: createMockDaemonAuth({ organizationId, userId: 'owner', hostId }),
+					services: { db, dbReadReplica: db, effectRuntime },
+				})
+				const shutdown = bindProcedureToRuntime(shutdownEffectProcedure, effectRuntime)
+				const claim = () => call(claimDeliveryProcedure, {}, { context }).then(({ action }) => action)
+				const complete = (
+					action: DeliveryAction,
+					evidence: { heads: DeliveryHead[]; recoveredCommits?: DeliveryCommit[] },
+				) =>
+					call(
+						completeDeliveryProcedure,
+						{ taskId: f.taskId, leaseId: action.leaseId, error: null, ...evidence },
+						{ context },
+					)
+				const validate = (action: DeliveryAction) =>
+					call(validateDeliveryProcedure, { taskId: f.taskId, leaseId: action.leaseId }, { context })
+				const expireLease = async () => {
+					const persisted = await f.state()
+					await db
+						.update(tasks)
+						.set({
+							automatic_delivery: { ...persisted, lease: { ...persisted.lease!, expiresAt: 0 } },
+						})
+						.where(eq(tasks.id, f.taskId))
+				}
+				const history = () => db.select().from(sessions).where(eq(sessions.task_id, f.taskId))
+				const worker = async () => {
+					const { managedSessionId } = await f.state()
+					return (await history()).find(({ id }) => id === managedSessionId)
+				}
+				const prs: Array<Omit<typeof head, 'sha'>> = []
+				const adapter = resolve(
+					import.meta.dirname,
+					'../../../riptide-daemon/src/lib/github/automatic-delivery.ts',
+				)
+				const hostProcess = async (action: DeliveryAction, discardReply = false) => {
+					const { stdout } = await exec(
+						'bun',
+						[
+							'--no-env-file',
+							'-e',
+							`
+						import { execFileSync } from 'node:child_process'
+						import { executeDeliveryAction, inspectCommittedImplementation } from ${JSON.stringify(adapter)}
+						const [action, prs, discardReply] = process.argv.slice(1).map(value => JSON.parse(value))
+						const commands = {
+							run: async (binary, args, cwd) => {
+								if (binary === 'git' && args[0] === 'remote') return 'https://github.com/test/delivery.git'
+								if (binary === 'git') return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+								if (args[0] !== 'pr' || args[1] !== 'list') throw Error('Unexpected GitHub mutation')
+								return JSON.stringify(prs.map(pr => ({
+									number: pr.number,
+									headRefOid: execFileSync('git', ['rev-parse', 'refs/remotes/origin/' + pr.branch], { cwd, encoding: 'utf8' }).trim(),
+									headRefName: pr.branch, baseRefName: pr.base, state: 'OPEN',
+									isDraft: false, mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED', labels: [],
+								})))
+							},
+						}
+						const evidence = action.kind === 'recover'
+							? { heads: [], recoveredCommits: await inspectCommittedImplementation(action.targets, commands) }
+							: { heads: await executeDeliveryAction(action, commands, async () => { throw Error('Unexpected merge') }) }
+						if (discardReply) process.exit(43)
+						console.log(JSON.stringify(evidence))
+					`,
+							JSON.stringify(action),
+							JSON.stringify(prs),
+							JSON.stringify(discardReply),
+						],
+						{ cwd: directory },
+					)
+					return JSON.parse(stdout) as { heads: DeliveryHead[]; recoveredCommits?: DeliveryCommit[] }
+				}
+
+				const abandoned = (await claim())!
+				expect(abandoned?.kind).toBe('recover')
+				expect(await validate(abandoned)).toEqual({ authorized: false })
+				await expect(hostProcess(abandoned, true)).rejects.toMatchObject({ code: 43 })
+				expect(await claim()).toBeNull()
+				await expireLease()
+				expect(await complete(abandoned, { heads: [] })).toEqual({ accepted: false })
+				const [first, second] = await Promise.all([claim(), claim()])
+				const recovered = (first ?? second)!
+				expect([first, second].filter(Boolean)).toHaveLength(1)
+				const proof = await hostProcess(recovered)
+				expect(proof.recoveredCommits).toEqual([{ ...workspace, sha: originalSha }])
+				expect(await complete(abandoned, proof)).toEqual({ accepted: false })
+				expect(await complete(recovered, proof)).toEqual({ accepted: true })
+				expect(await complete(recovered, proof)).toEqual({ accepted: false })
+				expect(await worker()).toMatchObject({
+					title: expect.stringMatching(/^delivery pr:/),
+					working_directory: directory,
+					prompt: expect.stringContaining(originalSha),
+				})
+				expect(await claim()).toBeNull()
+				expect(await history()).toHaveLength(2)
+				await git('push', '-u', 'origin', target.branch)
+				prs.push({ ...workspace, number: head.number, merged: false })
+				await f.idle()
+				const firstInspect = (await claim())!
+				expect(await complete(firstInspect, await hostProcess(firstInspect))).toEqual({ accepted: true })
+				expect(await f.state()).toMatchObject({ phase: 'review', passes: 1, heads: [{ sha: originalSha }] })
+				expect(await worker()).toMatchObject({ prompt: expect.stringContaining(originalSha) })
+				expect(await git('show', `${originalSha}:answer.txt`)).toBe('wrong')
+				expect(
+					await f.review({
+						verdict: 'repair',
+						findings: [
+							{
+								priority: 'P1',
+								verified: true,
+								related: true,
+								detail: 'answer.txt must contain correct',
+							},
+						],
+					}),
+				).toBe(true)
+				expect(await call(shutdown, { hostId }, { context })).toMatchObject({ sessionsUpdated: 1 })
+				expect((await worker())?.status).toBe('failed')
+				await claim()
+				const repair = await worker()
+				expect(repair).toMatchObject({
+					title: expect.stringMatching(/^delivery repair:/),
+					coding_agent: 'codelayer',
+					provider: 'codex',
+					working_directory: directory,
+					prompt: expect.stringContaining('answer.txt must contain correct'),
+				})
+				expect(repair?.prompt).toContain(originalSha)
+				await Promise.all([claim(), claim()])
+				expect((await f.state()).managedSessionId).toBe(repair?.id)
+				expect(await history()).toHaveLength(4)
+				await writeFile(join(directory, 'answer.txt'), 'correct\n')
+				await git('commit', '-am', 'Repair answer')
+				await git('push', 'origin', target.branch)
+				const repairedSha = await git('rev-parse', 'HEAD')
+				expect(await git('rev-parse', 'HEAD^')).toBe(originalSha)
+				await f.idle()
+				const interruptedInspect = (await claim())!
+				await expect(hostProcess(interruptedInspect, true)).rejects.toMatchObject({ code: 43 })
+				expect(await f.state()).toMatchObject({ passes: 1, managedSessionId: null })
+				await expireLease()
+				const secondInspect = (await claim())!
+				expect(secondInspect.leaseId).not.toBe(interruptedInspect.leaseId)
+				expect(await complete(secondInspect, await hostProcess(secondInspect))).toEqual({ accepted: true })
+				expect(await f.state()).toMatchObject({ phase: 'review', passes: 2, heads: [{ sha: repairedSha }] })
+				expect(await worker()).toMatchObject({ prompt: expect.stringContaining(repairedSha) })
+				expect(
+					await f.review({ heads: [{ ...workspace, number: head.number, sha: originalSha, merged: false }] }),
+				).toBe(false)
+				expect(await git('show', `${repairedSha}:answer.txt`)).toBe('correct')
+				expect(await f.review()).toBe(true)
+				await f.idle()
+				const finalInspect = (await claim())!
+				expect(await complete(finalInspect, await hostProcess(finalInspect))).toEqual({ accepted: true })
+				const merge = (await claim())!
+				expect(merge).toMatchObject({ kind: 'merge', heads: [{ sha: repairedSha, number: head.number }] })
+				expect(await validate(merge)).toEqual({ authorized: true })
+				expect(await claim()).toBeNull()
+				const final = await f.state()
+				expect(final).toMatchObject({ passes: 2, recoveryAttempts: 0 })
+				expect(final.reviews.map((review) => review.heads[0]?.sha)).toEqual([originalSha, repairedSha])
+				expect(await history()).toHaveLength(5)
+				expect(prs).toHaveLength(1)
+				expect(await git('ls-remote', '--heads', 'origin')).toBe(
+					`${repairedSha}\trefs/heads/feature\n${baseSha}\trefs/heads/main`,
+				)
+				console.info(
+					JSON.stringify({
+						originalSha,
+						repairedSha,
+						baseSha,
+						pr: head.number,
+						passes: final.passes,
+						workers: final.deliverySessionIds,
+						recoveryAttempts: final.recoveryAttempts,
+						mergeAuthorized: true,
+					}),
+				)
+			} finally {
+				await rm(remote, { recursive: true, force: true })
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true })
+		}
+	}, 30_000)
 
 	const confirmed = { status: 'delivered', receipt: 'T_TEST/C_TEST/1710000000.000002' } as const
 
@@ -244,7 +490,7 @@ describe('Persisted automatic delivery', () => {
 		const origin = { kind: 'session' as const, sessionId: f.source.id }
 		const slackAutomationId = automation!.id
 		const heartbeat = () => call(claimDeliveryProcedure, {}, { context })
-		const block = () => db.update(sessions).set({ status: 'failed' }).where(eq(sessions.id, f.source.id))
+		const block = () => db.update(sessions).set({ status: 'interrupted' }).where(eq(sessions.id, f.source.id))
 		const notices = async () =>
 			(await db.select().from(conversationEvents).where(eq(conversationEvents.session_id, f.source.id))).filter(
 				(event) => event.event_type === 'system' && event.content?.includes('delivery_blocker'),

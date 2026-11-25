@@ -81,6 +81,8 @@ On a blocked task, the board and board CLI report the effective Slack route and 
 
 HumanLayer records the next action when implementation stops. On startup and reconnect, it reconciles older active cards in batches. Both boards and the board CLI show current-head verification, the stock Describe PR handoff, or a blocker with the owner's next action. Host and workflow deadlines keep pending work visible when a host stops responding.
 
+For an enrolled task whose implementation session fails after committing, the assigned host first checks for committed work on the authorized branches. A clean checkout with verified commits can proceed to the stock Describe PR handoff, where publication is pinned to those SHAs. Independent review starts only after the matching PR heads are verified. Dirty work, unavailable or conflicting Git evidence, explicit interruption, and a lost session with unknown writer status still require attention. Read-only recovery can be reclaimed after a host restart. The existing review budget and merge policy still apply.
+
 An existing task can enter Review after the stock host inspector verifies the task workspace, repository, branch, and exact PR heads. Independent review, merge, and archival use the existing task authorization and verification gates. Turning delivery off leaves inspection read-only. A legacy Describe PR opt-in can recover a missed handoff using the same task, workspace, and worker admission.
 
 The 24-hour card tint remains a display cue.

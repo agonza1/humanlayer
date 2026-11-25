@@ -9,8 +9,10 @@ import {
 	deliveryReviewVerdict,
 	sameDeliveryHeads,
 	type AutomaticDelivery,
+	type DeliveryCommit,
 	type DeliveryHead,
 	type DeliveryReview,
+	type DeliveryTarget,
 } from '@humanlayer/schemas/zod/automatic-delivery'
 import * as Sentry from '@sentry/node'
 import { and, desc, eq, notInArray } from 'drizzle-orm'
@@ -110,9 +112,11 @@ async function launchDeliverySession(
 		'Honor AGENTS.md, repository/company policy and required human checkpoints. You are a task worker: do not execute merges, enable GitHub auto-merge, archive tasks, delete worktrees or change credentials/permissions. The owning daemon handles explicitly authorized delivery. Worker restrictions do not themselves forbid the daemon from merging. Stop and report real blockers; never reset the delivery budget.'
 	const targets = JSON.stringify(delivery.heads.length ? delivery.heads : delivery.targets)
 	let prompt: string
-	if (kind === 'pr')
-		prompt = `Use the stock rpi:describe-pr skill to commit/push implementation and open or update the task PRs for ${targets}. ${safety}`
-	else if (kind === 'repair')
+	if (kind === 'pr') {
+		prompt = delivery.recoveredCommits
+			? `Implementation stopped after leaving these verified commits: ${JSON.stringify(delivery.recoveredCommits)}. Verify each clean checkout, local SHA, branch, and PR identity again. Fast-forward the existing remote branch to its verified SHA if needed, or push that same task branch if it has never been published. Use the stock rpi:describe-pr skill to reuse the existing PR or open one if absent for the specified branch and base. Do not create, amend or rewrite commits, create a different task branch, or force-push. Stop and report drift or ambiguity. ${safety}`
+			: `Use the stock rpi:describe-pr skill to commit/push implementation and open or update the task PRs for ${targets}. ${safety}`
+	} else if (kind === 'repair')
 		prompt = `Repair the verified PR-related P0/P1/P2 findings in this independent review: ${JSON.stringify(delivery.reviews.at(-1))}. First verify each PR is still open at its reviewed head; if it is already merged or changed independently, stop and report a follow-up instead of editing it. Run affected checks, self-review, commit and push to the existing branches. Resolve GitHub conversations only when the finding is verified fixed; retain evidence for disputed or unrelated findings. Do not claim an independent review of your own repairs. ${safety}`
 	else if (kind === 'attention')
 		prompt = `Main recovery/attention: delivery stopped: ${delivery.attention}. This is the only automatic diagnostic recovery attempt. Inspect task artifacts and GitHub, diagnose the blocker and report concrete recovery instructions in a task artifact. Use an available authorized notification route for a blocker needing owner attention; report notification failure. Do not use an owner CLI login, override policy, merge or restart delivery. Status snapshot: ${JSON.stringify(delivery)}. ${safety}`
@@ -210,6 +214,19 @@ export async function deliveryAttention(
 	await saveDelivery(tx, task, delivery)
 }
 
+async function queueDescribePR(tx: Tx, task: Task, delivery: AutomaticDelivery, source: Session) {
+	delivery.phase = 'pr'
+	try {
+		await tx.transaction((savepoint) => launchDeliverySession(savepoint, task, delivery, source, 'pr'))
+	} catch (error) {
+		Sentry.captureException(error)
+		delivery.phase = 'attention'
+		delivery.attentionDuringPublication = true
+		delivery.attention = 'Could not queue Describe PR. Check the task host and workspace.'
+	}
+	await saveDelivery(tx, task, delivery)
+}
+
 /** Called only by the existing authenticated host heartbeat continuation. One atomic action reservation. */
 export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAction | null> {
 	const delivery = decodeDelivery(task.automatic_delivery)
@@ -239,8 +256,10 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 			)
 		return null
 	}
+	const recoverCommit = delivery.mode !== 'archive-only' && source.status === 'failed'
 	if (
 		delivery.phase === 'implementation' &&
+		!recoverCommit &&
 		['failed', 'lost', 'interrupted', 'needs_approval'].includes(source.status)
 	) {
 		await deliveryAttention(
@@ -297,11 +316,14 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 	}
 	if (delivery.managedSessionId) {
 		const managed = context.history.find((session) => session.id === delivery.managedSessionId)
+		// A host shutdown can mark the reviewer failed after the API accepted its exact-head report.
+		const checkpointedReview = managed?.status === 'failed' && delivery.reviews.at(-1)?.sessionId === managed.id
 		if (
 			!managed ||
 			managed.archived ||
-			['failed', 'lost', 'interrupted'].includes(managed.status) ||
-			Date.now() - delivery.managedAt > 30 * 60_000
+			(!checkpointedReview &&
+				(['failed', 'lost', 'interrupted'].includes(managed.status) ||
+					Date.now() - delivery.managedAt > 30 * 60_000))
 		) {
 			await deliveryAttention(
 				tx,
@@ -328,7 +350,7 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 			}
 			if (hold) return null
 		}
-		if (managed.status !== 'ready_for_input') return null
+		if (managed.status !== 'ready_for_input' && !checkpointedReview) return null
 		if (delivery.phase === 'repair' && managed.title?.startsWith('delivery review:')) {
 			if (!context.allIdle) return null
 			await launchDeliverySession(tx, task, delivery, source, 'repair')
@@ -360,21 +382,26 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 		return null
 	}
 	if (delivery.phase === 'implementation') {
-		if (source.status !== 'ready_for_input') return null
-		delivery.workRevision = context.revision
-		delivery.phase = delivery.mode === 'archive-only' ? 'inspect' : 'pr'
-		if (delivery.phase === 'pr') {
-			try {
-				await tx.transaction((savepoint) => launchDeliverySession(savepoint, task, delivery, source, 'pr'))
-			} catch (error) {
-				Sentry.captureException(error)
-				delivery.phase = 'attention'
-				delivery.attentionDuringPublication = true
-				delivery.attention = 'Could not queue Describe PR. Check the task host and workspace.'
-			}
-			await saveDelivery(tx, task, delivery)
+		if (
+			recoverCommit &&
+			(context.history.some((session) => session.status === 'lost') || source.host_id !== delivery.hostId)
+		) {
+			await deliveryAttention(
+				tx,
+				task,
+				delivery,
+				'Cannot recover implementation with an unknown writer or different source host.',
+				context.history,
+			)
 			return null
 		}
+		if (!recoverCommit && source.status !== 'ready_for_input') return null
+		delivery.workRevision = context.revision
+		if (!recoverCommit && delivery.mode !== 'archive-only') {
+			await queueDescribePR(tx, task, delivery, source)
+			return null
+		}
+		if (!recoverCommit) delivery.phase = 'inspect'
 	}
 	if (context.revision !== delivery.workRevision) {
 		await deliveryAttention(
@@ -386,7 +413,9 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 		)
 		return null
 	}
-	const kind = delivery.phase === 'merge' ? 'merge' : delivery.phase === 'archive' ? 'archive' : 'inspect'
+	let kind: DeliveryAction['kind'] = 'inspect'
+	if (delivery.phase === 'implementation') kind = 'recover'
+	else if (delivery.phase === 'merge' || delivery.phase === 'archive') kind = delivery.phase
 	// Also advances the persisted fairness timestamp when no managed session is live.
 	delivery.managedAt = Date.now()
 	delivery.lease = { id: uuidv7(), kind, expiresAt: Date.now() + 120_000, revision: context.revision }
@@ -448,17 +477,30 @@ export async function acceptDeliveryReview(tx: Tx, task: Task, review: DeliveryR
 	return true
 }
 
+function sameTarget(left: DeliveryTarget, right: DeliveryTarget) {
+	return (
+		left.repository.toLowerCase() === right.repository.toLowerCase() &&
+		left.branch === right.branch &&
+		left.base === right.base &&
+		left.directory === right.directory
+	)
+}
+
 export async function completeTaskDelivery(
 	tx: Tx,
 	task: Task,
 	leaseId: string,
 	heads: DeliveryHead[],
 	error: string | null,
+	recoveredCommits?: DeliveryCommit[],
 ) {
 	const delivery = decodeDelivery(task.automatic_delivery)
 	if (!delivery?.lease || delivery.authorizedBy !== task.resource_owner_user_id || delivery.lease.id !== leaseId)
 		return false
 	const lease = delivery.lease
+	// The owning host can re-claim an expired read-only lease. A late reply cannot
+	// turn a recoverable restart into a terminal blocker.
+	if ((lease.kind === 'recover' || lease.kind === 'inspect') && lease.expiresAt <= Date.now()) return false
 	const context = await deliveryContext(tx, task, delivery)
 	if (
 		error ||
@@ -478,16 +520,31 @@ export async function completeTaskDelivery(
 		return true
 	}
 	delivery.lease = null
+	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
+	if (!source) return false
+	if (lease.kind === 'recover') {
+		if (
+			source.status !== 'failed' ||
+			!recoveredCommits ||
+			recoveredCommits.length !== delivery.targets.length ||
+			!delivery.targets.every((target) => recoveredCommits.some((commit) => sameTarget(target, commit)))
+		) {
+			await deliveryAttention(
+				tx,
+				task,
+				delivery,
+				'Recovery did not verify committed work for every authorized target.',
+				context.history,
+			)
+			return true
+		}
+		delivery.recoveredCommits = recoveredCommits
+		await queueDescribePR(tx, task, delivery, source)
+		return true
+	}
 	const matchesTargets =
 		heads.length === delivery.targets.length &&
-		delivery.targets.every((target) =>
-			heads.some(
-				(head) =>
-					head.repository.toLowerCase() === target.repository.toLowerCase() &&
-					head.branch === target.branch &&
-					head.base === target.base,
-			),
-		)
+		delivery.targets.every((target) => heads.some((head) => sameTarget(target, head)))
 	if (!matchesTargets) {
 		await deliveryAttention(
 			tx,
@@ -498,8 +555,37 @@ export async function completeTaskDelivery(
 		)
 		return true
 	}
-	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
-	if (!source) return false
+	if (
+		delivery.recoveredCommits &&
+		delivery.heads.length === 0 &&
+		!delivery.recoveredCommits.every((commit) =>
+			heads.some((head) => sameTarget(commit, head) && commit.sha === head.sha),
+		)
+	) {
+		await deliveryAttention(
+			tx,
+			task,
+			delivery,
+			'The published PR heads differ from the recovered implementation commits.',
+			context.history,
+		)
+		return true
+	}
+	if (
+		delivery.recoveredCommits &&
+		delivery.heads.some(
+			(previous) => !heads.some((head) => sameTarget(previous, head) && previous.number === head.number),
+		)
+	) {
+		await deliveryAttention(
+			tx,
+			task,
+			delivery,
+			'The recovered implementation PR identity changed.',
+			context.history,
+		)
+		return true
+	}
 	if (lease.kind === 'archive') {
 		const review = delivery.reviews.at(-1)
 		if (
