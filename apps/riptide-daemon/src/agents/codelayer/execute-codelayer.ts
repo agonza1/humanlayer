@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
 import { createOpenAI } from '@ai-sdk/openai'
-import type { AgentState } from '@humanlayer/agentlayer-core'
+import type { AgentRun, AgentState } from '@humanlayer/agentlayer-core'
 import { createSkillTool, sanitizeStateForPersistence, startState, userMessage } from '@humanlayer/agentlayer-core'
 import { type AuthInfo, ensureFileAuthStore } from '@humanlayer/agentlayer-provider-auth'
 import { isEffortSupported } from '@humanlayer/ai/config'
@@ -273,6 +273,8 @@ export async function executeCodelayer(
 		await diagnoseDeliveryBlocker(ctx)
 		return
 	}
+	const shutdownSignal = services.shutdown.getShutdownSignal()
+	if (shutdownSignal.aborted) return
 	const cwd = normalizePath(session.working_directory)
 
 	// Resolve model using provider from session
@@ -768,8 +770,10 @@ export async function executeCodelayer(
 	logger.info({ sessionId: session.id, cwd, hasSync: !!artifactSync }, 'CodeLayer agent starting')
 
 	let unsubscribeInterrupt: (() => void) | undefined
+	let run: AgentRun | undefined
 
 	try {
+		if (shutdownSignal.aborted) return
 		// Subscribe to interrupt events for THIS session only (user-initiated interrupts)
 		unsubscribeInterrupt = subscribeToSessionInterrupt({
 			sessionId: session.id,
@@ -779,13 +783,18 @@ export async function executeCodelayer(
 			sessionsCollection: services.collections.sessions,
 		})
 
-		// Run agent with abort signal for interrupt propagation
-		const run = agent.run({ state: initialState, signal: controller.signal, stream: true })
+		run = agent.run({
+			state: initialState,
+			signal: AbortSignal.any([controller.signal, shutdownSignal]),
+			stream: true,
+		})
 		await processCodelayerEvents(run, session, services.orpc, services.daemonRuntime, interruptState)
 
 		// Save state after run completes so it can be resumed later
 		// organization_id and resource_owner_user_id are always present for valid sessions
 		const result = await run.result
+		// Reserve the remaining shutdown time for the host status update after tools have stopped.
+		if (shutdownSignal.aborted) return
 
 		// Debug logging for agent run result
 		logger.debug(
@@ -843,14 +852,15 @@ export async function executeCodelayer(
 				})
 		}
 
-		// Terminal child continuation state must survive every daemon boundary, including
-		// root errors and interruptions. Persist before any status-specific early return.
+		// Persist terminal child continuation state for completed runs, including root
+		// errors and user interruptions, before the status-specific returns below.
 		const sanitizedState = sanitizeStateForPersistence(result.state)
 		await services.orpc.codelayerState.upsert({
 			sessionId: session.id,
 			state: encodeAgentState(sanitizedState),
 		})
 		logger.info({ sessionId: session.id }, 'CodeLayer agent state saved')
+		if (shutdownSignal.aborted) return
 
 		// Check if the agent run finished with an error
 		if (result.finishReason === 'error' && result.error) {
@@ -949,6 +959,11 @@ export async function executeCodelayer(
 			}
 		}
 	} catch (error: unknown) {
+		if (shutdownSignal.aborted) {
+			// A stream failure must not bypass the wait for owned tool cleanup.
+			await run?.result.catch(() => {})
+			return
+		}
 		const err = error as Error
 
 		// If this was an interrupt (user-initiated), don't treat as error
