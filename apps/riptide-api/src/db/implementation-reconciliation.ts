@@ -41,6 +41,8 @@ type Stage = 'implementation' | 'in-review'
 const HOST_HEARTBEAT_LIMIT_MS = 120_000
 const INSPECTION_LEASE_MS = 120_000
 const MAX_INSPECTIONS = 2
+const PR_OBSERVATION_INTERVAL_MS = 60_000
+export const CHECKOUT_OBSERVATION_BLOCKERS = ['checkout-changed', 'head-mismatch'] as const
 const STOCK_HANDOFF_LIMIT_MS = 30 * 60_000
 const STOPPED = new Set(['draft', 'ready_for_input', 'failed', 'interrupted', 'lost'])
 const ACTIVE_DELIVERY = new Set(['implementation', 'pr', 'inspect', 'review', 'repair', 'merge', 'archive'])
@@ -468,8 +470,26 @@ export async function reconcileImplementation(
 		await setDecision(tx, task, current, block('host-unavailable'), { revision })
 		return null
 	}
-	if (matching && current.decision?.status === 'blocked' && INSPECTION_BLOCKERS.has(current.decision.reason))
-		return null
+	const blockedDecision = current.decision
+	if (matching && blockedDecision?.status === 'blocked' && INSPECTION_BLOCKERS.has(blockedDecision.reason)) {
+		// A checkout failure still forbids resuming work. Observe the tracked PR
+		// independently so a newer, clean publication can be queued for human review.
+		if (
+			options.hostId !== source.host_id ||
+			!CHECKOUT_OBSERVATION_BLOCKERS.some((reason) => reason === blockedDecision.reason) ||
+			(current.observeAfter ?? 0) > now ||
+			(current.lease && current.lease.expiresAt > now)
+		)
+			return null
+		const lease = {
+			id: uuidv7(),
+			hostId: source.host_id,
+			expiresAt: now + INSPECTION_LEASE_MS,
+			kind: 'observe',
+		} as const
+		await saveTaskReconciliation(tx, task, { ...current, lease, observeAfter: now + PR_OBSERVATION_INTERVAL_MS })
+		return { taskId: task.id, leaseId: lease.id, kind: 'observe', targets, heads: current.heads ?? [] }
+	}
 
 	let deadlineAt =
 		matching && current.decision?.status === 'verifying' ? current.decision.deadlineAt : now + INSPECTION_LEASE_MS
@@ -542,16 +562,21 @@ export async function completeImplementationInspection(
 	const revision = current.revision
 	if (current.lease.expiresAt <= (input.now ?? Date.now())) return false
 
-	if (
-		input.error ||
-		targets.length !== input.heads.length ||
-		targets.some((target) => !input.heads.some((head) => targetKey(head) === targetKey(target)))
-	) {
+	const verifiedTargets =
+		targets.length === input.heads.length &&
+		targets.every((target) => input.heads.some((head) => targetKey(head) === targetKey(target)))
+	const draft = input.heads.some((head) => head.draft !== false && !head.merged)
+	if (current.lease.kind === 'observe' && (input.error || !verifiedTargets || draft)) {
+		// Keep the original blocker and its confirmed receipts on inconclusive reads.
+		await saveTaskReconciliation(tx, task, { ...current, lease: undefined })
+		return true
+	}
+	if (input.error || !verifiedTargets) {
 		const issue = input.inspectionIssue && ISSUE_BLOCKERS[input.inspectionIssue]
 		await setDecision(tx, task, current, block(issue ?? 'verification-failed'), { revision })
 		return true
 	}
-	if (input.heads.some((head) => head.draft !== false && !head.merged)) {
+	if (draft) {
 		await setDecision(tx, task, current, block('pr-not-ready'), { revision })
 		return true
 	}

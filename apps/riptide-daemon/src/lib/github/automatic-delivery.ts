@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
@@ -36,6 +37,61 @@ const PullRequestsSchema = z.array(
 		labels: z.array(z.object({ name: z.string() })),
 	}),
 )
+
+const ObservedPullRequestSchema = PullRequestsSchema.element
+	.pick({
+		number: true,
+		headRefOid: true,
+		headRefName: true,
+		baseRefName: true,
+		state: true,
+		isDraft: true,
+	})
+	.extend({
+		headRepository: z.object({ nameWithOwner: z.string() }).nullable(),
+	})
+
+const ObservedRepositorySchema = z.object({
+	errors: z.array(z.unknown()).max(0).optional(),
+	data: z.object({
+		repository: z.object({
+			nameWithOwner: z.string(),
+			byNumber: ObservedPullRequestSchema.nullable().optional(),
+			byTarget: z
+				.object({
+					totalCount: z.number().int().nonnegative(),
+					nodes: z.array(ObservedPullRequestSchema).max(2).nullable(),
+				})
+				.optional(),
+			branch: z
+				.object({
+					name: z.string(),
+					prefix: z.string(),
+					target: z.object({ oid: z.string().regex(/^[a-f0-9]{40}$/) }).nullable(),
+				})
+				.nullable(),
+		}),
+	}),
+})
+
+const OBSERVE_PULL_REQUEST_QUERY = `
+query ObserveDeliveryPullRequest(
+	$owner: String!, $name: String!, $branch: String!, $base: String!, $ref: String!, $known: Boolean!, $number: Int!
+) {
+	repository(owner: $owner, name: $name) {
+		nameWithOwner
+		byNumber: pullRequest(number: $number) @include(if: $known) { ...DeliveryPullRequest }
+		byTarget: pullRequests(headRefName: $branch, baseRefName: $base, first: 2) @skip(if: $known) {
+			totalCount
+			nodes { ...DeliveryPullRequest }
+		}
+		branch: ref(qualifiedName: $ref) { name prefix target { oid } }
+	}
+}
+fragment DeliveryPullRequest on PullRequest {
+	number headRefOid headRefName baseRefName state isDraft headRepository { nameWithOwner }
+}
+`
 
 /** Host runtime adapter: uses the operator's existing gh authorization, never an App token. */
 export interface DeliveryCommands {
@@ -188,6 +244,73 @@ async function inspectTarget(
 	return { ...target, number: pr.number, sha: pr.headRefOid, merged: pr.state === 'MERGED', draft: pr.isDraft }
 }
 
+async function observeTarget(
+	commands: DeliveryCommands,
+	target: DeliveryTarget,
+	trackedHeads: DeliveryHead[],
+): Promise<DeliveryHead> {
+	const repository = target.repository.toLowerCase()
+	const [owner, name] = target.repository.split('/')
+	const tracked = trackedHeads.filter(
+		(head) =>
+			head.repository.toLowerCase() === repository && head.branch === target.branch && head.base === target.base,
+	)
+	if (tracked.length > 1)
+		throw new DeliveryInspectionError('pr-ambiguous', 'More than one PR is tracked for the same delivery target')
+	const expected = tracked[0]
+	// Supply all coordinates explicitly and stay outside the task checkout.
+	// In particular, a stale or dirty directory is never authority for a GitHub read or write.
+	const response = await commands.run(
+		'gh',
+		[
+			'api',
+			'graphql',
+			'--hostname',
+			'github.com',
+			'-f',
+			`query=${OBSERVE_PULL_REQUEST_QUERY}`,
+			'-f',
+			`owner=${owner}`,
+			'-f',
+			`name=${name}`,
+			'-f',
+			`branch=${target.branch}`,
+			'-f',
+			`base=${target.base}`,
+			'-f',
+			`ref=refs/heads/${target.branch}`,
+			'-F',
+			`known=${expected !== undefined}`,
+			'-F',
+			`number=${expected?.number ?? 0}`,
+		],
+		tmpdir(),
+	)
+	const { nameWithOwner, byNumber, byTarget, branch } = ObservedRepositorySchema.parse(JSON.parse(response)).data
+		.repository
+	if (!expected && ((byTarget?.totalCount ?? 0) > 1 || (byTarget?.nodes?.length ?? 0) > 1))
+		throw new DeliveryInspectionError('pr-ambiguous', 'More than one GitHub PR matches the delivery target')
+	const pr = expected ? byNumber : byTarget?.totalCount === 1 ? byTarget.nodes?.[0] : undefined
+	if (!pr)
+		throw new DeliveryInspectionError('pr-missing', 'No matching GitHub PR is available for the delivery target')
+	if (
+		nameWithOwner.toLowerCase() !== repository ||
+		pr.headRepository?.nameWithOwner.toLowerCase() !== repository ||
+		pr.headRefName !== target.branch ||
+		pr.baseRefName !== target.base ||
+		(expected && expected.number !== pr.number) ||
+		pr.state === 'CLOSED'
+	)
+		throw new DeliveryInspectionError('pr-head-mismatch', 'GitHub PR does not match the delivery target')
+	if (
+		branch
+			? branch.prefix !== 'refs/heads/' || branch.name !== target.branch || branch.target?.oid !== pr.headRefOid
+			: pr.state !== 'MERGED'
+	)
+		throw new DeliveryInspectionError('remote-head-mismatch', 'GitHub branch does not match the exact PR head')
+	return { ...target, number: pr.number, sha: pr.headRefOid, merged: pr.state === 'MERGED', draft: pr.isDraft }
+}
+
 /** One leased action, without retrying mutations. Lost merge outcomes expire to attention. */
 export async function executeDeliveryAction(
 	action: DeliveryAction,
@@ -198,7 +321,11 @@ export async function executeDeliveryAction(
 	const heads: DeliveryHead[] = []
 	for (const target of action.targets) {
 		if (Date.now() > deadline) throw new Error('Delivery verification exceeded its bound')
-		heads.push(await inspectTarget(commands, target, action.kind === 'merge'))
+		const head =
+			action.kind === 'observe'
+				? await observeTarget(commands, target, action.heads)
+				: await inspectTarget(commands, target, action.kind === 'merge')
+		heads.push(head)
 	}
 	if (action.kind === 'merge') {
 		if (!sameDeliveryHeads(action.heads, heads)) return heads
@@ -247,7 +374,10 @@ export function createDeliveryHeartbeatContinuation(orpc: ORPCClient, onError: (
 		if (inFlight) return
 		inFlight = true
 		try {
-			const { action } = await orpc.delivery.claim({}, { signal: AbortSignal.timeout(15_000) })
+			const { action } = await orpc.delivery.claim(
+				{ supportsObservation: true },
+				{ signal: AbortSignal.timeout(15_000) },
+			)
 			if (!action) return
 			let heads: DeliveryHead[] = []
 			let recoveredCommits: DeliveryCommit[] | undefined

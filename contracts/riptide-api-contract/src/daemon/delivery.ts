@@ -11,13 +11,13 @@ import { contractBuilder } from '../contract-builder'
 export const DeliveryActionSchema = z.object({
 	taskId: z.uuidv7(),
 	leaseId: z.uuid(),
-	kind: z.enum(['inspect', 'merge', 'archive', 'recover']),
+	kind: z.enum(['inspect', 'merge', 'archive', 'recover', 'observe']),
 	targets: z.array(DeliveryTargetSchema),
 	heads: z.array(DeliveryHeadSchema),
 })
 export type DeliveryAction = z.infer<typeof DeliveryActionSchema>
 export const claimDeliveryContract = contractBuilder
-	.input(z.object({}))
+	.input(z.object({ supportsObservation: z.boolean().optional() }))
 	.output(z.object({ action: DeliveryActionSchema.nullable() }))
 export const validateDeliveryContract = contractBuilder
 	.input(z.object({ taskId: z.uuidv7(), leaseId: z.uuid() }))

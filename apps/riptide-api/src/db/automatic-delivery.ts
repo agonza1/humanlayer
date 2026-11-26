@@ -28,6 +28,9 @@ export type DeliveryTransaction = Tx
 type Task = typeof tasks.$inferSelect
 type Session = typeof sessions.$inferSelect
 
+const DELIVERY_LEASE_MS = 120_000
+const ATTENTION_OBSERVATION_INTERVAL_MS = 60_000
+
 export async function lockDeliveryTask(tx: Tx, taskId: string, organizationId: string) {
 	const [task] = await tx
 		.select()
@@ -227,8 +230,44 @@ async function queueDescribePR(tx: Tx, task: Task, delivery: AutomaticDelivery, 
 	await saveDelivery(tx, task, delivery)
 }
 
+async function reserveDeliveryAction(
+	tx: Tx,
+	task: Task,
+	delivery: AutomaticDelivery,
+	kind: DeliveryAction['kind'],
+	revision: string,
+	heads = delivery.heads,
+): Promise<DeliveryAction> {
+	const now = Date.now()
+	const lease = { id: uuidv7(), kind, expiresAt: now + DELIVERY_LEASE_MS, revision }
+	// Also advances the persisted fairness timestamp when no managed session is live.
+	delivery.managedAt = now
+	delivery.lease = lease
+	await saveDelivery(tx, task, delivery)
+	return { taskId: task.id, leaseId: lease.id, kind, targets: delivery.targets, heads }
+}
+
+function attentionObservationHeads(delivery: AutomaticDelivery) {
+	return delivery.heads.length > 0 ? delivery.heads : (delivery.attentionObservation?.heads ?? [])
+}
+
+function attentionObservationRevision(delivery: AutomaticDelivery, workRevision: string) {
+	return JSON.stringify([
+		workRevision,
+		delivery.hostId,
+		delivery.mode,
+		delivery.sourceSessionId,
+		delivery.targets,
+		attentionObservationHeads(delivery),
+	])
+}
+
 /** Called only by the existing authenticated host heartbeat continuation. One atomic action reservation. */
-export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAction | null> {
+export async function claimTaskDelivery(
+	tx: Tx,
+	task: Task,
+	supportsObservation = false,
+): Promise<DeliveryAction | null> {
 	const delivery = decodeDelivery(task.automatic_delivery)
 	if (
 		!delivery ||
@@ -292,8 +331,27 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 			delivery.attention = `${delivery.attention} Main recovery ended without automatic resolution (${recovery.status}); task-owner attention required. No further automatic recovery will run.`
 			delivery.managedSessionId = null
 			await saveDelivery(tx, task, delivery)
+			return null
 		}
-		return null
+		const now = Date.now()
+		if (
+			!supportsObservation ||
+			delivery.recoveryAttempts !== 1 ||
+			delivery.managedSessionId ||
+			!context.allIdle ||
+			context.untracked ||
+			(delivery.lease && delivery.lease.expiresAt > now) ||
+			now - delivery.managedAt < ATTENTION_OBSERVATION_INTERVAL_MS
+		)
+			return null
+		return reserveDeliveryAction(
+			tx,
+			task,
+			delivery,
+			'observe',
+			attentionObservationRevision(delivery, context.revision),
+			attentionObservationHeads(delivery),
+		)
 	}
 	if (delivery.lease) {
 		if (delivery.lease.expiresAt > Date.now()) return null
@@ -416,11 +474,7 @@ export async function claimTaskDelivery(tx: Tx, task: Task): Promise<DeliveryAct
 	let kind: DeliveryAction['kind'] = 'inspect'
 	if (delivery.phase === 'implementation') kind = 'recover'
 	else if (delivery.phase === 'merge' || delivery.phase === 'archive') kind = delivery.phase
-	// Also advances the persisted fairness timestamp when no managed session is live.
-	delivery.managedAt = Date.now()
-	delivery.lease = { id: uuidv7(), kind, expiresAt: Date.now() + 120_000, revision: context.revision }
-	await saveDelivery(tx, task, delivery)
-	return { taskId: task.id, leaseId: delivery.lease.id, kind, targets: delivery.targets, heads: delivery.heads }
+	return reserveDeliveryAction(tx, task, delivery, kind, context.revision)
 }
 
 export async function acceptDeliveryReview(tx: Tx, task: Task, review: DeliveryReview) {
@@ -500,8 +554,44 @@ export async function completeTaskDelivery(
 	const lease = delivery.lease
 	// The owning host can re-claim an expired read-only lease. A late reply cannot
 	// turn a recoverable restart into a terminal blocker.
-	if ((lease.kind === 'recover' || lease.kind === 'inspect') && lease.expiresAt <= Date.now()) return false
+	if (
+		(lease.kind === 'recover' || lease.kind === 'inspect' || lease.kind === 'observe') &&
+		lease.expiresAt <= Date.now()
+	)
+		return false
 	const context = await deliveryContext(tx, task, delivery)
+	if (lease.kind === 'observe') {
+		const source = context.history.find((session) => session.id === delivery.sourceSessionId)
+		if (
+			task.archived ||
+			task.is_draft ||
+			delivery.phase !== 'attention' ||
+			delivery.recoveryAttempts !== 1 ||
+			delivery.managedSessionId ||
+			!source ||
+			source.archived ||
+			source.created_by !== delivery.authorizedBy ||
+			source.resource_owner_user_id !== task.resource_owner_user_id ||
+			!context.allIdle ||
+			context.untracked ||
+			lease.revision !== attentionObservationRevision(delivery, context.revision)
+		)
+			return false
+		const trackedHeads = attentionObservationHeads(delivery)
+		const matchesTargets =
+			heads.length === delivery.targets.length &&
+			delivery.targets.every((target) =>
+				heads.some((head) => sameTarget(target, head) && head.draft !== undefined),
+			)
+		const matchesPRs = trackedHeads.every((previous) =>
+			heads.some((head) => sameTarget(previous, head) && previous.number === head.number),
+		)
+		delivery.lease = null
+		// A failed refresh keeps the last confirmed evidence and its original timestamp.
+		if (!error && matchesTargets && matchesPRs) delivery.attentionObservation = { checkedAt: Date.now(), heads }
+		await saveDelivery(tx, task, delivery)
+		return true
+	}
 	if (
 		error ||
 		lease.expiresAt < Date.now() ||

@@ -52,10 +52,13 @@ export const ImplementationReconciliationSchema = z.object({
 		])
 		.nullable(),
 	wakeAt: z.number().optional(),
+	observeAfter: z.number().optional(),
 	revision: z.string().optional(),
 	inspectionAttempts: z.number().int().min(0).max(2).optional(),
 	heads: z.array(DeliveryHeadSchema).max(10).optional(),
-	lease: z.object({ id: z.uuid(), hostId: z.string(), expiresAt: z.number() }).optional(),
+	lease: z
+		.object({ id: z.uuid(), hostId: z.string(), expiresAt: z.number(), kind: z.literal('observe').optional() })
+		.optional(),
 	alertRoutes: DeliveryAlertRoutesSchema.optional(),
 	blockerAlert: DeliveryBlockerAlertSchema.optional(),
 })

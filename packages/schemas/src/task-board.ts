@@ -199,6 +199,20 @@ function describeDelivery(
 	const delivery = AutomaticDeliverySchema.safeParse(rawDelivery).data
 	const alert = describeBlockerAlert(delivery?.blockerAlert)
 	if (delivery?.phase === 'attention' && delivery.attention) {
+		const observed = delivery.attentionObservation
+		if (
+			observed?.heads.length === delivery.targets.length &&
+			observed.heads.every((head) => head.merged) &&
+			(!latest || sessionActivity(latest) <= observed.checkedAt) &&
+			!sessions.some((session) => livePriority(session.status) > 0)
+		) {
+			return {
+				status: 'blocked',
+				reason: 'PR merged on GitHub. Verify remaining acceptance before completing this task.',
+				stage: 'in-review',
+				alert,
+			}
+		}
 		return {
 			status: 'blocked',
 			reason: delivery.attention,

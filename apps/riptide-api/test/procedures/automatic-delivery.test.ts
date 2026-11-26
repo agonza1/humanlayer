@@ -146,7 +146,8 @@ describe('Persisted automatic delivery', () => {
 		const locked = <A>(
 			fn: (tx: Parameters<typeof claimTaskDelivery>[0], row: typeof tasks.$inferSelect) => Promise<A>,
 		) => db.transaction(async (tx) => fn(tx, (await lockDeliveryTask(tx, taskId, organizationId))!))
-		const claim = () => locked(claimTaskDelivery)
+		const claim = (supportsObservation = false) =>
+			locked((tx, row) => claimTaskDelivery(tx, row, supportsObservation))
 		const state = async () => {
 			const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId))
 			return decodeDelivery(row!.automatic_delivery)!
@@ -489,7 +490,8 @@ describe('Persisted automatic delivery', () => {
 			)
 		const origin = { kind: 'session' as const, sessionId: f.source.id }
 		const slackAutomationId = automation!.id
-		const heartbeat = () => call(claimDeliveryProcedure, {}, { context })
+		const heartbeat = (supportsObservation = false) =>
+			call(claimDeliveryProcedure, supportsObservation ? { supportsObservation: true } : {}, { context })
 		const block = () => db.update(sessions).set({ status: 'interrupted' }).where(eq(sessions.id, f.source.id))
 		const notices = async () =>
 			(await db.select().from(conversationEvents).where(eq(conversationEvents.session_id, f.source.id))).filter(
@@ -603,6 +605,109 @@ describe('Persisted automatic delivery', () => {
 			origin: { status: 'delivered', receipt: notice!.id },
 		})
 		expect(f.sends).toHaveLength(1)
+	})
+
+	async function makeObservationDue(f: Awaited<ReturnType<typeof fixture>>) {
+		await db
+			.update(tasks)
+			.set({ automatic_delivery: { ...(await f.state()), managedAt: Date.now() - 61_000 } })
+			.where(eq(tasks.id, f.taskId))
+	}
+
+	it('observes a manual merge after Main recovery while keeping the Meetily acceptance gate and confirmed alerts', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await f.reachReview()
+		await f.review({ verdict: 'blocked', humanCheckpointsSatisfied: false })
+		await f.idle()
+		expect((await f.heartbeat()).action).toBeNull()
+		expect((await f.state()).recoveryAttempts).toBe(1)
+
+		await f.idle()
+		expect((await f.heartbeat()).action).toBeNull()
+		const before = await f.state()
+		const [notice] = await f.notices()
+		expect(before).toMatchObject({
+			phase: 'attention',
+			managedSessionId: null,
+			attention: expect.stringContaining('No further automatic recovery'),
+			blockerAlert: { slack: confirmed, origin: { status: 'delivered', receipt: notice?.id } },
+		})
+
+		await makeObservationDue(f)
+		expect((await f.heartbeat()).action).toBeNull()
+		const { action } = await f.heartbeat(true)
+		expect(action).toMatchObject({ kind: 'observe', targets: [target], heads: [head] })
+		expect((await f.heartbeat(true)).action).toBeNull()
+		const merged = { ...head, merged: true, draft: false }
+		expect(await f.complete(action!.leaseId, [merged])).toBe(true)
+		const result = await f.state()
+		expect(result).toMatchObject({
+			phase: 'attention',
+			passes: before.passes,
+			recoveryAttempts: 1,
+			attention: before.attention,
+			blockerAlert: before.blockerAlert,
+			reviews: before.reviews,
+			deliverySessionIds: before.deliverySessionIds,
+			heads: before.heads,
+			attentionObservation: { checkedAt: expect.any(Number), heads: [merged] },
+		})
+		const [task] = await db.select().from(tasks).where(eq(tasks.id, f.taskId))
+		expect(task?.archived).toBe(false)
+		const taskSessions = await db.select().from(sessions).where(eq(sessions.task_id, f.taskId))
+		expect(describeBoardTask({ automatic_delivery: result }, taskSessions)).toMatchObject({
+			columnId: 'in-review',
+			delivery: {
+				status: 'blocked',
+				reason: expect.stringContaining('Verify remaining acceptance'),
+				alert: { slack: 'delivered', origin: 'delivered' },
+			},
+		})
+
+		await makeObservationDue(f)
+		const check = (await f.heartbeat(true)).action
+		expect(check?.kind).toBe('observe')
+		expect(await f.complete(check!.leaseId, [], 'GitHub unavailable')).toBe(true)
+		expect((await f.state()).attentionObservation).toEqual(result.attentionObservation)
+		expect(f.sends).toHaveLength(1)
+		expect(await f.notices()).toHaveLength(1)
+	})
+
+	it('rejects an expired or superseded observation and fences changes to the task', async () => {
+		const f = await fixture()
+		await db
+			.update(tasks)
+			.set({
+				automatic_delivery: {
+					...(await f.state()),
+					phase: 'attention',
+					attention: 'Recovery exhausted.',
+					recoveryAttempts: 1,
+					passes: 3,
+					heads: [head],
+					managedAt: 0,
+				},
+			})
+			.where(eq(tasks.id, f.taskId))
+		const first = await f.claim(true)
+		expect(first?.kind).toBe('observe')
+		const leased = await f.state()
+		await db
+			.update(tasks)
+			.set({ automatic_delivery: { ...leased, managedAt: 0, lease: { ...leased.lease!, expiresAt: 0 } } })
+			.where(eq(tasks.id, f.taskId))
+		const merged = { ...head, merged: true, draft: false }
+		expect(await f.complete(first!.leaseId, [merged])).toBe(false)
+
+		const second = await f.claim(true)
+		expect(second?.kind).toBe('observe')
+		expect(second?.leaseId).not.toBe(first?.leaseId)
+		expect(await f.complete(first!.leaseId, [merged])).toBe(false)
+		await db.update(tasks).set({ ticket_description: 'A different acceptance gate.' }).where(eq(tasks.id, f.taskId))
+		expect(await f.complete(second!.leaseId, [merged])).toBe(false)
+		expect(await f.state()).toMatchObject({ phase: 'attention', passes: 3, recoveryAttempts: 1 })
+		expect((await f.state()).attentionObservation).toBeUndefined()
 	})
 
 	it('confirms Slack and retains the unavailable external origin gap', async () => {

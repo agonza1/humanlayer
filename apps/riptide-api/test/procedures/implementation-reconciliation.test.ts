@@ -28,6 +28,7 @@ import {
 	completeImplementationInspection,
 	readTaskReconciliation,
 	reconcileImplementation,
+	saveTaskReconciliation,
 } from '../../src/db/implementation-reconciliation'
 import {
 	catchUpImplementationTasks,
@@ -185,7 +186,8 @@ describe('Implementation reconciliation', () => {
 			auth: createMockDaemonAuth({ organizationId, userId: ownerId, hostId }),
 			services: { db, dbReadReplica: db, effectRuntime: runtime },
 		})
-		const claim = () => call(claimDeliveryProcedure, {}, { context }).then((response) => response.action)
+		const claim = (supportsObservation?: boolean) =>
+			call(claimDeliveryProcedure, { supportsObservation }, { context }).then((response) => response.action)
 		const complete = (
 			leaseId: string,
 			changes?: {
@@ -218,6 +220,50 @@ describe('Implementation reconciliation', () => {
 			setStatus,
 		}
 	}
+
+	it('observes a PR updated from another checkout while preserving the legacy write guard and alert receipt', async () => {
+		const { db } = testDb
+		const f = await fixture({ label: 'rpi:describe-pr', autoPublish: true })
+		await call(
+			configureDeliveryAlertsProcedure,
+			{ taskId: f.taskId, routes: { origin: { kind: 'session', sessionId: f.sessionId } } },
+			{
+				context: createMockApiContext({
+					auth: createMockApiAuth({ organizationId, userId: ownerId }),
+					services: { db, dbReadReplica: db, effectRuntime: runtime },
+				}),
+			},
+		)
+		await f.plan()
+		const strict = (await f.claim())!
+		expect(strict.kind).toBe('inspect')
+		await f.complete(strict.leaseId, { error: 'Old checkout is dirty', inspectionIssue: 'checkout' })
+		const blocker = (await f.state()).blockerAlert
+		expect(blocker).toMatchObject({ slack: { status: 'unavailable' }, origin: { status: 'delivered' } })
+
+		expect(await f.claim()).toBeNull()
+		const observation = (await f.claim(true))!
+		expect(observation.kind).toBe('observe')
+		expect((await f.board()).delivery).toMatchObject({ status: 'blocked', stage: 'implementation' })
+		await f.complete(observation.leaseId, { error: 'GitHub unavailable', inspectionIssue: 'pr-missing' })
+		expect((await f.state()).blockerAlert).toEqual(blocker)
+		expect(await f.claim(true)).toBeNull()
+		expect(await f.history()).toHaveLength(1)
+
+		// Advance only the read-only refresh deadline, not the implementation retry budget.
+		await f.locked((tx, task) =>
+			saveTaskReconciliation(tx, task, { ...readTaskReconciliation(task), observeAfter: Date.now() - 1 }),
+		)
+		const refresh = (await f.claim(true))!
+		expect(refresh.kind).toBe('observe')
+		expect(refresh.leaseId).not.toBe(observation.leaseId)
+		expect(await f.complete(observation.leaseId)).toEqual({ accepted: false })
+		expect(await f.complete(refresh.leaseId)).toEqual({ accepted: true })
+		expect((await f.state()).decision).toEqual({ status: 'blocked', reason: 'review-required', stage: 'in-review' })
+		expect((await f.board()).columnId).toBe('in-review')
+		expect((await f.read()).automatic_delivery).toBeNull()
+		expect(await f.history()).toHaveLength(1)
+	})
 
 	it('uses a committed session event and existing daemon rather than a browser to verify a delivery-off task', async () => {
 		const { db, databaseName } = testDb

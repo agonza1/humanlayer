@@ -1,12 +1,13 @@
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
 import { decodeDelivery, deliveryReviewVerdict, sameDeliveryHeads } from '@humanlayer/schemas/zod/automatic-delivery'
-import { and, asc, eq, exists, isNotNull, or, sql } from 'drizzle-orm'
+import { and, asc, eq, exists, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { Effect } from 'effect'
 
 import { claimTaskDelivery, completeTaskDelivery, deliveryContext, lockDeliveryTask } from '../../db/automatic-delivery'
 import { reserveDeliveryBlockerAlerts } from '../../db/delivery-blocker-alerts'
 import {
+	CHECKOUT_OBSERVATION_BLOCKERS,
 	completeImplementationInspection,
 	readTaskReconciliation,
 	reconcileImplementation,
@@ -19,7 +20,7 @@ import { daemonBase, requiresDaemonBillingMiddleware } from '../base'
 
 export const claimDeliveryProcedure = daemonBase.delivery.claim
 	.use(requiresDaemonBillingMiddleware)
-	.handler(async ({ context }) => {
+	.handler(async ({ input, context }) => {
 		const { organizationId, userId, hostId } = context.auth
 		const { db, effectRuntime } = context.services
 		const { action, alerts } = await db.transaction(async (tx) => {
@@ -44,12 +45,12 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 			for (const task of candidates) {
 				await enrollProjectDelivery(tx, task, hostId)
 				if (decodeDelivery(task.automatic_delivery)?.hostId !== hostId) continue
-				const action = await claimTaskDelivery(tx, task)
-				if (action) return { action, alerts: [] }
+				const action = await claimTaskDelivery(tx, task, input.supportsObservation === true)
+				if (action && action.kind !== 'observe') return { action, alerts: [] }
 				const updated = await lockDeliveryTask(tx, task.id, organizationId)
 				if (!updated) continue
 				const alerts = await reserveDeliveryBlockerAlerts(tx, updated)
-				if (alerts.length) return { action: null, alerts }
+				if (action || alerts.length) return { action, alerts }
 			}
 			const legacy = await tx
 				.select()
@@ -60,8 +61,22 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 						eq(tasks.resource_owner_user_id, userId),
 						eq(tasks.archived, false),
 						eq(tasks.is_draft, false),
-						sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'status' = 'verifying'`,
-						sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'hostId' = ${hostId}`,
+						or(
+							and(
+								sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'status' = 'verifying'`,
+								sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'hostId' = ${hostId}`,
+							),
+							input.supportsObservation
+								? and(
+										sql`${tasks.implementation_reconciliation} -> 'decision' ->> 'status' = 'blocked'`,
+										inArray(
+											sql<string>`${tasks.implementation_reconciliation} -> 'decision' ->> 'reason'`,
+											CHECKOUT_OBSERVATION_BLOCKERS,
+										),
+										sql`coalesce((${tasks.implementation_reconciliation} ->> 'observeAfter')::bigint, 0) <= ${Date.now()}`,
+									)
+								: undefined,
+						),
 						sql`(${tasks.implementation_reconciliation} -> 'lease' is null or
 						(${tasks.implementation_reconciliation} -> 'lease' ->> 'expiresAt')::bigint <= ${Date.now()})`,
 						exists(
@@ -107,7 +122,10 @@ export const completeDeliveryProcedure = daemonBase.delivery.complete
 				if (reconciliation.lease.hostId !== hostId) throw errors.FORBIDDEN()
 				const accepted = await completeImplementationInspection(tx, task, { ...input, hostId })
 				const recoverPublication =
-					accepted && input.inspectionIssue === 'pr-missing' && task.auto_advance_implementation_to_pr
+					accepted &&
+					reconciliation.lease.kind !== 'observe' &&
+					input.inspectionIssue === 'pr-missing' &&
+					task.auto_advance_implementation_to_pr
 				return {
 					accepted,
 					archived: false,

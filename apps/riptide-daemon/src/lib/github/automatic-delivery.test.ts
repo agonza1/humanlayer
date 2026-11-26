@@ -1,8 +1,10 @@
+import { tmpdir } from 'node:os'
+
 import { describe, it } from '@effect/vitest'
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import { deliveryReviewVerdict, type DeliveryReview } from '@humanlayer/schemas/zod/automatic-delivery'
 import { Effect } from 'effect'
-import { expect } from 'vitest'
+import { expect, vi } from 'vitest'
 
 import { executeDeliveryAction, inspectCommittedImplementation, type DeliveryCommands } from './automatic-delivery'
 
@@ -197,6 +199,158 @@ describe('Exact-head delivery host adapter', () => {
 			const f = fake()
 			await expect(executeDeliveryAction(action, f.commands, async () => false)).rejects.toThrow('authorization')
 			expect(f.mutations).toHaveLength(0)
+		}),
+	)
+})
+
+describe('Read-only GitHub delivery observation', () => {
+	const target = {
+		repository: 'test/krisp',
+		branch: 'codex/calendar-repair',
+		base: 'main',
+		directory: '/nonexistent/dirty-checkout',
+	}
+	const oldSha = 'a'.repeat(40)
+	const hostedSha = 'b'.repeat(40)
+	const observed: DeliveryAction = { taskId: 'task', leaseId: 'lease', kind: 'observe', targets: [target], heads: [] }
+	const hostedPr = {
+		number: 33,
+		state: 'OPEN',
+		headRefOid: hostedSha,
+		headRefName: target.branch,
+		baseRefName: target.base,
+		headRepository: { nameWithOwner: target.repository },
+		isDraft: false,
+	}
+	const hostedRef = { name: target.branch, prefix: 'refs/heads/', target: { oid: hostedSha } }
+
+	function fakeObservation(repository: Record<string, unknown> = {}, errors?: unknown[]) {
+		const run = vi.fn<DeliveryCommands['run']>(async (binary, args, cwd) => {
+			if (binary === 'git' && args[0] === 'status') return ' M .gitignore'
+			if (binary === 'git' && args[0] === 'branch') return target.branch
+			if (binary === 'git' && args[0] === 'rev-parse') return oldSha
+			if (binary === 'git' && args[0] === 'remote') return 'https://github.com/test/krisp.git'
+			expect(binary).toBe('gh')
+			expect(args.slice(0, 4)).toEqual(['api', 'graphql', '--hostname', 'github.com'])
+			expect(cwd).toBe(tmpdir())
+			return JSON.stringify({
+				errors,
+				data: {
+					repository: {
+						nameWithOwner: target.repository,
+						byTarget: { totalCount: 1, nodes: [hostedPr] },
+						branch: hostedRef,
+						...repository,
+					},
+				},
+			})
+		})
+		return { run }
+	}
+
+	it.effect('observes a Krisp PR published from another checkout and preserves the dirty checkout guard', () =>
+		Effect.promise(async () => {
+			const commands = fakeObservation()
+			const authorize = vi.fn(async () => true)
+			expect(await executeDeliveryAction(observed, commands, authorize)).toEqual([
+				{ ...target, sha: hostedSha, number: hostedPr.number, merged: false, draft: false },
+			])
+			expect(commands.run).toHaveBeenCalledExactlyOnceWith(
+				'gh',
+				expect.arrayContaining([
+					'owner=test',
+					'name=krisp',
+					'base=main',
+					'ref=refs/heads/codex/calendar-repair',
+					'known=false',
+				]),
+				tmpdir(),
+			)
+			await expect(executeDeliveryAction({ ...observed, kind: 'merge' }, commands, authorize)).rejects.toThrow(
+				'Local checkout has newer/uncommitted work',
+			)
+			expect(authorize).not.toHaveBeenCalled()
+		}),
+	)
+
+	for (const branch of [hostedRef, null]) {
+		it.effect(
+			branch
+				? 'observes an exact externally merged PR'
+				: 'observes an exact Meetily merge after its branch is deleted',
+			() =>
+				Effect.promise(async () => {
+					const tracking = { ...target, number: 17, sha: hostedSha, merged: false, draft: false }
+					const commands = fakeObservation({
+						byNumber: { ...hostedPr, number: tracking.number, state: 'MERGED' },
+						branch,
+					})
+					const authorize = vi.fn(async () => true)
+					const heads = await executeDeliveryAction({ ...observed, heads: [tracking] }, commands, authorize)
+					expect(heads).toEqual([{ ...tracking, merged: true }])
+					expect(commands.run).toHaveBeenCalledExactlyOnceWith(
+						'gh',
+						expect.arrayContaining(['known=true', 'number=17']),
+						tmpdir(),
+					)
+					expect(authorize).not.toHaveBeenCalled()
+				}),
+		)
+	}
+
+	for (const [label, repository, expectedError] of [
+		[
+			'ambiguous PRs',
+			{ byTarget: { totalCount: 2, nodes: [hostedPr, { ...hostedPr, number: 34 }] } },
+			'More than one GitHub PR',
+		],
+		[
+			'a fork PR',
+			{ byTarget: { totalCount: 1, nodes: [{ ...hostedPr, headRepository: { nameWithOwner: 'test/fork' } }] } },
+			'does not match the delivery target',
+		],
+		[
+			'a closed unmerged PR',
+			{ byTarget: { totalCount: 1, nodes: [{ ...hostedPr, state: 'CLOSED' }] } },
+			'does not match the delivery target',
+		],
+		['a stale PR head', { branch: { ...hostedRef, target: { oid: oldSha } } }, 'branch does not match'],
+		['a deleted open branch', { branch: null }, 'branch does not match'],
+		['an unrelated ref prefix', { branch: { ...hostedRef, prefix: 'refs/tags/' } }, 'branch does not match'],
+	] as const) {
+		it.effect(`rejects ${label}`, () =>
+			Effect.promise(async () => {
+				const authorize = vi.fn(async () => true)
+				await expect(executeDeliveryAction(observed, fakeObservation(repository), authorize)).rejects.toThrow(
+					expectedError,
+				)
+				expect(authorize).not.toHaveBeenCalled()
+			}),
+		)
+	}
+
+	it.effect('rejects a different PR when the delivery target already has a tracked number', () =>
+		Effect.promise(async () => {
+			const commands = fakeObservation({ byNumber: { ...hostedPr, number: 34 } })
+			const tracking = { ...target, number: 33, sha: oldSha, merged: false }
+			await expect(
+				executeDeliveryAction({ ...observed, heads: [tracking] }, commands, async () => true),
+			).rejects.toThrow('does not match the delivery target')
+		}),
+	)
+
+	it.effect('does not treat failed GitHub access or a partial response as a deleted merged branch', () =>
+		Effect.promise(async () => {
+			const tracking = { ...target, number: 33, sha: hostedSha, merged: false }
+			const attempt = { ...observed, heads: [tracking] }
+			const commands = fakeObservation({ byNumber: { ...hostedPr, state: 'MERGED' }, branch: null }, [
+				{ type: 'FORBIDDEN' },
+			])
+			await expect(executeDeliveryAction(attempt, commands, async () => true)).rejects.toThrow()
+			commands.run.mockRejectedValueOnce(new Error('GitHub is unavailable'))
+			await expect(executeDeliveryAction(attempt, commands, async () => true)).rejects.toThrow(
+				'GitHub is unavailable',
+			)
 		}),
 	)
 })
