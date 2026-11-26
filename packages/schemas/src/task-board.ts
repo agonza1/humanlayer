@@ -43,6 +43,9 @@ type BoardBlockerAlert = {
 	slack: DeliveryAlertReceipt['status']
 	origin: DeliveryAlertReceipt['status']
 	slackRoute?: BlockerAlert['slackRoute']
+	blockerId?: string
+	acknowledgedAt?: number
+	reminder?: { slack: DeliveryAlertReceipt['status']; origin: DeliveryAlertReceipt['status'] }
 }
 
 export type BoardDelivery =
@@ -180,6 +183,10 @@ function describeBlockerAlert(receipts: BlockerAlert | undefined): BoardBlockerA
 	if (!receipts) return undefined
 	const alert: BoardBlockerAlert = { slack: receipts.slack.status, origin: receipts.origin.status }
 	if (receipts.slackRoute) alert.slackRoute = receipts.slackRoute
+	if (receipts.exhaustedAt !== undefined || receipts.acknowledgedAt !== undefined) alert.blockerId = receipts.id
+	if (receipts.acknowledgedAt !== undefined) alert.acknowledgedAt = receipts.acknowledgedAt
+	if (receipts.reminder)
+		alert.reminder = { slack: receipts.reminder.slack.status, origin: receipts.reminder.origin.status }
 	return alert
 }
 
@@ -213,9 +220,10 @@ function describeDelivery(
 				alert,
 			}
 		}
+		const diagnosis = delivery.attentionDiagnosis
 		return {
 			status: 'blocked',
-			reason: delivery.attention,
+			reason: diagnosis ? [diagnosis.reason, diagnosis.nextAction].join(' ') : delivery.attention,
 			publication: delivery.attentionDuringPublication,
 			alert,
 		}

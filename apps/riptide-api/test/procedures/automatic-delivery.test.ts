@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 
 import { describe, it } from '@effect/vitest'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
+import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
 import { projects } from '@humanlayer/db/tables/projects'
@@ -19,6 +20,8 @@ import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/del
 import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import {
 	decodeDelivery,
+	DELIVERY_DIAGNOSIS_LABEL,
+	DELIVERY_DIAGNOSIS_MODEL,
 	type DeliveryAlertReceipt,
 	type DeliveryAlertRoutesInputSchema,
 	type AutomaticDelivery,
@@ -47,7 +50,10 @@ import {
 } from '../../src/db/delivery-blocker-alerts'
 import { guardTaskDeliveryMutation } from '../../src/db/guard-delivery-mutation'
 import { SlackService } from '../../src/effects/services/slack/slack.service'
-import { configureDeliveryAlertsProcedure } from '../../src/orpc/api/tasks/delivery'
+import {
+	acknowledgeDeliveryBlockerProcedure,
+	configureDeliveryAlertsProcedure,
+} from '../../src/orpc/api/tasks/delivery'
 import { upsertArtifactProcedure } from '../../src/orpc/daemon/artifacts/upsert'
 import {
 	claimDeliveryProcedure,
@@ -492,6 +498,17 @@ describe('Persisted automatic delivery', () => {
 		const slackAutomationId = automation!.id
 		const heartbeat = (supportsObservation = false) =>
 			call(claimDeliveryProcedure, supportsObservation ? { supportsObservation: true } : {}, { context })
+		const completeObservedMerge = (leaseId: string) =>
+			call(
+				completeDeliveryProcedure,
+				{
+					taskId: f.taskId,
+					leaseId,
+					heads: [{ ...head, merged: true, draft: false }],
+					error: null,
+				},
+				{ context },
+			)
 		const block = () => db.update(sessions).set({ status: 'interrupted' }).where(eq(sessions.id, f.source.id))
 		const notices = async () =>
 			(await db.select().from(conversationEvents).where(eq(conversationEvents.session_id, f.source.id))).filter(
@@ -508,7 +525,18 @@ describe('Persisted automatic delivery', () => {
 			})
 			return { kind: 'slack' as const, automationId: slackAutomationId }
 		}
-		return { ...f, configure, block, heartbeat, notices, origin, slackAutomationId, sends, thread }
+		return {
+			...f,
+			configure,
+			block,
+			heartbeat,
+			completeObservedMerge,
+			notices,
+			origin,
+			slackAutomationId,
+			sends,
+			thread,
+		}
 	}
 
 	it('reconciles an existing managed blocker and fences a grant revoked before dispatch', async () => {
@@ -613,6 +641,206 @@ describe('Persisted automatic delivery', () => {
 			.set({ automatic_delivery: { ...(await f.state()), managedAt: Date.now() - 61_000 } })
 			.where(eq(tasks.id, f.taskId))
 	}
+
+	async function launchAttentionRecovery(
+		effortLevels: string[],
+		humanCheckpointsSatisfied = true,
+		findings: DeliveryReview['findings'] = [],
+	) {
+		const diagnosisHost = uuidv7()
+		const f = await fixture('pr-only', diagnosisHost)
+		await db
+			.update(sessions)
+			.set({ coding_agent: 'codelayer', provider: 'codex', model: 'gpt-6.1-sol' })
+			.where(eq(sessions.id, f.source.id))
+		await db.insert(onlineHosts).values({
+			host_id: diagnosisHost,
+			organization_id: organizationId,
+			user_id: 'owner',
+			supported_models: {
+				probedAt: Date.now(),
+				anthropic: { status: 'unavailable', reason: 'Test host has only Codex', models: [] },
+				codex: {
+					status: 'ok',
+					models: [
+						{
+							provider: 'codex',
+							value: DELIVERY_DIAGNOSIS_MODEL,
+							label: 'GPT-6.2 Sol',
+							isDefault: false,
+							hidden: false,
+							effortLevels,
+							supportsFastMode: false,
+							supportsAutoMode: false,
+						},
+					],
+				},
+			},
+		})
+		await f.reachReview()
+		await f.review({
+			verdict: 'uncertain',
+			humanCheckpointsSatisfied,
+			findings,
+			evidence: 'The review result is absent from the expected PR revision.',
+		})
+		await f.idle()
+		expect(await f.claim()).toBeNull()
+		const recoveryId = (await f.state()).managedSessionId!
+		const [recovery] = await db.select().from(sessions).where(eq(sessions.id, recoveryId))
+		return { ...f, diagnosisHost, recovery: recovery! }
+	}
+
+	it('uses one Sol high diagnostic for unclear recovery and accepts only its bounded owner-host artifact', async () => {
+		const f = await launchAttentionRecovery(['medium', 'high'])
+		expect(f.recovery).toMatchObject({
+			id: (await f.state()).managedSessionId,
+			host_id: f.diagnosisHost,
+			model: DELIVERY_DIAGNOSIS_MODEL,
+			effort: 'high',
+			permissions_mode: 'default',
+			labels: expect.arrayContaining([{ name: DELIVERY_DIAGNOSIS_LABEL, title: 'Read-only blocker diagnosis' }]),
+		})
+		expect(f.recovery.prompt).toContain('The review result is absent from the expected PR revision.')
+		await db.update(sessions).set({ status: 'running' }).where(eq(sessions.id, f.recovery.id))
+		const context = createMockDaemonContext({
+			auth: createMockDaemonAuth({ userId: 'owner', organizationId, hostId: f.diagnosisHost }),
+			services: { db, dbReadReplica: db },
+		})
+		const wrongHost = createMockDaemonContext({
+			auth: createMockDaemonAuth({ userId: 'owner', organizationId, hostId: uuidv7() }),
+			services: { db, dbReadReplica: db },
+		})
+		const diagnosis = { reason: 'Review evidence is missing.', nextAction: 'Check the current PR review.' }
+		const input = {
+			taskId: f.taskId,
+			sessionId: f.recovery.id,
+			fileName: `delivery-diagnosis-${f.recovery.id}.json`,
+			content: JSON.stringify(diagnosis),
+		}
+		await expect(call(upsertArtifactProcedure, input, { context: wrongHost })).rejects.toMatchObject({
+			code: 'FORBIDDEN',
+		})
+		await expect(
+			call(
+				upsertArtifactProcedure,
+				{ ...input, content: JSON.stringify({ ...diagnosis, reason: 'Line 1\nLine 2' }) },
+				{ context },
+			),
+		).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+		const prior = await f.state()
+		await call(upsertArtifactProcedure, input, { context })
+		await call(upsertArtifactProcedure, input, { context })
+		expect(await f.state()).toMatchObject({
+			phase: 'attention',
+			passes: prior.passes,
+			recoveryAttempts: 1,
+			attention: prior.attention,
+			attentionDiagnosis: diagnosis,
+		})
+		await expect(
+			call(
+				upsertArtifactProcedure,
+				{ ...input, content: JSON.stringify({ ...diagnosis, reason: 'Replacement.' }) },
+				{ context },
+			),
+		).rejects.toMatchObject({ code: 'FORBIDDEN' })
+	})
+
+	it('keeps ordinary recovery for known human gates, recorded findings, and hosts without Sol high', async () => {
+		for (const [levels, checkpoint, findings] of [
+			[['medium', 'high'], false, []],
+			[['medium'], true, []],
+			[
+				['medium', 'high'],
+				true,
+				[{ priority: 'P1', related: true, verified: true, detail: 'Known test failure' }],
+			],
+		] as const) {
+			const f = await launchAttentionRecovery([...levels], checkpoint, [...findings])
+			expect(f.recovery).toMatchObject({ model: 'gpt-6.1-sol', effort: null })
+			expect(f.recovery.labels?.some((label) => label.name === DELIVERY_DIAGNOSIS_LABEL)).toBe(false)
+			expect((await f.state()).recoveryAttempts).toBe(1)
+		}
+	})
+
+	it('reminds once per 24 hours after recovery ends and stops after the owner acknowledges the exact blocker', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await f.reachReview()
+		await f.review({ verdict: 'blocked', humanCheckpointsSatisfied: false })
+		await f.idle()
+		await f.heartbeat()
+		await f.idle()
+		await f.heartbeat()
+		const exhausted = await f.state()
+		const original = exhausted.blockerAlert!
+		expect(original).toMatchObject({
+			exhaustedAt: expect.any(Number),
+			slack: confirmed,
+			origin: { status: 'delivered' },
+		})
+
+		await f.heartbeat()
+		expect(f.sends).toHaveLength(1)
+		const day = 24 * 60 * 60_000
+		await db
+			.update(tasks)
+			.set({
+				automatic_delivery: { ...exhausted, blockerAlert: { ...original, exhaustedAt: Date.now() - day - 1 } },
+			})
+			.where(eq(tasks.id, f.taskId))
+		await makeObservationDue(f)
+		const { action } = await f.heartbeat(true)
+		expect(action?.kind).toBe('observe')
+		expect(f.sends).toHaveLength(1)
+		expect(await f.completeObservedMerge(action!.leaseId)).toEqual({ accepted: true })
+		await f.heartbeat()
+		const reminded = await f.state()
+		expect(reminded.blockerAlert).toMatchObject({
+			id: original.id,
+			slack: original.slack,
+			origin: original.origin,
+			reminder: { slack: confirmed, origin: { status: 'delivered' } },
+		})
+		expect(reminded.blockerAlert?.reminder?.id).not.toBe(original.id)
+		expect(reminded.recoveryAttempts).toBe(1)
+		expect(f.sends).toHaveLength(2)
+		expect((await f.notices()).map((notice) => notice.content).join('\n')).toContain(
+			'Still needs attention after 24 hours. PR merged on GitHub. Verify remaining acceptance',
+		)
+
+		const ackContext = {
+			context: createMockApiContext({
+				auth: createMockApiAuth({ organizationId, userId: 'owner' }),
+				services: { db, dbReadReplica: db },
+			}),
+		}
+		expect(
+			await call(acknowledgeDeliveryBlockerProcedure, { taskId: f.taskId, alertId: uuidv7() }, ackContext),
+		).toEqual({ acknowledged: false })
+		expect(
+			await call(acknowledgeDeliveryBlockerProcedure, { taskId: f.taskId, alertId: original.id }, ackContext),
+		).toEqual({ acknowledged: true })
+
+		const acknowledged = await f.state()
+		await db
+			.update(tasks)
+			.set({
+				automatic_delivery: {
+					...acknowledged,
+					blockerAlert: {
+						...acknowledged.blockerAlert!,
+						reminder: { ...acknowledged.blockerAlert!.reminder!, reservedAt: Date.now() - day - 1 },
+					},
+				},
+			})
+			.where(eq(tasks.id, f.taskId))
+		await f.heartbeat()
+		expect(f.sends).toHaveLength(2)
+		expect(await f.notices()).toHaveLength(2)
+		expect((await f.state()).phase).toBe('attention')
+	})
 
 	it('observes a manual merge after Main recovery while keeping the Meetily acceptance gate and confirmed alerts', async () => {
 		const f = await alertFixture()

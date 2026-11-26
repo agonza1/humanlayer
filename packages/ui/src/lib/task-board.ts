@@ -43,10 +43,12 @@ const slackRouteLabels = {
 
 export function boardDeliveryAlertLabel(delivery: BoardDelivery) {
 	if (delivery.status !== 'blocked' || !delivery.alert) return null
-	const { slack, origin, slackRoute } = delivery.alert
-	if (!slackRoute && slack === 'delivered' && origin === 'delivered') return null
+	const { slack, origin, slackRoute, reminder } = delivery.alert
+	if (!slackRoute && slack === 'delivered' && origin === 'delivered' && !reminder) return null
 	const route = slackRoute ? ` (${slackRouteLabels[slackRoute]})` : ''
-	return `Slack alert ${alertStateLabels[slack]}${route} · Origin alert ${alertStateLabels[origin]}`
+	const initial = `Slack alert ${alertStateLabels[slack]}${route} · Origin alert ${alertStateLabels[origin]}`
+	if (!reminder) return initial
+	return `${initial} · 24h reminder: Slack ${alertStateLabels[reminder.slack]}, origin ${alertStateLabels[reminder.origin]}`
 }
 
 export function boardIdleBackground(status: BoardStatus | undefined, updatedAtMs: number | null | undefined, nowMs: number) {

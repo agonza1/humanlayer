@@ -3,7 +3,11 @@ import { decodeDelivery, type AutomaticDelivery } from '@humanlayer/schemas/zod/
 import { eq } from 'drizzle-orm'
 
 import { acceptDeliveryReview, deliveryContext, lockDeliveryTask, saveDelivery } from '../../../db/automatic-delivery'
-import { bindDeliveryAlertRoutes, reserveDeliveryBlockerAlerts } from '../../../db/delivery-blocker-alerts'
+import {
+	acknowledgeDeliveryBlocker,
+	bindDeliveryAlertRoutes,
+	reserveDeliveryBlockerAlerts,
+} from '../../../db/delivery-blocker-alerts'
 import { readTaskReconciliation, saveTaskReconciliation } from '../../../db/implementation-reconciliation'
 import { checkTaskWritePermission } from '../../../db/task-auth'
 import { dispatchDeliveryAlerts } from '../../../lib/dispatch-delivery-alerts'
@@ -145,4 +149,15 @@ export const configureDeliveryAlertsProcedure = apiBaseOrgRequired.tasks.deliver
 		})
 		await dispatchDeliveryAlerts(db, effectRuntime, result.alerts)
 		return { delivery: result.delivery, reconciliation: result.reconciliation }
+	})
+
+export const acknowledgeDeliveryBlockerProcedure = apiBaseOrgRequired.tasks.delivery.acknowledgeBlocker
+	.use(requiresBillingMiddleware)
+	.handler(async ({ input, context, errors }) => {
+		return context.services.db.transaction(async (tx) => {
+			const task = await lockDeliveryTask(tx, input.taskId, context.auth.organizationId)
+			if (!task || task.archived || task.is_draft) throw errors.NOT_FOUND()
+			if (task.resource_owner_user_id !== context.auth.userId) throw errors.FORBIDDEN()
+			return { acknowledged: await acknowledgeDeliveryBlocker(tx, task, input.alertId) }
+		})
 	})
