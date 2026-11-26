@@ -120,6 +120,7 @@ const BlockerAlertReceiptsSchema = z.object({
 })
 
 export const DeliveryBlockerAlertSchema = BlockerAlertReceiptsSchema.extend({
+	openedAt: z.number().optional(),
 	exhaustedAt: z.number().optional(),
 	acknowledgedAt: z.number().optional(),
 	reminder: BlockerAlertReceiptsSchema.extend({ reservedAt: z.number() }).optional(),
@@ -178,7 +179,9 @@ export const AutomaticDeliverySchema = z.object({
 	attention: z.string().nullable(),
 	attentionDiagnosis: DeliveryAttentionDiagnosisSchema.optional(),
 	attentionDuringPublication: z.boolean().optional(),
-	attentionObservation: z.object({ checkedAt: z.number(), heads: z.array(DeliveryHeadSchema).max(10) }).optional(),
+	attentionObservation: z
+		.object({ checkedAt: z.number(), changedAt: z.number().optional(), heads: z.array(DeliveryHeadSchema).max(10) })
+		.optional(),
 	alertRoutes: DeliveryAlertRoutesSchema.optional(),
 	blockerAlert: DeliveryBlockerAlertSchema.optional(),
 	lease: z

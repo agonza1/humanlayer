@@ -1,6 +1,7 @@
 import { SESSION_STATUSES, type SessionStatus } from './effect/session/session-status'
 import { AutomaticDeliverySchema, type AutomaticDelivery, type DeliveryAlertReceipt } from './zod/automatic-delivery'
 import { decodeImplementationReconciliation, IMPLEMENTATION_BLOCKERS } from './zod/implementation-reconciliation'
+import { decodeTaskAttention, type TaskAttention } from './zod/task-attention'
 
 export const BOARD_COLUMNS = [
 	{ id: 'todo', title: 'To do', description: 'Tasks waiting to start' },
@@ -60,12 +61,71 @@ export type BoardDelivery =
 			alert?: BoardBlockerAlert
 	  }
 
+export interface BoardAttention {
+	kind: 'owner_input' | 'external_wait' | 'blocked'
+	source: 'task' | 'session' | 'delivery'
+	id?: string
+	revision?: number
+	reason: string
+	responsible?: string
+	nextAction?: string
+	evidence?: string
+	openedAt?: number
+	updatedAt?: number
+	lastCheckedAt?: number
+	recoveryAttempts?: number
+	followUpAt?: number
+	acknowledgedAt?: number
+	resolvedAt?: number
+	lastNoticeAt?: number
+	alert?: Pick<BoardBlockerAlert, 'slack' | 'origin' | 'slackRoute' | 'reminder'>
+}
+
 export interface BoardTaskInput {
 	automatic_delivery?: unknown
 	implementation_reconciliation?: unknown
+	task_attention?: unknown
+	resource_owner_user_id?: string | null
 	is_draft?: boolean | null
 	created_at?: RecordTime
 	updated_at?: RecordTime
+}
+
+export function describeAuthoredAttention(authored: TaskAttention): BoardAttention {
+	const {
+		kind,
+		id,
+		revision,
+		reason,
+		responsible,
+		nextAction,
+		evidence,
+		openedAt,
+		updatedAt,
+		followUpAt,
+		acknowledgedAt,
+		resolvedAt,
+		notice,
+	} = authored
+	return {
+		kind,
+		source: 'task',
+		id,
+		revision,
+		reason,
+		responsible,
+		nextAction,
+		evidence,
+		openedAt,
+		updatedAt,
+		followUpAt,
+		acknowledgedAt,
+		resolvedAt,
+		lastNoticeAt: notice?.reservedAt,
+		alert: notice
+			? { slack: notice.slack.status, origin: notice.origin.status, slackRoute: notice.slackRoute }
+			: undefined,
+	}
 }
 
 export interface BoardSessionInput {
@@ -190,12 +250,7 @@ function describeBlockerAlert(receipts: BlockerAlert | undefined): BoardBlockerA
 	return alert
 }
 
-function describeDelivery(
-	task: BoardTaskInput,
-	sessions: readonly BoardSessionInput[],
-	latest?: BoardSessionInput,
-): BoardDelivery | null {
-	let rawDelivery = task.automatic_delivery
+function parseDelivery(rawDelivery: unknown) {
 	if (typeof rawDelivery === 'string') {
 		try {
 			rawDelivery = JSON.parse(rawDelivery)
@@ -203,7 +258,14 @@ function describeDelivery(
 			rawDelivery = null
 		}
 	}
-	const delivery = AutomaticDeliverySchema.safeParse(rawDelivery).data
+	return AutomaticDeliverySchema.safeParse(rawDelivery).data
+}
+
+function describeDelivery(
+	delivery: AutomaticDelivery | undefined,
+	sessions: readonly BoardSessionInput[],
+	latest?: BoardSessionInput,
+): BoardDelivery | null {
 	const alert = describeBlockerAlert(delivery?.blockerAlert)
 	if (delivery?.phase === 'attention' && delivery.attention) {
 		const observed = delivery.attentionObservation
@@ -306,7 +368,8 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 	}
 
 	const stage = assignStage(activeSessions, latest)
-	const stockDelivery = describeDelivery(task, activeSessions, latest)
+	const automaticDelivery = parseDelivery(task.automatic_delivery)
+	const stockDelivery = describeDelivery(automaticDelivery, activeSessions, latest)
 	const reconciliation = decodeImplementationReconciliation(task.implementation_reconciliation)
 	const decision = reconciliation?.decision
 	let delivery: BoardDelivery | null = stockDelivery
@@ -348,5 +411,48 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 		(delivery?.status === 'review' || (delivery?.status === 'blocked' && delivery.stage === 'in-review'))
 	)
 		stage.workflowLabel = REVIEW_LABEL
-	return { ...stage, status, lastUpdatedAtMs: updatedAt > 0 ? updatedAt : null, delivery }
+	const attention: BoardAttention[] = []
+	const authored = decodeTaskAttention(task.task_attention)
+	if (
+		authored &&
+		authored.resolvedAt === undefined &&
+		(task.resource_owner_user_id === undefined || task.resource_owner_user_id === authored.authorizedBy)
+	) {
+		attention.push(describeAuthoredAttention(authored))
+	}
+	if (status === 'needs_approval') {
+		const approval = mostRecentStartedSession(
+			activeSessions.filter((session) => session.status === 'needs_approval'),
+		)
+		attention.push({
+			kind: 'owner_input',
+			source: 'session',
+			id: approval?.id,
+			reason: 'A session is waiting for approval.',
+			nextAction: 'Open the session to review the request.',
+		})
+	}
+	if (delivery?.status === 'blocked') {
+		const isAutomaticDelivery = delivery === stockDelivery
+		const blocker = isAutomaticDelivery ? automaticDelivery?.blockerAlert : reconciliation?.blockerAlert
+		const observation = isAutomaticDelivery ? automaticDelivery?.attentionObservation : undefined
+		const diagnosis = isAutomaticDelivery ? automaticDelivery?.attentionDiagnosis : undefined
+		const currentDiagnosis = diagnosis && delivery.reason === [diagnosis.reason, diagnosis.nextAction].join(' ')
+		const lastChange = Math.max(blocker?.openedAt ?? 0, observation?.changedAt ?? 0)
+		attention.push({
+			kind: 'blocked',
+			source: 'delivery',
+			id: blocker?.id,
+			reason: currentDiagnosis ? diagnosis.reason : delivery.reason,
+			nextAction: currentDiagnosis ? diagnosis.nextAction : undefined,
+			openedAt: blocker?.openedAt,
+			updatedAt: lastChange || undefined,
+			lastCheckedAt: observation?.checkedAt,
+			recoveryAttempts: isAutomaticDelivery ? automaticDelivery?.recoveryAttempts : undefined,
+			acknowledgedAt: blocker?.acknowledgedAt,
+			lastNoticeAt: blocker?.reminder?.reservedAt,
+			alert: delivery.alert,
+		})
+	}
+	return { ...stage, status, lastUpdatedAtMs: updatedAt > 0 ? updatedAt : null, delivery, attention }
 }

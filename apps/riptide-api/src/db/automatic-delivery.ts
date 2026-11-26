@@ -106,8 +106,19 @@ export async function deliveryContext(tx: Tx, task: Task, delivery: AutomaticDel
 	return { history, revision: JSON.stringify([revision, task.ticket_description]), allIdle, untracked }
 }
 
-export async function saveDelivery(tx: Tx, task: Task, delivery: AutomaticDelivery) {
-	await tx.update(tasks).set({ automatic_delivery: delivery }).where(eq(tasks.id, task.id))
+export async function saveDelivery(
+	tx: Tx,
+	task: Task,
+	delivery: AutomaticDelivery,
+	options: { preserveActivity?: boolean } = {},
+) {
+	await tx
+		.update(tasks)
+		.set({
+			automatic_delivery: delivery,
+			...(options.preserveActivity ? { updated_at: task.updated_at } : {}),
+		})
+		.where(eq(tasks.id, task.id))
 }
 
 async function supportsAttentionDiagnosis(
@@ -332,7 +343,7 @@ async function reserveDeliveryAction(
 	// Also advances the persisted fairness timestamp when no managed session is live.
 	delivery.managedAt = now
 	delivery.lease = lease
-	await saveDelivery(tx, task, delivery)
+	await saveDelivery(tx, task, delivery, { preserveActivity: kind === 'observe' })
 	return { taskId: task.id, leaseId: lease.id, kind, targets: delivery.targets, heads }
 }
 
@@ -677,8 +688,22 @@ export async function completeTaskDelivery(
 		)
 		delivery.lease = null
 		// A failed refresh keeps the last confirmed evidence and its original timestamp.
-		if (!error && matchesTargets && matchesPRs) delivery.attentionObservation = { checkedAt: Date.now(), heads }
-		await saveDelivery(tx, task, delivery)
+		const confirmed = !error && matchesTargets && matchesPRs
+		const previous = delivery.attentionObservation
+		const changed =
+			confirmed &&
+			(!previous ||
+				!sameDeliveryHeads(previous.heads, heads) ||
+				heads.some((head) =>
+					previous.heads.some(
+						(old) => sameTarget(old, head) && (old.merged !== head.merged || old.draft !== head.draft),
+					),
+				))
+		if (confirmed) {
+			const checkedAt = Date.now()
+			delivery.attentionObservation = { checkedAt, heads, changedAt: changed ? checkedAt : previous?.changedAt }
+		}
+		await saveDelivery(tx, task, delivery, { preserveActivity: !changed })
 		return true
 	}
 	if (

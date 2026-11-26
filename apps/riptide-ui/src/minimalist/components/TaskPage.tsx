@@ -1,12 +1,11 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
 import { describeBoardTask } from '@humanlayer/schemas/task-board'
-import { boardDeliveryAlertLabel, boardDeliveryLabel } from '@humanlayer/ui/lib/task-board'
 import { Link } from '@tanstack/react-router'
 import { MessageSquare, PanelLeft, PanelRightClose } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { TaskDiffScope } from '@/components/diffs/TaskDiffScope'
-import { AcknowledgeDeliveryBlocker } from '@/components/task-detail/AcknowledgeDeliveryBlocker'
+import { TaskAttentionPanel } from '@/components/task-detail/TaskAttentionPanel'
 import { useMountEffect } from '@/hooks/useMountEffect'
 import { useSessionAccess } from '@/minimalist/lib/access'
 import { useTask, useTaskArtifacts } from '@/minimalist/lib/data'
@@ -32,7 +31,7 @@ import { WorkspaceSetup } from './WorkspaceSetup'
 
 export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sessionId?: string }) {
 	const { task, sessions, isReady } = useTask(taskId)
-	const delivery = task ? describeBoardTask(task, sessions).delivery : null
+	const board = task ? describeBoardTask(task, sessions) : null
 	const artifacts = useTaskArtifacts(taskId)
 	const session = chooseTaskSession(sessions, sessionId, rememberedSession(taskId))
 	const { canSendPrompt } = useSessionAccess(session ?? undefined)
@@ -235,25 +234,9 @@ export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sess
 					onClick={toggleTaskSidebar}
 				/>
 			) : null}
-			{delivery ? (
+			{task && board ? (
 				<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-					<div className="p-2 text-sm" role="status">
-						<strong>{boardDeliveryLabel(delivery)}</strong>
-						{delivery.status === 'blocked' && (
-							<p>
-								{delivery.reason} {boardDeliveryAlertLabel(delivery)}
-							</p>
-						)}
-						{delivery.status === 'blocked' && delivery.alert?.blockerId && (
-							<AcknowledgeDeliveryBlocker
-								key={delivery.alert.blockerId}
-								taskId={taskId}
-								ownerId={task?.resource_owner_user_id}
-								alertId={delivery.alert.blockerId}
-								acknowledgedAt={delivery.alert.acknowledgedAt}
-							/>
-						)}
-					</div>
+					<TaskAttentionPanel task={task} attention={board.attention} delivery={board.delivery} />
 					{body}
 				</div>
 			) : (

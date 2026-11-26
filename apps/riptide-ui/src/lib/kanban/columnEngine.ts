@@ -88,10 +88,8 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 	}
 
 	for (const task of input.tasks) {
-		const { columnId, workflowLabel, stageActivityMs, status, lastUpdatedAtMs, delivery } = describeBoardTask(
-			task,
-			task.sessions,
-		)
+		const { columnId, workflowLabel, stageActivityMs, status, lastUpdatedAtMs, delivery, attention } =
+			describeBoardTask(task, task.sessions)
 		const owner = input.resolveOwner(task.resource_owner_user_id)
 		const owners = getTaskOwnerIds(task).map((userId) => ({ id: userId, ...input.resolveOwner(userId) }))
 
@@ -115,6 +113,7 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 				workflowLabel,
 				status,
 				delivery,
+				attention,
 				isUnread,
 			},
 		})

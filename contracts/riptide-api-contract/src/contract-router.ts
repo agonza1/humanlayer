@@ -215,6 +215,11 @@ import { syncV2TaskWorkspaceSetupForHostContract } from './api/sync/v2/task-work
 import { syncV2TasksContract } from './api/sync/v2/tasks'
 import { upsertTaskUserSettingsContract } from './api/task-user-settings/upsert'
 import { archiveTaskContract } from './api/tasks/archive'
+import {
+	acknowledgeTaskAttentionContract,
+	clearTaskAttentionContract,
+	setTaskAttentionContract,
+} from './api/tasks/attention'
 import { createTaskContract } from './api/tasks/create'
 import { createTaskDraftContract } from './api/tasks/createDraft'
 import {
@@ -432,6 +437,11 @@ export const RiptideApiContract = {
 		},
 	},
 	tasks: {
+		attention: {
+			set: setTaskAttentionContract,
+			acknowledge: acknowledgeTaskAttentionContract,
+			clear: clearTaskAttentionContract,
+		},
 		delivery: {
 			configure: configureDeliveryContract,
 			configureAlerts: configureDeliveryAlertsContract,

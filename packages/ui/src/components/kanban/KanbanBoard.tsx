@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useMountEffect } from '../../hooks/use-mount-effect'
-import { boardDeliveryAlertLabel, boardDeliveryLabel, boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
+import { boardAttentionFollowUpLabel, boardAttentionGapLabel, boardAttentionLabel, boardDeliveryAlertLabel, boardDeliveryLabel, boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '../context-menu'
 import { SessionLabelBadge } from '../session-label-badge'
 import { renderSessionStatusIndicator, UnreadBullet } from '../sidebar/status-indicators'
@@ -127,6 +127,9 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
   const owners = card.owners && card.owners.length > 0 ? card.owners : [{ initials: card.ownerInitials, avatarUrl: card.ownerAvatarUrl }]
   const updated = card.updatedAtMs === undefined ? null : formatBoardUpdateTime(card.updatedAtMs, nowMs)
   const status = card.status ?? (card.isDraft ? 'draft' : 'not_started')
+  const attention = card.attention?.[0]
+  const gap = boardAttentionGapLabel(attention?.alert)
+  const delivery = card.delivery?.status === 'blocked' && attention && attention.kind !== 'blocked' ? null : card.delivery
 
   return (
     <div className="flex flex-col gap-2">
@@ -178,7 +181,7 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
         <span className="flex items-center gap-1.5">
           <span aria-hidden="true">{renderSessionStatusIndicator(status)}</span>
-          {card.delivery ? boardDeliveryLabel(card.delivery) : boardStatusLabel(status)}
+          {delivery ? boardDeliveryLabel(delivery) : boardStatusLabel(status)}
         </span>
         {updated && (
           <time className="text-[var(--terminal-fg-dim)]" dateTime={updated.dateTime} title={updated.full}>
@@ -186,7 +189,14 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
           </time>
         )}
       </div>
-      {card.delivery?.status === 'blocked' && (
+      {attention && attention.kind !== 'blocked' ? (
+        <div className="space-y-1 break-words text-xs">
+          <strong>{boardAttentionLabel(attention)}</strong>
+          <p>{attention.nextAction ?? attention.reason}</p>
+          {attention.followUpAt !== undefined && <p>{boardAttentionFollowUpLabel(attention.followUpAt, nowMs)}</p>}
+          {gap && <p>{gap}</p>}
+        </div>
+      ) : card.delivery?.status === 'blocked' && (
         <p className="break-words text-xs">{card.delivery.reason}<br />{boardDeliveryAlertLabel(card.delivery)}</p>
       )}
     </div>

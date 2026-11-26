@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'
 
@@ -86,4 +86,57 @@ test('shows the local update time and includes the date for cards at least a day
 		new Intl.DateTimeFormat(undefined, { ...clock, month: 'short', day: 'numeric' }).format(old),
 	)
 	expect(oldTime?.dateTime).toBe(new Date(old).toISOString())
+})
+
+test('filters attention across phases and shows who an external wait depends on', () => {
+	useTaskTree.mockReturnValue({
+		recent: [
+			{ task: { id: 'draft', name: 'Routine draft' }, sessions: [] },
+			{
+				task: {
+					id: 'sms',
+					name: 'Business SMS',
+					resource_owner_user_id: 'owner',
+					task_attention: {
+						id: '019abcde-1234-7abc-8abc-123456789abc',
+						revision: 1,
+						authorizedBy: 'owner',
+						kind: 'external_wait',
+						reason: 'Waiting for the carrier',
+						responsible: 'SignalWire',
+						nextAction: 'Confirm the counting window',
+						openedAt: 1,
+						updatedAt: 1,
+						followUpAt: 2,
+						notice: {
+							id: '00000000-0000-4000-8000-000000000003',
+							slack: { status: 'unavailable' },
+							origin: { status: 'delivered', receipt: 'notice' },
+							reservedAt: 3,
+						},
+					},
+				},
+				sessions: [
+					{
+						id: 'session',
+						archived: false,
+						status: 'ready_for_input',
+						last_activity_at: 1n,
+						labels: [{ name: 'rpi:implementation', title: 'Implementation' }],
+					},
+				],
+			},
+		],
+		isReady: true,
+	})
+	render(<BoardPage />)
+	fireEvent.click(screen.getByRole('button', { name: 'Attention (1)' }))
+	expect(screen.queryByRole('link', { name: /Routine draft/ })).toBeNull()
+	const card = within(screen.getByRole('region', { name: 'Implementation' })).getByRole('link', {
+		name: /Business SMS/,
+	})
+	expect(within(card).getByText('Waiting on SignalWire')).toBeInTheDocument()
+	expect(within(card).getByText('Confirm the counting window')).toBeInTheDocument()
+	expect(within(card).getByText(/Follow-up due/)).toBeInTheDocument()
+	expect(within(card).getByText(/Slack alert unavailable/)).toBeInTheDocument()
 })

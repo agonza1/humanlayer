@@ -19,6 +19,7 @@ export interface TaskViewControlsProps {
   taskCount: number
   /** Whether List groups rows by workflow phase. Ignored on Board. */
   grouped: boolean
+  boardFilter?: ReactNode
   onLayoutChange: (layout: TaskViewLayout) => void
   onModeChange: (mode: TaskViewMode) => void
   onSelectionChange: (selectedIds: Set<string>) => void
@@ -43,6 +44,7 @@ export function TaskViewControls({
   users,
   taskCount,
   grouped,
+  boardFilter,
   onLayoutChange,
   onModeChange,
   onSelectionChange,
@@ -101,6 +103,8 @@ export function TaskViewControls({
           <span>Grouped</span>
         </label>
       )}
+
+      {layout === 'board' && boardFilter}
 
       {/* Filtered task count */}
       <div className="ml-auto text-xs uppercase tracking-wider" style={{ color: 'var(--terminal-fg-dim)' }}>

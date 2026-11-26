@@ -1,11 +1,16 @@
 import { sessions } from '@humanlayer/db/tables/sessions'
 import { tasks } from '@humanlayer/db/tables/tasks'
+import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import { decodeDelivery, deliveryReviewVerdict, sameDeliveryHeads } from '@humanlayer/schemas/zod/automatic-delivery'
 import { and, asc, eq, exists, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { Effect } from 'effect'
 
 import { claimTaskDelivery, completeTaskDelivery, deliveryContext, lockDeliveryTask } from '../../db/automatic-delivery'
-import { reserveDeliveryBlockerAlerts } from '../../db/delivery-blocker-alerts'
+import {
+	reserveDeliveryBlockerAlerts,
+	reserveTaskAttentionAlert,
+	type SlackBlockerDispatch,
+} from '../../db/delivery-blocker-alerts'
 import {
 	CHECKOUT_OBSERVATION_BLOCKERS,
 	completeImplementationInspection,
@@ -13,6 +18,7 @@ import {
 	reconcileImplementation,
 } from '../../db/implementation-reconciliation'
 import { enrollProjectDelivery } from '../../db/project-delivery'
+import { lockDueTaskAttention } from '../../db/task-attention'
 import { TaskDiffService } from '../../effects/services/task-diff-durable-streams/task-diff-durable-streams.service'
 import { dispatchDeliveryAlerts } from '../../lib/dispatch-delivery-alerts'
 import { reconcileImplementationTask } from '../../lib/implementation-reconciliation-events'
@@ -24,6 +30,12 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 		const { organizationId, userId, hostId } = context.auth
 		const { db, effectRuntime } = context.services
 		const { action, alerts } = await db.transaction(async (tx) => {
+			const withTaskAttention = async (action: DeliveryAction | null, alerts: SlackBlockerDispatch[] = []) => {
+				const now = Date.now()
+				const due = await lockDueTaskAttention(tx, { organizationId, userId, hostId }, now)
+				const authored = due ? await reserveTaskAttentionAlert(tx, due, hostId, now) : []
+				return { action, alerts: [...alerts, ...authored] }
+			}
 			const candidates = await tx
 				.select()
 				.from(tasks)
@@ -46,11 +58,11 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 				await enrollProjectDelivery(tx, task, hostId)
 				if (decodeDelivery(task.automatic_delivery)?.hostId !== hostId) continue
 				const action = await claimTaskDelivery(tx, task, input.supportsObservation === true)
-				if (action && action.kind !== 'observe') return { action, alerts: [] }
+				if (action && action.kind !== 'observe') return withTaskAttention(action)
 				const updated = await lockDeliveryTask(tx, task.id, organizationId)
 				if (!updated) continue
 				const alerts = await reserveDeliveryBlockerAlerts(tx, updated, { checkReminder: !action })
-				if (action || alerts.length) return { action, alerts }
+				if (action || alerts.length) return withTaskAttention(action, alerts)
 			}
 			const legacy = await tx
 				.select()
@@ -101,9 +113,9 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 			for (const task of legacy) {
 				const action = await reconcileImplementation(tx, task, { hostId })
 				const alerts = await reserveDeliveryBlockerAlerts(tx, task)
-				if (action || alerts.length) return { action, alerts }
+				if (action || alerts.length) return withTaskAttention(action, alerts)
 			}
-			return { action: null, alerts: [] }
+			return withTaskAttention(null)
 		})
 		await dispatchDeliveryAlerts(db, effectRuntime, alerts)
 		return { action }

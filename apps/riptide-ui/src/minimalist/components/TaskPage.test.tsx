@@ -38,6 +38,7 @@ vi.mock('@/minimalist/lib/data', () => ({
 	canReview: (task: { workspace_id?: string | null }) => Boolean(task.workspace_id),
 }))
 vi.mock('@/minimalist/lib/access', () => ({ useSessionAccess: () => ({ canSendPrompt: data.canSend }) }))
+vi.mock('@/hooks/use-browser-auth', () => ({ useBrowserAuth: () => ({ user: null }) }))
 vi.mock('@/components/diffs/TaskDiffScope', () => ({
 	TaskDiffScope: ({ children }: { children: ReactNode }) => <div data-testid="diff-scope">{children}</div>,
 }))
