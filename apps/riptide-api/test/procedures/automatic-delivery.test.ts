@@ -894,10 +894,24 @@ describe('Persisted automatic delivery', () => {
 		})
 
 		await makeObservationDue(f)
+		const [beforeFailedCheck] = await db.select().from(tasks).where(eq(tasks.id, f.taskId))
 		const check = (await f.heartbeat(true)).action
 		expect(check?.kind).toBe('observe')
 		expect(await f.complete(check!.leaseId, [], 'GitHub unavailable')).toBe(true)
 		expect((await f.state()).attentionObservation).toEqual(result.attentionObservation)
+		const [afterFailedCheck] = await db.select().from(tasks).where(eq(tasks.id, f.taskId))
+		expect(afterFailedCheck?.updated_at).toBe(beforeFailedCheck?.updated_at)
+
+		await makeObservationDue(f)
+		const [beforeUnchangedCheck] = await db.select().from(tasks).where(eq(tasks.id, f.taskId))
+		const unchanged = (await f.heartbeat(true)).action
+		expect(unchanged?.kind).toBe('observe')
+		expect(await f.complete(unchanged!.leaseId, [merged])).toBe(true)
+		const [afterUnchangedCheck] = await db.select().from(tasks).where(eq(tasks.id, f.taskId))
+		expect(afterUnchangedCheck?.updated_at).toBe(beforeUnchangedCheck?.updated_at)
+		const observation = (await f.state()).attentionObservation
+		expect(observation?.checkedAt).toBeGreaterThanOrEqual(result.attentionObservation!.checkedAt)
+		expect(observation?.changedAt).toBe(result.attentionObservation?.changedAt)
 		expect(f.sends).toHaveLength(1)
 		expect(await f.notices()).toHaveLength(1)
 	})

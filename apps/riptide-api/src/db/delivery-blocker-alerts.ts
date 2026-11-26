@@ -17,6 +17,7 @@ import {
 	IMPLEMENTATION_BLOCKERS,
 	type ImplementationBlocker,
 } from '@humanlayer/schemas/zod/implementation-reconciliation'
+import { decodeTaskAttention } from '@humanlayer/schemas/zod/task-attention'
 import { and, eq, isNull } from 'drizzle-orm'
 import { uuidv7 } from 'uuidv7'
 import type { z } from 'zod/v4'
@@ -28,6 +29,7 @@ import {
 	reconcileImplementation,
 	saveTaskReconciliation,
 } from './implementation-reconciliation'
+import { activeTaskAttention, isTaskAttentionIdleOnHost, saveTaskAttention } from './task-attention'
 
 type Task = typeof tasks.$inferSelect
 type AlertRoutes = NonNullable<AutomaticDelivery['alertRoutes']>
@@ -43,6 +45,7 @@ export type SlackBlockerDispatch = {
 	organizationId: string
 	ownerId: string
 	alertId: string
+	taskAttention?: { id: string; hostId: string }
 	teamId: string
 	channelId: string
 	threadTs?: string
@@ -367,15 +370,39 @@ function shouldRearmStandingSlack(alert: AlertDelivery, slack: EffectiveSlack) {
 	)
 }
 
+type AlertMessage = {
+	routes?: AlertRoutes
+	deliverySessionIds: readonly string[]
+	nativeReason: string
+	slackReason?: string
+	relayReason?: SlackBlockerDispatch['relayReason']
+	relayBlocker?: ImplementationBlocker
+	standingPublication?: boolean
+	taskLabel?: string
+	taskAttention?: SlackBlockerDispatch['taskAttention']
+}
+
+function deliveryMessage(task: Task, blocker: ActiveBlocker, isReminder: boolean): AlertMessage {
+	return {
+		routes: blocker.routes,
+		deliverySessionIds: blocker.deliverySessionIds,
+		nativeReason: isReminder ? 'Still needs attention after 24 hours. ' + reminderReason(blocker) : blocker.reason,
+		slackReason: isReminder ? 'Still needs attention after 24 hours.' : blocker.slackReason,
+		relayReason: blocker.relayReason,
+		relayBlocker: blocker.relayBlocker,
+		standingPublication: blocker.heldDescribePR !== undefined,
+		taskLabel: isReminder ? '24h reminder · ' + task.name : task.name,
+	}
+}
+
 async function reserveAlertDelivery(
 	tx: DeliveryTransaction,
 	task: Task,
-	blocker: ActiveBlocker,
+	message: AlertMessage,
 	alert: AlertDelivery,
 	slack: EffectiveSlack,
-	isReminder: boolean,
 ) {
-	const { routes } = blocker
+	const { routes } = message
 	const routingChanged = slack.kind !== alert.slackRoute
 	alert.slackRoute = slack.kind
 	// A route becoming available may rearm a known-unsent alert. Record the attempt
@@ -391,7 +418,7 @@ async function reserveAlertDelivery(
 		if (alert[slot].status !== 'pending') continue
 		if (slot === 'origin' && routes?.origin?.kind === 'session') {
 			const sessionId = routes.origin.sessionId
-			if (!(await findNativeOrigin(tx, task, blocker.deliverySessionIds, sessionId))) {
+			if (!(await findNativeOrigin(tx, task, message.deliverySessionIds, sessionId))) {
 				alert.origin = { status: 'unavailable' }
 				continue
 			}
@@ -406,9 +433,7 @@ async function reserveAlertDelivery(
 				role: 'system',
 				content: JSON.stringify({
 					kind: 'delivery_blocker',
-					reason: isReminder
-						? 'Still needs attention after 24 hours. ' + reminderReason(blocker)
-						: blocker.reason,
+					reason: message.nativeReason,
 				}),
 			})
 			alert.origin = { status: 'delivered', receipt: eventId }
@@ -453,13 +478,14 @@ async function reserveAlertDelivery(
 			organizationId: task.organization_id,
 			ownerId: task.resource_owner_user_id,
 			alertId: alert.id,
-			reason: isReminder ? 'Still needs attention after 24 hours.' : blocker.slackReason,
-			relayReason: target.standing && blocker.heldDescribePR !== undefined ? 'publication' : blocker.relayReason,
+			taskAttention: message.taskAttention,
+			reason: message.slackReason,
+			relayReason: target.standing && message.standingPublication ? 'publication' : message.relayReason,
 			standing: target.standing
 				? {
 						...target.standing,
-						taskLabel: isReminder ? '24h reminder · ' + task.name : task.name,
-						blocker: blocker.relayBlocker,
+						taskLabel: message.taskLabel ?? task.name,
+						blocker: message.relayBlocker,
 					}
 				: undefined,
 		}),
@@ -475,9 +501,9 @@ export async function reserveDeliveryBlockerAlerts(
 ) {
 	const blocker = activeBlocker(tx, task)
 	if (!blocker) return []
-	const alert = (blocker.state.blockerAlert ??= pendingAlert())
+	const alert = (blocker.state.blockerAlert ??= { ...pendingAlert(), openedAt: Date.now() })
 	const slack = await effectiveSlack(tx, task, blocker.routes)
-	const initial = await reserveAlertDelivery(tx, task, blocker, alert, slack, false)
+	const initial = await reserveAlertDelivery(tx, task, deliveryMessage(task, blocker, false), alert, slack)
 	const dispatches = initial.dispatches
 	let changed = initial.changed
 
@@ -505,13 +531,79 @@ export async function reserveDeliveryBlockerAlerts(
 			changed = true
 		}
 		if (alert.reminder) {
-			const reserved = await reserveAlertDelivery(tx, task, blocker, alert.reminder, slack, true)
+			const reserved = await reserveAlertDelivery(
+				tx,
+				task,
+				deliveryMessage(task, blocker, true),
+				alert.reminder,
+				slack,
+			)
 			dispatches.push(...reserved.dispatches)
 			changed ||= reserved.changed
 		}
 	}
 	if (changed) await blocker.save()
 	return dispatches
+}
+
+function authoredAttentionRoutes(task: Task) {
+	return readTaskReconciliation(task).alertRoutes ?? decodeDelivery(task.automatic_delivery)?.alertRoutes
+}
+
+/** Caller holds the task lock and selected a due, idle task on the claiming owner's host. */
+export async function reserveTaskAttentionAlert(tx: DeliveryTransaction, task: Task, hostId: string, now: number) {
+	const attention = activeTaskAttention(task)
+	if (
+		!attention ||
+		attention.acknowledgedAt !== undefined ||
+		(attention.kind === 'external_wait' && (attention.followUpAt === undefined || attention.followUpAt > now))
+	)
+		return []
+
+	const external = attention.kind === 'external_wait'
+	const routes = authoredAttentionRoutes(task)
+	const slack = await effectiveSlack(tx, task, routes)
+	const notice = attention.notice ?? { ...pendingAlert(), reservedAt: now }
+	const { changed, dispatches } = await reserveAlertDelivery(
+		tx,
+		task,
+		{
+			routes,
+			deliverySessionIds: decodeDelivery(task.automatic_delivery)?.deliverySessionIds ?? [],
+			nativeReason: [
+				external ? 'External follow-up is due.' : 'Task owner input is needed.',
+				attention.reason,
+				attention.nextAction,
+			].join(' '),
+			// Authored details may include private context. Only send generic text and the task link to Slack.
+			slackReason: external ? 'An external follow-up is due.' : 'The task needs owner input.',
+			taskLabel: (external ? 'Follow-up due · ' : 'Owner input needed · ') + task.name,
+			taskAttention: { id: attention.id, hostId },
+		},
+		notice,
+		slack,
+	)
+	if (changed) {
+		attention.notice = notice
+		await saveTaskAttention(tx, task, attention)
+	}
+	return dispatches
+}
+
+/** Rearm only confirmed unsent slots explicitly rebound by the task owner. */
+export async function rearmTaskAttentionRoutes(tx: DeliveryTransaction, task: Task, routes: AlertRoutes) {
+	const attention = activeTaskAttention(task)
+	if (!attention?.notice || attention.acknowledgedAt !== undefined) return
+	const { notice } = attention
+	let changed = false
+	for (const slot of SLOTS) {
+		const configured = slot === 'slack' ? routes.slack : routes.origin
+		if (configured && ['unavailable', 'failed'].includes(notice[slot].status)) {
+			notice[slot] = { status: 'pending' }
+			changed = true
+		}
+	}
+	if (changed) await saveTaskAttention(tx, task, attention)
 }
 
 /** Caller holds the task lock and has verified the current owner's identity. */
@@ -535,28 +627,46 @@ function dispatchAlert(alert: BlockerAlert, alertId: string) {
 export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, dispatch: SlackBlockerDispatch) {
 	const task = await lockDeliveryTask(tx, dispatch.taskId, dispatch.organizationId)
 	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return []
-	let blocker = activeBlocker(tx, task)
-	if (blocker?.reconciliation) {
-		await reconcileImplementation(tx, task)
-		blocker = activeBlocker(tx, task)
-	}
-	const primary = blocker?.state.blockerAlert
-	if (!blocker || !primary) return []
-	const alert = dispatchAlert(primary, dispatch.alertId)
-	if (!alert) return []
-	if (
-		alert !== primary &&
-		(primary.acknowledgedAt !== undefined || !(await isExhaustedAndIdle(tx, task, blocker, Date.now())))
-	)
-		return []
-	if (blocker.heldDescribePR !== undefined) {
-		if (!blocker.heldDescribePR) return []
-		const [managed] = await tx
-			.select({ status: sessions.status, archived: sessions.archived })
-			.from(sessions)
-			.where(and(eq(sessions.id, blocker.heldDescribePR), eq(sessions.task_id, task.id)))
-		if (!managed || managed.archived || !['needs_approval', 'waiting_for_usage_limit'].includes(managed.status))
+	const authored = dispatch.taskAttention
+	let alert: AlertDelivery | undefined
+	let routes: AlertRoutes | undefined
+	if (authored) {
+		const attention = activeTaskAttention(task)
+		if (
+			!attention ||
+			attention.id !== authored.id ||
+			attention.notice?.id !== dispatch.alertId ||
+			attention.acknowledgedAt !== undefined ||
+			!(await isTaskAttentionIdleOnHost(tx, task, authored.hostId))
+		)
 			return []
+		alert = attention.notice
+		routes = authoredAttentionRoutes(task)
+	} else {
+		let blocker = activeBlocker(tx, task)
+		if (blocker?.reconciliation) {
+			await reconcileImplementation(tx, task)
+			blocker = activeBlocker(tx, task)
+		}
+		const primary = blocker?.state.blockerAlert
+		if (!blocker || !primary) return []
+		alert = dispatchAlert(primary, dispatch.alertId)
+		if (!alert) return []
+		if (
+			alert !== primary &&
+			(primary.acknowledgedAt !== undefined || !(await isExhaustedAndIdle(tx, task, blocker, Date.now())))
+		)
+			return []
+		if (blocker.heldDescribePR !== undefined) {
+			if (!blocker.heldDescribePR) return []
+			const [managed] = await tx
+				.select({ status: sessions.status, archived: sessions.archived })
+				.from(sessions)
+				.where(and(eq(sessions.id, blocker.heldDescribePR), eq(sessions.task_id, task.id)))
+			if (!managed || managed.archived || !['needs_approval', 'waiting_for_usage_limit'].includes(managed.status))
+				return []
+		}
+		routes = blocker.routes
 	}
 
 	const authorized: Slot[] = []
@@ -564,9 +674,9 @@ export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, disp
 	for (const slot of dispatch.slots) {
 		const retained = alert[slot]
 		if (retained.status !== 'unknown' || retained.destination !== destination) continue
-		const origin = blocker.routes?.origin
+		const origin = routes?.origin
 		let current: ResolvedSlackRoute | null = null
-		if (slot === 'slack') current = (await effectiveSlack(tx, task, blocker.routes)).route
+		if (slot === 'slack') current = (await effectiveSlack(tx, task, routes)).route
 		else if (origin?.kind === 'slack') current = await resolveAuthorizedSlack(tx, task, origin.route)
 		if (
 			!current ||
@@ -590,11 +700,29 @@ export async function finishSlackBlockerDispatch(
 ) {
 	const task = await lockDeliveryTask(tx, dispatch.taskId, dispatch.organizationId)
 	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return
-	const blocker = activeBlocker(tx, task)
-	const primary = blocker?.state.blockerAlert
-	if (!blocker || !primary) return
-	const alert = dispatchAlert(primary, dispatch.alertId)
+	let alert: AlertDelivery | undefined
+	let save: () => Promise<unknown>
+	if (dispatch.taskAttention) {
+		// Keep a real receipt if an alert was sent just before the owner cleared or acknowledged it.
+		const attention = decodeTaskAttention(task.task_attention)
+		if (
+			!attention ||
+			attention.authorizedBy !== dispatch.ownerId ||
+			attention.id !== dispatch.taskAttention.id ||
+			attention.notice?.id !== dispatch.alertId
+		)
+			return
+		alert = attention.notice
+		save = () => saveTaskAttention(tx, task, attention)
+	} else {
+		const blocker = activeBlocker(tx, task)
+		const primary = blocker?.state.blockerAlert
+		if (!blocker || !primary) return
+		alert = dispatchAlert(primary, dispatch.alertId)
+		save = blocker.save
+	}
 	if (!alert) return
+
 	const destination = slackDestination(dispatch.teamId, dispatch.channelId, dispatch.threadTs)
 	const result = outcome.kind === 'provider' ? outcome.result : { status: 'unavailable' as const }
 	for (const slot of SLOTS) {
@@ -607,5 +735,5 @@ export async function finishSlackBlockerDispatch(
 		}
 		alert[slot] = result.status === 'delivered' || result.status === 'unknown' ? { ...result, destination } : result
 	}
-	await blocker.save()
+	await save()
 }

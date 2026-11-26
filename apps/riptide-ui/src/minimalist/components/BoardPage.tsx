@@ -1,5 +1,14 @@
-import { BOARD_COLUMNS, type BoardStatus, type BoardDelivery, describeBoardTask } from '@humanlayer/schemas/task-board'
 import {
+	BOARD_COLUMNS,
+	type BoardAttention,
+	type BoardDelivery,
+	type BoardStatus,
+	describeBoardTask,
+} from '@humanlayer/schemas/task-board'
+import {
+	boardAttentionFollowUpLabel,
+	boardAttentionGapLabel,
+	boardAttentionLabel,
 	boardDeliveryAlertLabel,
 	boardDeliveryLabel,
 	boardIdleBackground,
@@ -25,25 +34,39 @@ type BoardRow = {
 	row: TaskRow
 	status: BoardStatus
 	delivery: BoardDelivery | null
+	attention: BoardAttention[]
 	lastUpdatedAtMs: number | null
 }
 
 /** Tasks grouped by workflow phase. */
 export function BoardPage() {
 	const [scope, setScope] = useState<TaskTreeScope>('everyone')
+	const [attentionOnly, setAttentionOnly] = useState(false)
 	const { recent: rows, isReady } = useTaskTree(false, scope)
 	const nowMs = useMinuteClock()
 	const columns = BOARD_COLUMNS.map((column) => ({ ...column, rows: [] as BoardRow[] }))
 	const byId = new Map(columns.map((column) => [column.id, column]))
+	let attentionCount = 0
 	for (const row of rows) {
-		const { columnId, status, lastUpdatedAtMs, delivery } = describeBoardTask(row.task, row.sessions)
-		byId.get(columnId)?.rows.push({ row, status, lastUpdatedAtMs, delivery })
+		const { columnId, status, lastUpdatedAtMs, delivery, attention } = describeBoardTask(row.task, row.sessions)
+		if (attention.length > 0) attentionCount++
+		if (!attentionOnly || attention.length > 0) {
+			byId.get(columnId)?.rows.push({ row, status, lastUpdatedAtMs, delivery, attention })
+		}
 	}
 	return (
 		<main className="main board">
 			<div className="titlebar">
 				<span className="title">Board</span>
 				<span className="sp" />
+				<button
+					type="button"
+					className={`btn sm${attentionOnly ? ' primary' : ' ghost'}`}
+					aria-pressed={attentionOnly}
+					onClick={() => setAttentionOnly(!attentionOnly)}
+				>
+					Attention ({attentionCount})
+				</button>
 				<Segmented label="Show" value={scope} options={SCOPES} onChange={setScope} />
 			</div>
 			{isReady && rows.length === 0 ? (
@@ -53,6 +76,8 @@ export function BoardPage() {
 						New task
 					</Link>
 				</div>
+			) : isReady && attentionOnly && attentionCount === 0 ? (
+				<p className="p-4 text-sm">No tasks need attention</p>
 			) : (
 				<div className="board-columns">
 					{columns.map((column) => (
@@ -75,11 +100,14 @@ export function BoardPage() {
 	)
 }
 
-function BoardCard({ row, status, lastUpdatedAtMs, delivery, nowMs }: BoardRow & { nowMs: number }) {
+function BoardCard({ row, status, lastUpdatedAtMs, delivery, attention, nowMs }: BoardRow & { nowMs: number }) {
 	const unread = useTaskUnread(row.sessions)
 	const setupFailed = status === 'waiting_for_workspace' && row.workspaceSetupFailed
 	const updated = lastUpdatedAtMs === null ? null : formatBoardUpdateTime(lastUpdatedAtMs, nowMs)
 	const { closeSidebarOnNarrow } = useUi()
+	const primary = attention[0]
+	const gap = boardAttentionGapLabel(primary?.alert)
+	const visibleDelivery = delivery?.status === 'blocked' && primary?.kind !== 'blocked' ? null : delivery
 	return (
 		<Link
 			to="/tasks/$taskId"
@@ -97,9 +125,9 @@ function BoardCard({ row, status, lastUpdatedAtMs, delivery, nowMs }: BoardRow &
 				{unread && <span className="dot" role="img" aria-label="Unread" />}
 			</span>
 			<span className="board-card-status">
-				<span data-status={setupFailed || delivery?.status === 'blocked' ? 'failed' : status}>
-					{delivery
-						? boardDeliveryLabel(delivery)
+				<span data-status={setupFailed || visibleDelivery?.status === 'blocked' ? 'failed' : status}>
+					{visibleDelivery
+						? boardDeliveryLabel(visibleDelivery)
 						: setupFailed
 							? 'Workspace setup failed'
 							: boardStatusLabel(status)}
@@ -110,11 +138,22 @@ function BoardCard({ row, status, lastUpdatedAtMs, delivery, nowMs }: BoardRow &
 					</time>
 				)}
 			</span>
-			{delivery?.status === 'blocked' && (
-				<span className="board-card-status">
-					<span>{delivery.reason}</span>
-					<span>{boardDeliveryAlertLabel(delivery)}</span>
+			{primary && primary.kind !== 'blocked' ? (
+				<span className="block space-y-1 break-words text-xs">
+					<strong className="block">{boardAttentionLabel(primary)}</strong>
+					<span className="block">{primary.nextAction ?? primary.reason}</span>
+					{primary.followUpAt !== undefined && (
+						<span className="block">{boardAttentionFollowUpLabel(primary.followUpAt, nowMs)}</span>
+					)}
+					{gap && <span className="block">{gap}</span>}
 				</span>
+			) : (
+				delivery?.status === 'blocked' && (
+					<span className="board-card-status">
+						<span>{delivery.reason}</span>
+						<span>{boardDeliveryAlertLabel(delivery)}</span>
+					</span>
+				)
 			)}
 		</Link>
 	)

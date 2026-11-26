@@ -36,6 +36,11 @@ export interface UseKanbanHotkeysOptions {
  */
 const KANBAN_SCOPES = [HOTKEY_SCOPES.SESSIONS_LIST]
 
+function focusedCardIn(columns: KanbanColumns) {
+	const id = useKanbanFocusStore.getState().focusedTaskId
+	return id ? columns.flatMap((column) => column.cards).find((card) => card.id === id) : undefined
+}
+
 export function useKanbanHotkeys(columns: KanbanColumns, options: UseKanbanHotkeysOptions = {}) {
 	const { onArchiveTask, onRenameTask, enabled = true } = options
 	const navigate = useNavigate()
@@ -74,14 +79,13 @@ export function useKanbanHotkeys(columns: KanbanColumns, options: UseKanbanHotke
 	useAppHotkeys(
 		'enter',
 		() => {
-			const taskId = useKanbanFocusStore.getState().focusedTaskId
-			if (!taskId) return
+			const focusedCard = focusedCardIn(columns)
+			if (!focusedCard) return
 			// Drafts open the new-task form; launched tasks open their detail page.
-			const focusedCard = columns.flatMap((column) => column.cards).find((card) => card.id === taskId)
-			if (focusedCard?.isDraft) {
-				navigate({ to: '/tasks/new', search: { draftId: taskId } })
+			if (focusedCard.isDraft) {
+				navigate({ to: '/tasks/new', search: { draftId: focusedCard.id } })
 			} else {
-				navigate({ to: '/tasks/$taskId', params: { taskId } })
+				navigate({ to: '/tasks/$taskId', params: { taskId: focusedCard.id } })
 			}
 		},
 		{ scopes: KANBAN_SCOPES, area: 'MAIN', enabled: isEnabled, preventDefault: true, enableOnFormTags: false },
@@ -98,8 +102,8 @@ export function useKanbanHotkeys(columns: KanbanColumns, options: UseKanbanHotke
 	// Archive focused task (settings-selected binding)
 	useArchiveHotkey(
 		() => {
-			const taskId = useKanbanFocusStore.getState().focusedTaskId
-			if (taskId) onArchiveTask?.(taskId)
+			const focusedCard = focusedCardIn(columns)
+			if (focusedCard) onArchiveTask?.(focusedCard.id)
 		},
 		{
 			scopes: KANBAN_SCOPES,
@@ -108,14 +112,14 @@ export function useKanbanHotkeys(columns: KanbanColumns, options: UseKanbanHotke
 			preventDefault: true,
 			enableOnFormTags: false,
 		},
-		[onArchiveTask, isEnabled],
+		[columns, onArchiveTask, isEnabled],
 	)
 
 	useAppHotkeys(
 		'shift+r',
 		() => {
-			const taskId = useKanbanFocusStore.getState().focusedTaskId
-			if (taskId) onRenameTask?.(taskId)
+			const focusedCard = focusedCardIn(columns)
+			if (focusedCard) onRenameTask?.(focusedCard.id)
 		},
 		{
 			scopes: KANBAN_SCOPES,
@@ -124,16 +128,15 @@ export function useKanbanHotkeys(columns: KanbanColumns, options: UseKanbanHotke
 			preventDefault: true,
 			enableOnFormTags: false,
 		},
-		[onRenameTask, isEnabled],
+		[columns, onRenameTask, isEnabled],
 	)
 
 	useAppHotkeys(
 		hotkeysCatalog.global.shortcuts.copyPrimaryUrl.reactHotkeys,
 		(e) => {
 			e.preventDefault()
-			const taskId = useKanbanFocusStore.getState().focusedTaskId
-			const card = columns.flatMap((column) => column.cards).find((candidate) => candidate.id === taskId)
-			if (taskId && !card?.isDraft) void copyTaskDeepLink(taskId)
+			const focusedCard = focusedCardIn(columns)
+			if (focusedCard && !focusedCard.isDraft) void copyTaskDeepLink(focusedCard.id)
 		},
 		{ scopes: KANBAN_SCOPES, area: 'MAIN', enabled: isEnabled, preventDefault: true, enableOnFormTags: false },
 		[columns, isEnabled],

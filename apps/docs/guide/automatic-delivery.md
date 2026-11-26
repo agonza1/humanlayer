@@ -81,6 +81,24 @@ humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
 
 On a blocked task, the board and board CLI report the effective Slack route and the outcome of each alert. The DM includes a safe task reference, the blocker and the next action so the owner can act while the local board is unreachable. For rollout, verify a confirmed receipt on an ordinary opted-in task with no task-specific Slack binding.
 
+## Task attention
+
+The board keeps its workflow columns. Use the Attention filter to find cards that need an owner decision, are blocked in a managed workflow, or are waiting for an external dependency. The card shows the reason, responsible party, next action and follow-up date when known. The board CLI returns the same information as an additive `attention` array. Existing stage, status and delivery fields remain available.
+
+A task owner can record a specific decision they need to make or an external wait. An external wait preserves the task and workflow diagnostics. It does not grant authority to resume or change the existing retry budget. Clear the wait after verifying that the dependency is resolved. Use the current attention ID and revision for edits, acknowledgment and clear operations through the task APIs. Ordinary updates preserve the notice identity. An acknowledgment records that the notice was seen while leaving the next action visible.
+
+Owner decisions get an initial notice on the existing daemon heartbeat once the task is idle. External waits get one notice at the explicitly scheduled date when the task's owner host can check it. The date is optional. Configure authorized Slack and originating-conversation routes using the existing delivery alert settings. Receipts show delivery or gaps per route. The existing Slack relay sends a task reference and a short alert type. The task and authorized native conversation retain the owner's full reason and next action. Routine checks preserve card activity time and display the observation time separately. An external wait does not start a recovery session or opt in to the recurring delivery reminder.
+
+Run `humanlayer --local board --attention` to find the task ID and active attention revision. Record exact decisions as owner input. Existing worker approval prompts stay visible as session approvals. For example, a task owner can record a provider dependency with no follow-up date:
+
+```sh
+humanlayer --local api tasks attention set --task-id TASK_UUID \
+  --expected null \
+  --attention '{"kind":"external_wait","reason":"Waiting for the provider to confirm supported routes","responsible":"Provider support","nextAction":"Confirm covered routes before scheduling a live pilot."}'
+```
+
+To edit, pass the current ID and revision as `--expected '{"id":"ATTENTION_UUID","revision":1}'`. Set `followUpAt` in the attention JSON to a Unix timestamp in milliseconds to request one follow-up. Acknowledging an item leaves it visible until it is resolved. An explicit date change schedules a new one-time follow-up. Changing the date does not reset the existing delivery recovery budget.
+
 ## Idle implementation
 
 HumanLayer records the next action when implementation stops. On startup and reconnect, it reconciles older active cards in batches. Both boards and the board CLI show current-head verification, the stock Describe PR handoff, or a blocker with the owner's next action. Host and workflow deadlines keep pending work visible when a host stops responding.

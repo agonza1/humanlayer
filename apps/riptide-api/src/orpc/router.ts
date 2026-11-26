@@ -211,6 +211,11 @@ import { syncV2TaskWorkspaceSetupForHostProcedure } from './api/sync/v2/task-wor
 import { syncV2TasksProcedure } from './api/sync/v2/tasks'
 import { upsertTaskUserSettingsProcedure } from './api/task-user-settings/upsert.effect'
 import { archiveTaskProcedure } from './api/tasks/archive'
+import {
+	acknowledgeTaskAttentionProcedure,
+	clearTaskAttentionProcedure,
+	setTaskAttentionProcedure,
+} from './api/tasks/attention'
 import { createTaskProcedure } from './api/tasks/create'
 import { createTaskDraftEffectProcedure } from './api/tasks/createDraft.effect'
 import {
@@ -427,6 +432,11 @@ export const apiRouter = os.router({
 		},
 	},
 	tasks: {
+		attention: {
+			set: setTaskAttentionProcedure,
+			acknowledge: acknowledgeTaskAttentionProcedure,
+			clear: clearTaskAttentionProcedure,
+		},
 		delivery: {
 			configure: configureDeliveryProcedure,
 			configureAlerts: configureDeliveryAlertsProcedure,

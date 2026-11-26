@@ -139,7 +139,7 @@ function readLocalRoute(scope: RouteScope) {
 	return route
 }
 
-function readStandingRoute(scope: StandingScope) {
+function readStandingGrant(scope: Pick<StandingScope, 'organizationId' | 'ownerId'>) {
 	const route = readPrivateRouteFile(
 		process.env.HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE,
 		standingRouteSchema,
@@ -149,15 +149,23 @@ function readStandingRoute(scope: StandingScope) {
 		!matchesLocalAppOrigin(route.appOrigin) ||
 		route.botUserId === route.recipientUserId ||
 		route.organizationId !== scope.organizationId ||
-		route.ownerId !== scope.ownerId ||
-		!route.projectIds.includes(scope.projectId) ||
-		!id.safeParse(scope.taskId).success
+		route.ownerId !== scope.ownerId
 	)
 		return null
 	const revision = createHash('sha256')
 		.update(JSON.stringify({ ...route, projectIds: [...new Set(route.projectIds)].sort() }))
 		.digest('hex')
 	return { route, revision }
+}
+
+function readStandingRoute(scope: StandingScope) {
+	const standing = readStandingGrant(scope)
+	return standing?.route.projectIds.includes(scope.projectId) && id.safeParse(scope.taskId).success ? standing : null
+}
+
+export function standingSlackAttentionScope(scope: Pick<StandingScope, 'organizationId' | 'ownerId'>) {
+	const standing = readStandingGrant(scope)
+	return standing ? { projectIds: standing.route.projectIds, revision: standing.revision } : null
 }
 
 export function resolveLocalSlackAlertRoute(scope: RouteScope) {

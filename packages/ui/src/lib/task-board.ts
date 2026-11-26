@@ -1,4 +1,4 @@
-import type { BoardStatus, BoardDelivery } from '@humanlayer/schemas/task-board'
+import type { BoardAttention, BoardDelivery, BoardStatus } from '@humanlayer/schemas/task-board'
 
 import { SESSION_STATUS_LABELS } from './session-status-labels'
 
@@ -17,7 +17,7 @@ export function boardStatusLabel(status: BoardStatus): string {
 }
 
 export function boardDeliveryLabel(delivery: BoardDelivery) {
-	if (delivery.status === 'blocked') return 'Needs attention'
+	if (delivery.status === 'blocked') return 'Blocked'
 	if (delivery.status === 'verifying') return `Verifying PR · Due ${FULL_DATE_AND_TIME.format(delivery.deadlineAt)}`
 	if (delivery.status === 'review') return 'Independent review verified'
 	if (delivery.status === 'running') return 'Describe PR running'
@@ -43,12 +43,34 @@ const slackRouteLabels = {
 
 export function boardDeliveryAlertLabel(delivery: BoardDelivery) {
 	if (delivery.status !== 'blocked' || !delivery.alert) return null
-	const { slack, origin, slackRoute, reminder } = delivery.alert
+	return boardAttentionAlertLabel(delivery.alert)
+}
+
+export function boardAttentionAlertLabel(alert: NonNullable<BoardAttention['alert']>) {
+	const { slack, origin, slackRoute, reminder } = alert
 	if (!slackRoute && slack === 'delivered' && origin === 'delivered' && !reminder) return null
 	const route = slackRoute ? ` (${slackRouteLabels[slackRoute]})` : ''
 	const initial = `Slack alert ${alertStateLabels[slack]}${route} · Origin alert ${alertStateLabels[origin]}`
 	if (!reminder) return initial
 	return `${initial} · 24h reminder: Slack ${alertStateLabels[reminder.slack]}, origin ${alertStateLabels[reminder.origin]}`
+}
+
+export function boardAttentionGapLabel(alert: BoardAttention['alert']) {
+	if (!alert) return null
+	const isGap = (status: typeof alert.slack) => status !== 'delivered' && status !== 'pending'
+	return isGap(alert.slack) || isGap(alert.origin) ? boardAttentionAlertLabel(alert) : null
+}
+
+export function boardAttentionLabel(attention: BoardAttention) {
+	if (attention.kind === 'owner_input') return 'Needs input'
+	if (attention.kind === 'external_wait')
+		return attention.responsible ? `Waiting on ${attention.responsible}` : 'Waiting externally'
+	return 'Blocked'
+}
+
+export function boardAttentionFollowUpLabel(followUpAt: number, nowMs: number) {
+	const date = FULL_DATE_AND_TIME.format(followUpAt)
+	return followUpAt <= nowMs ? `Follow-up due · ${date}` : `Follow-up ${date}`
 }
 
 export function boardIdleBackground(status: BoardStatus | undefined, updatedAtMs: number | null | undefined, nowMs: number) {

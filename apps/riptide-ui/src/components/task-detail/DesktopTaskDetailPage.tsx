@@ -1,7 +1,6 @@
 import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import { ArtifactFullscreenModal } from '@humanlayer/ui/components/artifact-fullscreen-modal'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@humanlayer/ui/components/resizable'
-import { boardDeliveryAlertLabel, boardDeliveryLabel } from '@humanlayer/ui/lib/task-board'
 import { useNavigate } from '@tanstack/react-router'
 
 import { AppBreadcrumb } from '@/components/AppBreadcrumb'
@@ -13,7 +12,7 @@ import { TaskDiffReviewWorkspace } from '@/components/diffs/TaskDiffReviewWorksp
 import { TaskDiffScope } from '@/components/diffs/TaskDiffScope'
 import { TaskMainDiffReviewSurface } from '@/components/diffs/TaskMainDiffReviewSurface'
 import { HotkeyScopeBoundary } from '@/components/HotkeyScopeBoundary'
-import { AcknowledgeDeliveryBlocker } from '@/components/task-detail/AcknowledgeDeliveryBlocker'
+import { TaskAttentionPanel } from '@/components/task-detail/TaskAttentionPanel'
 import { TaskDetailLoading, TaskDetailNotFound } from '@/components/task-detail/TaskDetailPlaceholders'
 import { TaskSessionsArea } from '@/components/task-detail/TaskSessionsArea'
 import { TaskSidebarPanel } from '@/components/task-detail/TaskSidebarPanel'
@@ -123,7 +122,7 @@ export function DesktopTaskDetailPage({
 	if (!task && (data.isTaskLoading || !data.isTaskReady)) return <TaskDetailLoading />
 	if (!task) return <TaskDetailNotFound />
 
-	const delivery = describeBoardTask(
+	const { delivery, attention } = describeBoardTask(
 		task,
 		data.sessions.map((session) => ({
 			id: session.id,
@@ -132,7 +131,7 @@ export function DesktopTaskDetailPage({
 			status: session.status,
 			last_activity_at: session.lastActivityAt ? Date.parse(session.lastActivityAt) : null,
 		})),
-	).delivery
+	)
 	const loadedTaskDetail: LoadedTaskDetailPageState = { ...taskDetail, task }
 	const canShowTerminalPanel = isDesktop() && canEditTask && !!resolvedWorkingDirectory
 
@@ -184,25 +183,7 @@ export function DesktopTaskDetailPage({
 							/>
 						)}
 						<div className="flex flex-col h-full min-w-0 min-h-0">
-							{delivery && (
-								<div className="p-2 text-sm" role="status">
-									<strong>{boardDeliveryLabel(delivery)}</strong>
-									{delivery.status === 'blocked' && (
-										<p>
-											{delivery.reason} {boardDeliveryAlertLabel(delivery)}
-										</p>
-									)}
-									{delivery.status === 'blocked' && delivery.alert?.blockerId && (
-										<AcknowledgeDeliveryBlocker
-											key={delivery.alert.blockerId}
-											taskId={taskId}
-											ownerId={task.resource_owner_user_id}
-											alertId={delivery.alert.blockerId}
-											acknowledgedAt={delivery.alert.acknowledgedAt}
-										/>
-									)}
-								</div>
-							)}
+							<TaskAttentionPanel task={task} attention={attention} delivery={delivery} />
 							<ResizablePanelGroup
 								orientation="horizontal"
 								disabled={diffFullscreenOpen}

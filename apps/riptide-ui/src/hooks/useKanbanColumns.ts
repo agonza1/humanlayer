@@ -59,6 +59,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 					updated_at: tasks.updated_at,
 					automatic_delivery: tasks.automatic_delivery,
 					implementation_reconciliation: tasks.implementation_reconciliation,
+					task_attention: tasks.task_attention,
 					archived: tasks.archived,
 					is_draft: tasks.is_draft,
 					resource_owner_user_id: tasks.resource_owner_user_id,
@@ -144,6 +145,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 			updated_at: task.updated_at,
 			automatic_delivery: task.automatic_delivery,
 			implementation_reconciliation: task.implementation_reconciliation,
+			task_attention: task.task_attention,
 			is_draft: task.is_draft ?? false,
 			resource_owner_user_id: task.resource_owner_user_id,
 			sessions: (sessionsByTaskId.get(task.id) ?? []).map(

@@ -6,6 +6,7 @@ import { acceptDeliveryReview, deliveryContext, lockDeliveryTask, saveDelivery }
 import {
 	acknowledgeDeliveryBlocker,
 	bindDeliveryAlertRoutes,
+	rearmTaskAttentionRoutes,
 	reserveDeliveryBlockerAlerts,
 } from '../../../db/delivery-blocker-alerts'
 import { readTaskReconciliation, saveTaskReconciliation } from '../../../db/implementation-reconciliation'
@@ -129,6 +130,10 @@ export const configureDeliveryAlertsProcedure = apiBaseOrgRequired.tasks.deliver
 			const reconciliation = readTaskReconciliation(task)
 			if (input.routes.slackMode && !input.routes.origin)
 				routes.origin = (reconciliation.alertRoutes ?? delivery?.alertRoutes)?.origin
+			await rearmTaskAttentionRoutes(tx, task, {
+				slack: input.routes.slackAutomationId ? routes.slack : undefined,
+				origin: input.routes.origin ? routes.origin : undefined,
+			})
 			for (const state of [delivery, reconciliation]) {
 				if (!state) continue
 				state.alertRoutes = routes

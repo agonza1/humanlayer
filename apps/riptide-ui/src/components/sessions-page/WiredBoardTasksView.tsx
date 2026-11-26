@@ -1,3 +1,4 @@
+import { Button } from '@humanlayer/ui/components/button'
 import { KanbanBoard, KanbanColumn } from '@humanlayer/ui/components/kanban'
 import { TaskViewControls } from '@humanlayer/ui/components/task-view-controls'
 import { useAuth } from '@workos-inc/authkit-react'
@@ -57,7 +58,24 @@ export function WiredBoardTasksView() {
 		[mode, selectedUserIds, user?.id],
 	)
 
-	const { columns, userOptions, totalCards, ownerByTaskId, sessionIdsByTaskId } = useKanbanColumns(scope)
+	const {
+		columns: scopedColumns,
+		userOptions,
+		totalCards,
+		ownerByTaskId,
+		sessionIdsByTaskId,
+	} = useKanbanColumns(scope)
+	const [attentionOnly, setAttentionOnly] = useState(false)
+	const attentionColumns = useMemo(
+		() =>
+			scopedColumns.map((column) => ({
+				...column,
+				cards: column.cards.filter((card) => card.attention?.length),
+			})),
+		[scopedColumns],
+	)
+	const attentionCount = attentionColumns.reduce((count, column) => count + column.cards.length, 0)
+	const columns = attentionOnly ? attentionColumns : scopedColumns
 
 	const selectedIds = useMemo(() => new Set(scope.selectedUserIds), [scope.selectedUserIds])
 
@@ -222,7 +240,18 @@ export function WiredBoardTasksView() {
 				mode={scope.mode}
 				selectedIds={selectedIds}
 				users={userOptions}
-				taskCount={totalCards}
+				taskCount={attentionOnly ? attentionCount : totalCards}
+				boardFilter={
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						aria-pressed={attentionOnly}
+						onClick={() => setAttentionOnly(!attentionOnly)}
+					>
+						Attention ({attentionCount})
+					</Button>
+				}
 				grouped={grouped}
 				onLayoutChange={setLayout}
 				onModeChange={(next) => {
@@ -232,6 +261,7 @@ export function WiredBoardTasksView() {
 				onSelectionChange={(next) => setSelectedUserIds(Array.from(next))}
 				onGroupedChange={setGrouped}
 			/>
+			{attentionOnly && attentionCount === 0 && <p className="px-4 pt-3 text-sm">No tasks need attention</p>}
 			<div className="min-h-0 flex-1">
 				<KanbanBoard>
 					{columns.map((column) => (

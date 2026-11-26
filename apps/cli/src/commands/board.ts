@@ -38,7 +38,7 @@ async function* readPages<Row extends { id: string }>(read: ReadRows<Row>, condi
 	}
 }
 
-export async function readBoard(sync: BoardSync, appOrigin: string, projectId?: string) {
+export async function readBoard(sync: BoardSync, appOrigin: string, projectId?: string, attentionOnly = false) {
 	const taskFilters: WhereExpression[] = [filter('archived', 'eq', false)]
 	if (projectId) taskFilters.push(filter('project_id', 'eq', projectId))
 	const tasks: TaskRow[] = []
@@ -70,6 +70,7 @@ export async function readBoard(sync: BoardSync, appOrigin: string, projectId?: 
 			projectId: task.project_id,
 			status: state.status,
 			delivery: state.delivery,
+			attention: state.attention,
 			workflowLabel: state.workflowLabel,
 			lastUpdatedAt: state.lastUpdatedAtMs === null ? null : new Date(state.lastUpdatedAtMs).toISOString(),
 			url: new URL(`/tasks/${task.id}`, appOrigin).href,
@@ -78,9 +79,10 @@ export async function readBoard(sync: BoardSync, appOrigin: string, projectId?: 
 	cards.sort((a, b) => (b.lastUpdatedAt ?? '').localeCompare(a.lastUpdatedAt ?? ''))
 
 	return {
+		attentionCount: cards.filter((card) => card.attention.length > 0).length,
 		columns: BOARD_COLUMNS.map((column) => ({
 			...column,
-			cards: cards.filter((card) => card.columnId === column.id),
+			cards: cards.filter((card) => card.columnId === column.id && (!attentionOnly || card.attention.length > 0)),
 		})),
 	}
 }
@@ -90,16 +92,17 @@ export function registerBoardCommand(program: Command, getEnv: () => Environment
 	const command = program
 		.command('board')
 		.description('Print the active task board as JSON')
+		.option('--attention', 'Show only tasks with active attention')
 		.option('--project-id <id>', 'Show tasks for one project', (id) => {
 			if (!z.uuid().safeParse(id).success) throw new InvalidArgumentError('Expected a project UUID')
 			return id
 		})
 
-	command.action(async ({ projectId }: { projectId?: string }) => {
+	command.action(async ({ projectId, attention }: { projectId?: string; attention?: boolean }) => {
 		try {
 			const client = await getClient()
 			const { appOrigin } = resolveEnvironmentConfig(getEnv())
-			const board = await readBoard(client.sync, appOrigin, projectId)
+			const board = await readBoard(client.sync, appOrigin, projectId, attention)
 			console.log(JSON.stringify(board))
 		} catch (error) {
 			command.error(`Could not read the board: ${error instanceof Error ? error.message : String(error)}`)

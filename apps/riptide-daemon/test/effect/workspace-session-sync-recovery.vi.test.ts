@@ -66,6 +66,7 @@ const task: Task = {
 	auto_advance_implementation_to_pr: false,
 	automatic_delivery: null,
 	implementation_reconciliation: null,
+	task_attention: null,
 	delivery_snapshot: null,
 	slack_notifications_muted: false,
 }

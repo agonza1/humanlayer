@@ -120,3 +120,50 @@ test.each([
 	const delivery = board.columns.find((column) => column.id === 'implementation')?.cards[0]?.delivery
 	expect(delivery?.status === 'blocked' && delivery.alert).toEqual(expectedAlert)
 })
+
+test('filters to attention without reassigning an external wait to another column', async () => {
+	const tasks = vi.fn().mockResolvedValue({
+		rows: [
+			{ id: 'normal', name: 'Normal draft', project_id: 'project' },
+			{
+				id: 'waiting',
+				name: 'Carrier review',
+				project_id: 'project',
+				task_attention: {
+					id: '019abcde-1234-7abc-8abc-123456789abc',
+					kind: 'external_wait',
+					authorizedBy: 'owner',
+					revision: 1,
+					reason: 'Carrier review pending',
+					responsible: 'SignalWire',
+					nextAction: 'Confirm the counting period',
+					openedAt: 1,
+					updatedAt: 2,
+					followUpAt: 100,
+				},
+			},
+		],
+	})
+	const sessions = vi.fn().mockResolvedValue({
+		rows: [
+			{
+				id: 'session',
+				task_id: 'waiting',
+				archived: false,
+				last_activity_at: 10,
+				status: 'ready_for_input',
+				labels: [{ name: 'rpi:implementation', title: 'Implementation' }],
+			},
+		],
+	})
+	const result = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000', 'project', true)
+	expect(result.attentionCount).toBe(1)
+	expect(result.columns.flatMap((column) => column.cards)).toMatchObject([
+		{
+			id: 'waiting',
+			columnId: 'implementation',
+			status: 'ready_for_input',
+			attention: [{ kind: 'external_wait', responsible: 'SignalWire', followUpAt: 100 }],
+		},
+	])
+})
