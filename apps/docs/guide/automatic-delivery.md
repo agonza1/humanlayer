@@ -93,11 +93,10 @@ Run `humanlayer --local board --attention` to find the task ID and active attent
 
 ```sh
 humanlayer --local api tasks attention set --task-id TASK_UUID \
-  --expected null \
   --attention '{"kind":"external_wait","reason":"Waiting for the provider to confirm supported routes","responsible":"Provider support","nextAction":"Confirm covered routes before scheduling a live pilot."}'
 ```
 
-To edit, pass the current ID and revision as `--expected '{"id":"ATTENTION_UUID","revision":1}'`. Set `followUpAt` in the attention JSON to a Unix timestamp in milliseconds to request one follow-up. Acknowledging an item leaves it visible until it is resolved. An explicit date change schedules a new one-time follow-up. Changing the date does not reset the existing delivery recovery budget.
+Omit `--expected` to open a new occurrence. To edit, pass the current ID and revision as `--expected '{"id":"ATTENTION_UUID","revision":1}'`. Set `followUpAt` in the attention JSON to a Unix timestamp in milliseconds to request one follow-up. Acknowledging an item leaves it visible until it is resolved. An explicit date change schedules a new one-time follow-up. Changing the date does not reset the existing delivery recovery budget.
 
 ## Idle implementation
 
