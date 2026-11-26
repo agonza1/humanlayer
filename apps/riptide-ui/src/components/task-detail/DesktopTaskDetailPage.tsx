@@ -13,6 +13,7 @@ import { TaskDiffReviewWorkspace } from '@/components/diffs/TaskDiffReviewWorksp
 import { TaskDiffScope } from '@/components/diffs/TaskDiffScope'
 import { TaskMainDiffReviewSurface } from '@/components/diffs/TaskMainDiffReviewSurface'
 import { HotkeyScopeBoundary } from '@/components/HotkeyScopeBoundary'
+import { AcknowledgeDeliveryBlocker } from '@/components/task-detail/AcknowledgeDeliveryBlocker'
 import { TaskDetailLoading, TaskDetailNotFound } from '@/components/task-detail/TaskDetailPlaceholders'
 import { TaskSessionsArea } from '@/components/task-detail/TaskSessionsArea'
 import { TaskSidebarPanel } from '@/components/task-detail/TaskSidebarPanel'
@@ -190,6 +191,15 @@ export function DesktopTaskDetailPage({
 										<p>
 											{delivery.reason} {boardDeliveryAlertLabel(delivery)}
 										</p>
+									)}
+									{delivery.status === 'blocked' && delivery.alert?.blockerId && (
+										<AcknowledgeDeliveryBlocker
+											key={delivery.alert.blockerId}
+											taskId={taskId}
+											ownerId={task.resource_owner_user_id}
+											alertId={delivery.alert.blockerId}
+											acknowledgedAt={delivery.alert.acknowledgedAt}
+										/>
 									)}
 								</div>
 							)}

@@ -49,7 +49,7 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 				if (action && action.kind !== 'observe') return { action, alerts: [] }
 				const updated = await lockDeliveryTask(tx, task.id, organizationId)
 				if (!updated) continue
-				const alerts = await reserveDeliveryBlockerAlerts(tx, updated)
+				const alerts = await reserveDeliveryBlockerAlerts(tx, updated, { checkReminder: !action })
 				if (action || alerts.length) return { action, alerts }
 			}
 			const legacy = await tx
@@ -136,6 +136,7 @@ export const completeDeliveryProcedure = daemonBase.delivery.complete
 			const delivery = decodeDelivery(task.automatic_delivery)
 			if (!delivery) return { accepted: false, archived: false, alerts: [] }
 			if (delivery.hostId !== hostId) throw errors.FORBIDDEN()
+			const observation = delivery.lease?.kind === 'observe' && delivery.lease.id === input.leaseId
 			const accepted = await completeTaskDelivery(
 				tx,
 				task,
@@ -144,8 +145,12 @@ export const completeDeliveryProcedure = daemonBase.delivery.complete
 				input.error,
 				input.recoveredCommits,
 			)
-			const [updated] = await tx.select({ archived: tasks.archived }).from(tasks).where(eq(tasks.id, task.id))
-			return { accepted, archived: updated?.archived === true, alerts: [] }
+			const updated = await lockDeliveryTask(tx, task.id, organizationId)
+			const alerts =
+				accepted && observation && updated
+					? await reserveDeliveryBlockerAlerts(tx, updated, { checkReminder: true })
+					: []
+			return { accepted, archived: updated?.archived === true, alerts }
 		})
 		await dispatchDeliveryAlerts(context.services.db, context.services.effectRuntime, result.alerts)
 		if (result.recoverPublication)

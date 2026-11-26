@@ -214,6 +214,7 @@ import { archiveTaskProcedure } from './api/tasks/archive'
 import { createTaskProcedure } from './api/tasks/create'
 import { createTaskDraftEffectProcedure } from './api/tasks/createDraft.effect'
 import {
+	acknowledgeDeliveryBlockerProcedure,
 	configureDeliveryAlertsProcedure,
 	configureDeliveryProcedure,
 	getDeliveryProcedure,
@@ -429,6 +430,7 @@ export const apiRouter = os.router({
 		delivery: {
 			configure: configureDeliveryProcedure,
 			configureAlerts: configureDeliveryAlertsProcedure,
+			acknowledgeBlocker: acknowledgeDeliveryBlockerProcedure,
 			get: getDeliveryProcedure,
 			reportReview: reportDeliveryReviewProcedure,
 		},

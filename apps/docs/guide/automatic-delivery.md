@@ -68,6 +68,10 @@ Use the same organization, owner, route ID, project allowlist and private DM ide
 
 An explicit task Slack route overrides the standing route. Existing empty or origin-only bindings preserve their Slack opt-out, and task mutes take precedence. Change only the Slack mode to keep the existing authorized origin.
 
+An idle managed task that still needs attention after Main recovery is eligible for a reminder after 24 hours. The existing daemon heartbeat rechecks the blocker and uses the authorized Slack and origin routes. Reminders have their own receipts and a persisted 24-hour interval. The task owner can choose **Acknowledge blocker** on the task to stop reminders for that occurrence.
+
+For an unclear blocker, the existing recovery can use GPT-6.2 Sol at high effort when the authorized Codex host advertises that capability. Known blockers keep their existing deterministic reasons. Diagnosis does not extend the review or recovery budget.
+
 ```sh
 humanlayer --local api tasks delivery configure-alerts --task-id TASK_UUID \
   --routes '{"slackMode":"inherit"}'

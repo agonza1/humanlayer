@@ -111,13 +111,39 @@ export const DeliveryAlertRoutesSchema = z.object({
 		])
 		.optional(),
 })
-export const DeliveryBlockerAlertSchema = z.object({
+const BlockerAlertReceiptsSchema = z.object({
 	id: z.uuid(),
 	slack: DeliveryAlertReceiptSchema,
 	origin: DeliveryAlertReceiptSchema,
 	slackRoute: z.enum(['standing', 'specific', 'off', 'unavailable']).optional(),
 	standingSlackAttempt: z.string().optional(),
 })
+
+export const DeliveryBlockerAlertSchema = BlockerAlertReceiptsSchema.extend({
+	exhaustedAt: z.number().optional(),
+	acknowledgedAt: z.number().optional(),
+	reminder: BlockerAlertReceiptsSchema.extend({ reservedAt: z.number() }).optional(),
+})
+
+export const DELIVERY_DIAGNOSIS_LABEL = 'rpi:delivery-diagnosis'
+export const DELIVERY_DIAGNOSIS_MODEL = 'gpt-6.2-sol'
+
+export const DeliveryAttentionDiagnosisSchema = z
+	.object({
+		reason: z
+			.string()
+			.trim()
+			.min(1)
+			.max(350)
+			.regex(/^[^\p{Cc}\p{Cf}]+$/u),
+		nextAction: z
+			.string()
+			.trim()
+			.min(1)
+			.max(250)
+			.regex(/^[^\p{Cc}\p{Cf}]+$/u),
+	})
+	.strict()
 
 export const AutomaticDeliverySchema = z.object({
 	version: z.literal(1),
@@ -150,6 +176,7 @@ export const AutomaticDeliverySchema = z.object({
 	recoveredCommits: z.array(DeliveryCommitSchema).min(1).max(10).optional(),
 	reviews: z.array(DeliveryReviewSchema).max(3),
 	attention: z.string().nullable(),
+	attentionDiagnosis: DeliveryAttentionDiagnosisSchema.optional(),
 	attentionDuringPublication: z.boolean().optional(),
 	attentionObservation: z.object({ checkedAt: z.number(), heads: z.array(DeliveryHeadSchema).max(10) }).optional(),
 	alertRoutes: DeliveryAlertRoutesSchema.optional(),

@@ -218,6 +218,7 @@ import { archiveTaskContract } from './api/tasks/archive'
 import { createTaskContract } from './api/tasks/create'
 import { createTaskDraftContract } from './api/tasks/createDraft'
 import {
+	acknowledgeDeliveryBlockerContract,
 	configureDeliveryAlertsContract,
 	configureDeliveryContract,
 	getDeliveryContract,
@@ -434,6 +435,7 @@ export const RiptideApiContract = {
 		delivery: {
 			configure: configureDeliveryContract,
 			configureAlerts: configureDeliveryAlertsContract,
+			acknowledgeBlocker: acknowledgeDeliveryBlockerContract,
 			get: getDeliveryContract,
 			reportReview: reportDeliveryReviewContract,
 		},
