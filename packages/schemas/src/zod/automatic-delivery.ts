@@ -151,12 +151,13 @@ export const AutomaticDeliverySchema = z.object({
 	reviews: z.array(DeliveryReviewSchema).max(3),
 	attention: z.string().nullable(),
 	attentionDuringPublication: z.boolean().optional(),
+	attentionObservation: z.object({ checkedAt: z.number(), heads: z.array(DeliveryHeadSchema).max(10) }).optional(),
 	alertRoutes: DeliveryAlertRoutesSchema.optional(),
 	blockerAlert: DeliveryBlockerAlertSchema.optional(),
 	lease: z
 		.object({
 			id: z.uuid(),
-			kind: z.enum(['inspect', 'merge', 'archive', 'recover']),
+			kind: z.enum(['inspect', 'merge', 'archive', 'recover', 'observe']),
 			expiresAt: z.number(),
 			revision: z.string(),
 		})
