@@ -256,9 +256,6 @@ function createServices(): DaemonServices {
 				},
 			},
 		} as unknown as DaemonServices['orpc'],
-		shutdown: {
-			isDaemonShuttingDown: () => false,
-		} as DaemonServices['shutdown'],
 	})
 }
 

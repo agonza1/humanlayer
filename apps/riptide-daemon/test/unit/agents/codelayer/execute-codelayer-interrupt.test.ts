@@ -156,9 +156,6 @@ function createServices(): DaemonServices {
 			workspaceSetup: {} as DaemonServices['collections']['workspaceSetup'],
 			providerLoginRequests: {} as DaemonServices['collections']['providerLoginRequests'],
 		},
-		shutdown: {
-			isDaemonShuttingDown: () => false,
-		} as DaemonServices['shutdown'],
 		syncService: {
 			ensureTaskSync: vi.fn(async () => {
 				throw new Error('ensureTaskSync should not be called for taskless session')
@@ -194,6 +191,72 @@ describe('executeCodelayer interrupt handling', () => {
 		mockCaptureException.mockClear()
 		mockProcessCodelayerEvents.mockClear()
 		mockRunResultOverride = undefined
+	})
+
+	test.each([
+		{ resumeWithPrompt: undefined, streamFails: false },
+		{ resumeWithPrompt: 'queued follow-up', streamFails: true },
+	])(
+		'drains the active run on daemon shutdown with stream failure $streamFails',
+		async ({ resumeWithPrompt, streamFails }) => {
+			const started = Promise.withResolvers<AbortSignal>()
+			const result = Promise.withResolvers<ReturnType<typeof defaultRunResult>>()
+			if (streamFails) {
+				mockProcessCodelayerEvents.mockImplementationOnce(async () => {
+					const signal = await started.promise
+					await new Promise<void>((resolve) => {
+						if (signal.aborted) resolve()
+						else signal.addEventListener('abort', () => resolve(), { once: true })
+					})
+					throw new Error('Fixture stream closed during shutdown')
+				})
+			}
+			mockCreateCodelayerAgent.mockResolvedValueOnce({
+				run: vi.fn((options?: { signal: AbortSignal }) => {
+					if (!options) throw new Error('Expected a CodeLayer run signal')
+					started.resolve(options.signal)
+					return { ...createAgentRun(), result: result.promise }
+				}),
+			})
+			const session = createTestSession({ id: 'session-1', prompt: 'initial prompt' })
+			const services = createServices()
+			const interruptState = await createTestInterruptState(resumeWithPrompt)
+			services.shutdown.registerSessionCompletion(session.id)
+			const executing = executeCodelayer({ session, services, interruptState }).finally(() =>
+				services.shutdown.resolveSessionCompletion(session.id),
+			)
+
+			const signal = await started.promise
+			let shutdownCompleted = false
+			const shutdown = services.shutdown.shutdownAllSessions().then(() => {
+				shutdownCompleted = true
+			})
+			try {
+				expect(signal.aborted).toBe(true)
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				expect(shutdownCompleted).toBe(false)
+			} finally {
+				result.resolve({ ...defaultRunResult(), finishReason: 'interrupted' })
+				await Promise.all([executing, shutdown])
+			}
+
+			expect(mockCodelayerStateUpsert).not.toHaveBeenCalled()
+			expect(mockSessionsUpdate.mock.calls).toEqual([[{ sessionId: session.id, status: 'running' }]])
+			expect(mockSessionsEventsCreate).not.toHaveBeenCalled()
+			expect(mockRunSession).not.toHaveBeenCalled()
+		},
+	)
+
+	test('does not launch an agent after daemon shutdown has started', async () => {
+		const session = createTestSession({ id: 'session-1', prompt: 'initial prompt' })
+		const services = createServices()
+		await services.shutdown.shutdownAllSessions()
+
+		await executeCodelayer({ session, services, interruptState: await createTestInterruptState() })
+
+		expect(mockResolveModel).not.toHaveBeenCalled()
+		expect(mockCreateCodelayerAgent).not.toHaveBeenCalled()
+		expect(mockSessionsUpdate).not.toHaveBeenCalled()
 	})
 
 	test('interrupt-and-send writes user event and reruns with resumeSessionId set to session id', async () => {
