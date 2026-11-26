@@ -22,7 +22,11 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { uuidv7 } from 'uuidv7'
 import type { z } from 'zod/v4'
 
-import { resolveLocalSlackAlertRoute, resolveStandingLocalSlackAlertRoute } from '../lib/local-slack-alert-relay'
+import {
+	resolveLocalSlackAlertRoute,
+	resolveStandingLocalSlackAlertRoute,
+	type LocalSlackTaskAttention,
+} from '../lib/local-slack-alert-relay'
 import { deliveryContext, lockDeliveryTask, saveDelivery, type DeliveryTransaction } from './automatic-delivery'
 import {
 	readTaskReconciliation,
@@ -575,7 +579,7 @@ export async function reserveTaskAttentionAlert(tx: DeliveryTransaction, task: T
 				attention.reason,
 				attention.nextAction,
 			].join(' '),
-			// Authored details may include private context. Only send generic text and the task link to Slack.
+			// Explicit Slack routes receive a generic notice. The standing owner DM can include details after preflight.
 			slackReason: external ? 'An external follow-up is due.' : 'The task needs owner input.',
 			taskLabel: (external ? 'Follow-up due · ' : 'Owner input needed · ') + task.name,
 			taskAttention: { id: attention.id, hostId },
@@ -624,12 +628,16 @@ function dispatchAlert(alert: BlockerAlert, alertId: string) {
 	return undefined
 }
 
-export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, dispatch: SlackBlockerDispatch) {
+export async function validateSlackBlockerDispatch(
+	tx: DeliveryTransaction,
+	dispatch: SlackBlockerDispatch,
+): Promise<{ slots: Slot[]; attention?: LocalSlackTaskAttention }> {
 	const task = await lockDeliveryTask(tx, dispatch.taskId, dispatch.organizationId)
-	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return []
+	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return { slots: [] }
 	const authored = dispatch.taskAttention
 	let alert: AlertDelivery | undefined
 	let routes: AlertRoutes | undefined
+	let currentAttention: LocalSlackTaskAttention | undefined
 	if (authored) {
 		const attention = activeTaskAttention(task)
 		if (
@@ -637,11 +645,15 @@ export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, disp
 			attention.id !== authored.id ||
 			attention.notice?.id !== dispatch.alertId ||
 			attention.acknowledgedAt !== undefined ||
+			(attention.kind === 'external_wait' &&
+				(attention.followUpAt === undefined || attention.followUpAt > Date.now())) ||
 			!(await isTaskAttentionIdleOnHost(tx, task, authored.hostId))
 		)
-			return []
+			return { slots: [] }
 		alert = attention.notice
 		routes = authoredAttentionRoutes(task)
+		const { kind, reason, responsible, nextAction, followUpAt } = attention
+		currentAttention = { kind, reason, responsible, nextAction, followUpAt }
 	} else {
 		let blocker = activeBlocker(tx, task)
 		if (blocker?.reconciliation) {
@@ -649,27 +661,27 @@ export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, disp
 			blocker = activeBlocker(tx, task)
 		}
 		const primary = blocker?.state.blockerAlert
-		if (!blocker || !primary) return []
+		if (!blocker || !primary) return { slots: [] }
 		alert = dispatchAlert(primary, dispatch.alertId)
-		if (!alert) return []
+		if (!alert) return { slots: [] }
 		if (
 			alert !== primary &&
 			(primary.acknowledgedAt !== undefined || !(await isExhaustedAndIdle(tx, task, blocker, Date.now())))
 		)
-			return []
+			return { slots: [] }
 		if (blocker.heldDescribePR !== undefined) {
-			if (!blocker.heldDescribePR) return []
+			if (!blocker.heldDescribePR) return { slots: [] }
 			const [managed] = await tx
 				.select({ status: sessions.status, archived: sessions.archived })
 				.from(sessions)
 				.where(and(eq(sessions.id, blocker.heldDescribePR), eq(sessions.task_id, task.id)))
 			if (!managed || managed.archived || !['needs_approval', 'waiting_for_usage_limit'].includes(managed.status))
-				return []
+				return { slots: [] }
 		}
 		routes = blocker.routes
 	}
 
-	const authorized: Slot[] = []
+	const slots: Slot[] = []
 	const destination = slackDestination(dispatch.teamId, dispatch.channelId, dispatch.threadTs)
 	for (const slot of dispatch.slots) {
 		const retained = alert[slot]
@@ -688,9 +700,9 @@ export async function validateSlackBlockerDispatch(tx: DeliveryTransaction, disp
 			current.standing?.projectId !== dispatch.standing?.projectId
 		)
 			continue
-		authorized.push(slot)
+		slots.push(slot)
 	}
-	return authorized
+	return { slots, attention: dispatch.standing && slots.length ? currentAttention : undefined }
 }
 
 export async function finishSlackBlockerDispatch(

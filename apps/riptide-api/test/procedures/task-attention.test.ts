@@ -19,6 +19,8 @@ import { Effect, Layer } from 'effect'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { lockDeliveryTask } from '../../src/db/automatic-delivery'
+import { reserveTaskAttentionAlert, validateSlackBlockerDispatch } from '../../src/db/delivery-blocker-alerts'
 import type { AppRuntime } from '../../src/effects/app-runtime'
 import { SlackService } from '../../src/effects/services/slack/slack.service'
 import {
@@ -269,6 +271,8 @@ describe('Authored task attention', () => {
 		})
 		expect(sends.slice(initialSends)).toHaveLength(1)
 		expect(sends.at(-1)?.reason).toBe('An external follow-up is due.')
+		expect(sends.at(-1)).not.toHaveProperty('attention')
+		expect(sends.at(-1)).not.toHaveProperty('standing.attention')
 
 		const { attention: edited } = await f.set(
 			{ ...externalWait, reason: 'Same dependency, updated evidence.', followUpAt },
@@ -340,8 +344,7 @@ describe('Authored task attention', () => {
 		expect(sends.slice(start)).toHaveLength(1)
 	})
 
-	it('rearms after a new standing grant and does not reissue an uncertain acknowledgement', async () => {
-		const f = await fixture('none', false)
+	async function standingGrant(f: Awaited<ReturnType<typeof fixture>>) {
 		const [project] = await db
 			.insert(projects)
 			.values({
@@ -373,6 +376,12 @@ describe('Authored task attention', () => {
 		}
 		vi.stubEnv('APP_ORIGIN', appOrigin)
 		vi.stubEnv('HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE', grant)
+		return { directory, grant, route }
+	}
+
+	it('rearms after a new standing grant and does not reissue an uncertain acknowledgement', async () => {
+		const f = await fixture('none', false)
+		const { directory, grant, route } = await standingGrant(f)
 		try {
 			await f.set(ownerInput)
 			await f.heartbeat()
@@ -391,6 +400,33 @@ describe('Authored task attention', () => {
 			await writeFile(grant, JSON.stringify({ ...route, routeId: uuidv7() }), { mode: 0o600 })
 			await f.heartbeat()
 			expect((await f.read()).task_attention!.notice).toEqual(attempt)
+		} finally {
+			vi.unstubAllEnvs()
+			await rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it('prepares the current authored details only for a still-due private dispatch', async () => {
+		const f = await fixture('none', false)
+		const { directory, grant, route } = await standingGrant(f)
+		try {
+			await writeFile(grant, JSON.stringify(route), { mode: 0o600 })
+			const followUpAt = Date.now() - 100
+			const { attention } = await f.set({ ...externalWait, followUpAt })
+			const [dispatch] = await db.transaction(async (tx) => {
+				const task = await lockDeliveryTask(tx, f.taskId, f.organizationId)
+				return reserveTaskAttentionAlert(tx, task!, f.hostId, Date.now())
+			})
+			expect(dispatch).toBeDefined()
+
+			const revised = { ...externalWait, nextAction: 'Ask the provider for the exact window.', followUpAt }
+			const withEvidence = { ...revised, evidence: 'Private meeting notes.' }
+			const { attention: current } = await f.set(withEvidence, key(attention!))
+			const preflight = () => db.transaction((tx) => validateSlackBlockerDispatch(tx, dispatch!))
+			expect(await preflight()).toEqual({ slots: ['slack'], attention: revised })
+
+			await f.set({ ...revised, followUpAt: Date.now() + 60_000 }, key(current!))
+			expect(await preflight()).toEqual({ slots: [] })
 		} finally {
 			vi.unstubAllEnvs()
 			await rm(directory, { recursive: true, force: true })
