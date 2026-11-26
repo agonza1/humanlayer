@@ -6,6 +6,7 @@ import { MessageSquare, PanelLeft, PanelRightClose } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { TaskDiffScope } from '@/components/diffs/TaskDiffScope'
+import { AcknowledgeDeliveryBlocker } from '@/components/task-detail/AcknowledgeDeliveryBlocker'
 import { useMountEffect } from '@/hooks/useMountEffect'
 import { useSessionAccess } from '@/minimalist/lib/access'
 import { useTask, useTaskArtifacts } from '@/minimalist/lib/data'
@@ -242,6 +243,15 @@ export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sess
 							<p>
 								{delivery.reason} {boardDeliveryAlertLabel(delivery)}
 							</p>
+						)}
+						{delivery.status === 'blocked' && delivery.alert?.blockerId && (
+							<AcknowledgeDeliveryBlocker
+								key={delivery.alert.blockerId}
+								taskId={taskId}
+								ownerId={task?.resource_owner_user_id}
+								alertId={delivery.alert.blockerId}
+								acknowledgedAt={delivery.alert.acknowledgedAt}
+							/>
 						)}
 					</div>
 					{body}

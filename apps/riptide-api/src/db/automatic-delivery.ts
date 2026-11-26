@@ -1,4 +1,5 @@
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
+import { onlineHosts } from '@humanlayer/db/tables/online-hosts'
 import { queuedMessages } from '@humanlayer/db/tables/queued-messages'
 import { sessionRepositories } from '@humanlayer/db/tables/session-repositories'
 import { sessions } from '@humanlayer/db/tables/sessions'
@@ -6,6 +7,8 @@ import { tasks } from '@humanlayer/db/tables/tasks'
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import {
 	decodeDelivery,
+	DELIVERY_DIAGNOSIS_LABEL,
+	DELIVERY_DIAGNOSIS_MODEL,
 	deliveryReviewVerdict,
 	sameDeliveryHeads,
 	type AutomaticDelivery,
@@ -14,8 +17,9 @@ import {
 	type DeliveryReview,
 	type DeliveryTarget,
 } from '@humanlayer/schemas/zod/automatic-delivery'
+import { findHostModelCatalogEntry, HostModelCatalogSchema } from '@humanlayer/schemas/zod/model-catalog'
 import * as Sentry from '@sentry/node'
-import { and, desc, eq, notInArray } from 'drizzle-orm'
+import { and, desc, eq, gt, notInArray } from 'drizzle-orm'
 import type { PgDatabase } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import { uuidv7 } from 'uuidv7'
@@ -30,6 +34,9 @@ type Session = typeof sessions.$inferSelect
 
 const DELIVERY_LEASE_MS = 120_000
 const ATTENTION_OBSERVATION_INTERVAL_MS = 60_000
+const DIAGNOSIS_HOST_MAX_AGE_MS = 120_000
+// The daemon probes every 30 minutes. Allow time for a slow probe and its next heartbeat.
+const DIAGNOSIS_CATALOG_MAX_AGE_MS = 45 * 60_000
 
 export async function lockDeliveryTask(tx: Tx, taskId: string, organizationId: string) {
 	const [task] = await tx
@@ -103,14 +110,87 @@ export async function saveDelivery(tx: Tx, task: Task, delivery: AutomaticDelive
 	await tx.update(tasks).set({ automatic_delivery: delivery }).where(eq(tasks.id, task.id))
 }
 
+async function supportsAttentionDiagnosis(
+	tx: Tx,
+	task: Task,
+	delivery: AutomaticDelivery,
+	source: Session,
+	previous: Session | undefined,
+) {
+	// Keep the diagnostic on the task's established owner, host and Codex provider.
+	if (
+		delivery.mode === 'archive-only' ||
+		delivery.authorizedBy !== task.resource_owner_user_id ||
+		source.created_by !== delivery.authorizedBy ||
+		source.resource_owner_user_id !== task.resource_owner_user_id ||
+		source.host_id !== delivery.hostId ||
+		source.coding_agent !== 'codelayer' ||
+		source.provider !== 'codex'
+	)
+		return false
+
+	const lastReview = delivery.reviews.at(-1)
+	const unclear =
+		delivery.attention === 'Delivery requires attention.' ||
+		(delivery.attention === 'Review is uncertain or blocked.' &&
+			lastReview?.verdict === 'uncertain' &&
+			lastReview.humanCheckpointsSatisfied &&
+			lastReview.findings.length === 0) ||
+		(delivery.attention === 'Managed continuation failed or exceeded its 30-minute bound.' &&
+			previous?.status === 'failed' &&
+			!previous.error_reason &&
+			!previous.error_message)
+	if (!unclear) return false
+
+	const now = Date.now()
+	const [host] = await tx
+		.select({ models: onlineHosts.supported_models })
+		.from(onlineHosts)
+		.where(
+			and(
+				eq(onlineHosts.host_id, delivery.hostId),
+				eq(onlineHosts.user_id, delivery.authorizedBy),
+				eq(onlineHosts.organization_id, task.organization_id),
+				eq(onlineHosts.status, 'online'),
+				gt(onlineHosts.last_seen, BigInt(now - DIAGNOSIS_HOST_MAX_AGE_MS)),
+			),
+		)
+	const catalog = HostModelCatalogSchema.safeParse(host?.models).data
+	if (!catalog || now - catalog.probedAt > DIAGNOSIS_CATALOG_MAX_AGE_MS) return false
+	const entry = findHostModelCatalogEntry(catalog, 'codex', DELIVERY_DIAGNOSIS_MODEL)
+	return entry?.value === DELIVERY_DIAGNOSIS_MODEL && !entry.hidden && entry.effortLevels.includes('high')
+}
+
+function attentionDiagnosisPrompt(delivery: AutomaticDelivery, source: Session, previous: Session | undefined) {
+	const lastReview = delivery.reviews.at(-1)
+	return JSON.stringify({
+		blocker: delivery.attention,
+		implementationStatus: source.status,
+		continuationStatus: previous?.status,
+		continuationKind:
+			delivery.managedSessionId && previous?.id === delivery.managedSessionId
+				? previous.title?.split(':', 1)[0]
+				: undefined,
+		latestReview: lastReview &&
+			sameDeliveryHeads(lastReview.heads, delivery.heads) && {
+				verdict: lastReview.verdict,
+				humanCheckpointsSatisfied: lastReview.humanCheckpointsSatisfied,
+				evidence: lastReview.evidence.slice(0, 1200),
+			},
+	})
+}
+
 async function launchDeliverySession(
 	tx: Tx,
 	task: Task,
 	delivery: AutomaticDelivery,
 	source: Session,
 	kind: 'pr' | 'review' | 'repair' | 'attention',
+	previous?: Session,
 ) {
 	const id = uuidv7()
+	const useSolDiagnosis =
+		kind === 'attention' && (await supportsAttentionDiagnosis(tx, task, delivery, source, previous))
 	const safety =
 		'Honor AGENTS.md, repository/company policy and required human checkpoints. You are a task worker: do not execute merges, enable GitHub auto-merge, archive tasks, delete worktrees or change credentials/permissions. The owning daemon handles explicitly authorized delivery. Worker restrictions do not themselves forbid the daemon from merging. Stop and report real blockers; never reset the delivery budget.'
 	const targets = JSON.stringify(delivery.heads.length ? delivery.heads : delivery.targets)
@@ -121,6 +201,7 @@ async function launchDeliverySession(
 			: `Use the stock rpi:describe-pr skill to commit/push implementation and open or update the task PRs for ${targets}. ${safety}`
 	} else if (kind === 'repair')
 		prompt = `Repair the verified PR-related P0/P1/P2 findings in this independent review: ${JSON.stringify(delivery.reviews.at(-1))}. First verify each PR is still open at its reviewed head; if it is already merged or changed independently, stop and report a follow-up instead of editing it. Run affected checks, self-review, commit and push to the existing branches. Resolve GitHub conversations only when the finding is verified fixed; retain evidence for disputed or unrelated findings. Do not claim an independent review of your own repairs. ${safety}`
+	else if (useSolDiagnosis) prompt = attentionDiagnosisPrompt(delivery, source, previous)
 	else if (kind === 'attention')
 		prompt = `Main recovery/attention: delivery stopped: ${delivery.attention}. This is the only automatic diagnostic recovery attempt. Inspect task artifacts and GitHub, diagnose the blocker and report concrete recovery instructions in a task artifact. Use an available authorized notification route for a blocker needing owner attention; report notification failure. Do not use an owner CLI login, override policy, merge or restart delivery. Status snapshot: ${JSON.stringify(delivery)}. ${safety}`
 	else {
@@ -160,6 +241,13 @@ async function launchDeliverySession(
 			prompt +=
 				' Additional human task instructions exist: obtain the remaining history or report uncertainty; do not assume all policy checkpoints are satisfied.'
 	}
+	const labels: NonNullable<Session['labels']> = [
+		{
+			name: kind === 'pr' ? 'rpi:describe-pr' : kind === 'repair' ? 'rpi:implementation' : 'rpi:review',
+			title: kind,
+		},
+	]
+	if (useSolDiagnosis) labels.push({ name: DELIVERY_DIAGNOSIS_LABEL, title: 'Read-only blocker diagnosis' })
 	await createSessionForLaunch(tx, {
 		deliveryManaged: true,
 		id,
@@ -173,14 +261,10 @@ async function launchDeliverySession(
 		hostId: delivery.hostId,
 		codingAgent: source.coding_agent ?? 'claude',
 		provider: source.provider ?? 'anthropic',
-		model: source.model ?? 'opus',
-		permissionsMode: source.permissions_mode ?? 'default',
-		labels: [
-			{
-				name: kind === 'pr' ? 'rpi:describe-pr' : kind === 'repair' ? 'rpi:implementation' : 'rpi:review',
-				title: kind,
-			},
-		],
+		model: useSolDiagnosis ? DELIVERY_DIAGNOSIS_MODEL : (source.model ?? 'opus'),
+		effort: useSolDiagnosis ? 'high' : undefined,
+		permissionsMode: useSolDiagnosis ? 'default' : (source.permissions_mode ?? 'default'),
+		labels,
 	})
 	delivery.managedSessionId = id
 	delivery.managedAt = Date.now()
@@ -195,12 +279,16 @@ export async function deliveryAttention(
 	history: Session[],
 ) {
 	if (delivery.phase !== 'attention') {
+		delivery.attentionDiagnosis = undefined
 		delivery.attentionDuringPublication =
 			delivery.phase === 'pr' ||
 			(delivery.phase === 'inspect' && delivery.mode !== 'archive-only' && delivery.heads.length === 0)
 	}
 	delivery.phase = 'attention'
-	if (delivery.attention !== message) delivery.blockerAlert = undefined
+	if (delivery.attention !== message) {
+		delivery.blockerAlert = undefined
+		delivery.attentionDiagnosis = undefined
+	}
 	delivery.attention = message
 	delivery.lease = null
 	const source = history.find((session) => session.id === delivery.sourceSessionId)
@@ -211,7 +299,8 @@ export async function deliveryAttention(
 		history.every((session) => ['ready_for_input', 'failed', 'lost', 'interrupted'].includes(session.status))
 	) {
 		delivery.recoveryAttempts = 1
-		await launchDeliverySession(tx, task, delivery, source, 'attention')
+		const previous = history.find((session) => session.id === delivery.managedSessionId)
+		await launchDeliverySession(tx, task, delivery, source, 'attention', previous)
 	} else if (delivery.recoveryAttempts > 0)
 		delivery.attention = `${message} Automatic Main recovery is exhausted; task-owner attention required.`
 	await saveDelivery(tx, task, delivery)

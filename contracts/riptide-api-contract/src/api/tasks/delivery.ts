@@ -50,3 +50,12 @@ export const configureDeliveryAlertsContract = contractBuilder
 			reconciliation: ImplementationReconciliationSchema.nullable().optional(),
 		}),
 	)
+
+export const acknowledgeDeliveryBlockerContract = contractBuilder
+	.input(
+		z.object({
+			taskId: z.uuidv7(),
+			alertId: z.uuid().describe('Current blocker ID from the task delivery status.'),
+		}),
+	)
+	.output(z.object({ acknowledged: z.boolean() }))

@@ -3,12 +3,18 @@ import { artifactOperationsLog } from '@humanlayer/db/tables/artifact-operations
 import { artifactVersions } from '@humanlayer/db/tables/artifact-versions'
 import { artifacts } from '@humanlayer/db/tables/artifacts'
 import { sessions } from '@humanlayer/db/tables/sessions'
-import { DeliveryReviewSchema, decodeDelivery } from '@humanlayer/schemas/zod/automatic-delivery'
+import {
+	decodeDelivery,
+	DELIVERY_DIAGNOSIS_LABEL,
+	DELIVERY_DIAGNOSIS_MODEL,
+	DeliveryAttentionDiagnosisSchema,
+	DeliveryReviewSchema,
+} from '@humanlayer/schemas/zod/automatic-delivery'
 import { and, eq, sql } from 'drizzle-orm'
 import { Effect } from 'effect'
 import { hash } from 'ohash'
 
-import { acceptDeliveryReview, lockDeliveryTask } from '../../../db/automatic-delivery'
+import { acceptDeliveryReview, lockDeliveryTask, saveDelivery } from '../../../db/automatic-delivery'
 import { getTxId } from '../../../db/get-tx-id'
 import { getTaskWithEffectivePermissions } from '../../../db/task-auth'
 import { OnboardingService } from '../../../effects/services/onboarding/onboarding.service'
@@ -32,6 +38,7 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 		const operationContents = stripNullBytes(input.operationContents)
 		const frontmatter = stripNullBytes(input.frontmatter)
 		const fileName = normalizeSubpath(rawFileName)
+		const deliveryDiagnosis = sessionId && fileName === `delivery-diagnosis-${sessionId}.json`
 		const { organizationId, userId } = context.auth
 		const { services } = context
 		const { db } = services
@@ -64,6 +71,63 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				}
 
 				const taskSlug = task.slug
+				if (deliveryDiagnosis) {
+					const deliveryTask = await lockDeliveryTask(tx, taskId, organizationId)
+					const delivery = decodeDelivery(deliveryTask?.automatic_delivery)
+					if (
+						!deliveryTask ||
+						deliveryTask.archived ||
+						deliveryTask.is_draft ||
+						deliveryTask.resource_owner_user_id !== userId ||
+						delivery?.phase !== 'attention' ||
+						delivery.recoveryAttempts !== 1 ||
+						delivery.authorizedBy !== userId ||
+						delivery.hostId !== context.auth.hostId ||
+						delivery.managedSessionId !== sessionId
+					)
+						throw errors.FORBIDDEN()
+					const [diagnostician] = await tx
+						.select()
+						.from(sessions)
+						.where(and(eq(sessions.id, sessionId), eq(sessions.organization_id, organizationId)))
+						.for('no key update')
+					if (
+						!diagnostician ||
+						diagnostician.archived ||
+						diagnostician.status !== 'running' ||
+						diagnostician.host_id !== context.auth.hostId ||
+						diagnostician.task_id !== taskId ||
+						diagnostician.created_by !== userId ||
+						diagnostician.resource_owner_user_id !== userId ||
+						diagnostician.coding_agent !== 'codelayer' ||
+						diagnostician.provider !== 'codex' ||
+						diagnostician.model !== DELIVERY_DIAGNOSIS_MODEL ||
+						diagnostician.effort !== 'high' ||
+						!diagnostician.labels?.some((label) => label.name === DELIVERY_DIAGNOSIS_LABEL)
+					)
+						throw errors.FORBIDDEN()
+					let value: unknown
+					try {
+						if (contentBytes <= 4096) value = JSON.parse(content)
+					} catch {
+						// Report malformed evidence without including the generated text in logs.
+					}
+					const parsed = DeliveryAttentionDiagnosisSchema.safeParse(value)
+					if (!parsed.success)
+						throw errors.BAD_REQUEST({
+							data: { message: 'Blocker diagnosis must contain a short reason and a next action.' },
+						})
+					const existing = delivery.attentionDiagnosis
+					if (
+						existing &&
+						(existing.reason !== parsed.data.reason || existing.nextAction !== parsed.data.nextAction)
+					)
+						throw errors.FORBIDDEN()
+					if (!existing) {
+						delivery.attentionDiagnosis = parsed.data
+						await saveDelivery(tx, deliveryTask, delivery)
+					}
+				}
 				if (sessionId && fileName === `delivery-review-${sessionId}.json`) {
 					const deliveryTask = await lockDeliveryTask(tx, taskId, organizationId)
 					const delivery = decodeDelivery(deliveryTask?.automatic_delivery)
@@ -210,6 +274,10 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				versionNumber: txResult.versionNumber,
 			}
 
+			// Diagnosis text is private task evidence. The native blocker dispatch owns
+			// external delivery and deliberately keeps its payload independently scoped.
+			if (deliveryDiagnosis) return output
+
 			// Fire-and-forget onboarding artifact milestones. Each method no-ops unless
 			// the artifact matches its kind (design discussion >=2 versions, structure
 			// outline written, or pr-description written), so detaching unconditionally
@@ -348,7 +416,11 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				return output
 			}
 		} catch (error: unknown) {
-			logger.error(error, 'Failed to upsert artifact')
+			if (deliveryDiagnosis) {
+				logger.warn({ taskId, sessionId }, 'Failed to record the private delivery blocker diagnosis')
+			} else {
+				logger.error(error, 'Failed to upsert artifact')
+			}
 			throw error
 		}
 	})
