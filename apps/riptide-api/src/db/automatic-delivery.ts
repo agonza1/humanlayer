@@ -116,7 +116,7 @@ export async function saveDelivery(
 		.update(tasks)
 		.set({
 			automatic_delivery: delivery,
-			...(options.preserveActivity ? { updated_at: task.updated_at } : {}),
+			updated_at: options.preserveActivity ? task.updated_at : BigInt(Date.now()),
 		})
 		.where(eq(tasks.id, task.id))
 }
