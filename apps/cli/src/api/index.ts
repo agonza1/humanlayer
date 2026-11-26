@@ -67,6 +67,19 @@ function addSyncConvenienceFlags(apiProgram: Command) {
 	}
 }
 
+/** Attention creation requires a null cursor, which Commander cannot parse as an optional flag value. */
+function addTaskAttentionCreateDefault(apiProgram: Command) {
+	const tasks = apiProgram.commands.find((command) => command.name() === 'tasks')
+	const attention = tasks?.commands.find((command) => command.name() === 'attention')
+	const set = attention?.commands.find((command) => command.name() === 'set')
+	const expected = set?.options.find((option) => option.long === '--expected')
+	if (expected)
+		expected.description = 'Current attention occurrence and revision. Omit this option to open a new occurrence.'
+	set?.hook('preAction', (command: Command) => {
+		if (command.getOptionValue('expected') === undefined) command.setOptionValue('expected', null)
+	})
+}
+
 /**
  * Clean up trpc-cli's auto-generated option descriptions:
  * - Strip JSON schema dumps (Any of: [...], Pattern: ..., Format: uuid)
@@ -120,6 +133,7 @@ export function registerApiCommand(program: Command, getEnv: () => EnvironmentNa
 	// implementation constructs a Commander Command and documents this escape hatch.
 	const apiProgram = cli.buildProgram() as Command
 	addSyncConvenienceFlags(apiProgram)
+	addTaskAttentionCreateDefault(apiProgram)
 	cleanupOptionHelp(apiProgram)
 	program.addCommand(apiProgram)
 }
