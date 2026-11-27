@@ -204,6 +204,15 @@ export function decodeDelivery(value: unknown): AutomaticDelivery | null {
 	return AutomaticDeliverySchema.parse(typeof value === 'string' ? JSON.parse(value) : value)
 }
 
+export const MERGED_PR_ATTENTION = 'PR merged on GitHub. Verify remaining acceptance before completing this task.'
+
+export function mergedAttentionObservation(delivery?: AutomaticDelivery) {
+	const observed = delivery?.attentionObservation
+	if (observed && observed.heads.length === delivery?.targets.length && observed.heads.every((head) => head.merged))
+		return observed
+	return undefined
+}
+
 export function sameDeliveryHeads(left: DeliveryHead[], right: DeliveryHead[]): boolean {
 	const key = (head: DeliveryHead) =>
 		JSON.stringify([head.repository.toLowerCase(), head.branch, head.base, head.directory, head.number, head.sha])

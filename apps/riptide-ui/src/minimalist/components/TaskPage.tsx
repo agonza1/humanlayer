@@ -1,11 +1,11 @@
 import type { Task } from '@humanlayer/db/tables/tasks'
-import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import { Link } from '@tanstack/react-router'
 import { MessageSquare, PanelLeft, PanelRightClose } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { TaskDiffScope } from '@/components/diffs/TaskDiffScope'
 import { TaskAttentionPanel } from '@/components/task-detail/TaskAttentionPanel'
+import { useBoardTask } from '@/hooks/useBoardHosts'
 import { useMountEffect } from '@/hooks/useMountEffect'
 import { useSessionAccess } from '@/minimalist/lib/access'
 import { useTask, useTaskArtifacts } from '@/minimalist/lib/data'
@@ -31,7 +31,7 @@ import { WorkspaceSetup } from './WorkspaceSetup'
 
 export function MinimalistTaskPage({ taskId, sessionId }: { taskId: string; sessionId?: string }) {
 	const { task, sessions, isReady } = useTask(taskId)
-	const board = task ? describeBoardTask(task, sessions) : null
+	const board = useBoardTask(task, sessions)
 	const artifacts = useTaskArtifacts(taskId)
 	const session = chooseTaskSession(sessions, sessionId, rememberedSession(taskId))
 	const { canSendPrompt } = useSessionAccess(session ?? undefined)

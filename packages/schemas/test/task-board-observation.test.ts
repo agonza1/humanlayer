@@ -156,3 +156,56 @@ it('omits resolved and transferred attention and keeps genuine session approval 
 	expect(transferred.attention).toMatchObject(expected)
 	expect(transferred.columnId).toBe('implementation')
 })
+
+it('reports the due date and current assigned host heartbeat until the follow-up is handled', () => {
+	const now = 50_000
+	const pending = { ...externalWait, notice: undefined, followUpAt: now }
+	const task = { task_attention: pending, organization_id: 'org', resource_owner_user_id: 'task-owner' }
+	const session = { ...idle, resource_owner_user_id: 'task-owner', host_id: 'workstation' }
+	const host = {
+		user_id: 'task-owner',
+		organization_id: 'org',
+		host_id: 'workstation',
+		status: 'offline' as const,
+		last_seen: '10000',
+	}
+	const sessions = [
+		session,
+		{ ...session, id: 'draft', status: 'draft', host_id: 'wrong', last_activity_at: 999 },
+		{ ...session, id: 'other', host_id: 'wrong', resource_owner_user_id: 'other', last_activity_at: 999 },
+		{ ...session, id: 'archived', host_id: 'wrong', archived: true, last_activity_at: 999 },
+	]
+	const view = (at: number, state: TaskAttention = pending) =>
+		describeBoardTask({ ...task, task_attention: state }, sessions, [host], at)
+	expect(view(now).attention[0]).toMatchObject({
+		followUpAt: now,
+		followUpHost: { id: 'workstation', status: 'offline', lastHeartbeatAt: 10_000 },
+	})
+	expect(view(now).lastUpdatedAtMs).toEqual(view(now - 1).lastUpdatedAtMs)
+	expect(view(now - 1).attention[0]?.followUpHost).toBeUndefined()
+	for (const state of [
+		{ ...pending, followUpAt: undefined },
+		{ ...pending, acknowledgedAt: now },
+		{ ...pending, resolvedAt: now },
+		externalWait,
+	])
+		expect(view(now, state).attention[0]?.followUpHost).toBeUndefined()
+	expect(
+		describeBoardTask(task, sessions, [{ ...host, status: 'online' }], now).attention[0]?.followUpHost?.status,
+	).toBe('stale')
+	expect(
+		describeBoardTask(task, sessions, [{ ...host, status: 'online', last_seen: String(now) }], now).attention[0]
+			?.followUpHost?.status,
+	).toBe('online')
+	for (const hosts of [[], [{ ...host, user_id: 'other' }], [{ ...host, organization_id: 'other' }]]) {
+		expect(describeBoardTask(task, sessions, hosts, now).attention[0]?.followUpHost).toEqual({
+			id: 'workstation',
+			status: 'unknown',
+		})
+	}
+	expect(
+		describeBoardTask({ ...task, automatic_delivery: delivery([]) }, sessions, [host], now).attention[0]
+			?.followUpHost,
+	).toEqual({ id: 'approved-host', status: 'unknown' })
+	expect(describeBoardTask(task, [], [host], now).attention[0]?.followUpHost).toBeUndefined()
+})

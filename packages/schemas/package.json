@@ -29,6 +29,7 @@
 		"./effect/taskconfiguration/task-configuration": "./src/effect/taskconfiguration/task-configuration.ts",
 		"./zod/model-catalog": "./src/zod/model-catalog.ts",
 		"./zod/automatic-delivery": "./src/zod/automatic-delivery.ts",
+		"./zod/decode-json-column": "./src/zod/decode-json-column.ts",
 		"./zod/task-attention": "./src/zod/task-attention.ts",
 		"./zod/implementation-reconciliation": "./src/zod/implementation-reconciliation.ts",
 		"./zod/workspace": "./src/zod/workspace/index.ts",

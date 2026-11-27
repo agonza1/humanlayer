@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { useMountEffect } from '../../hooks/use-mount-effect'
-import { boardAttentionFollowUpLabel, boardAttentionGapLabel, boardAttentionLabel, boardDeliveryAlertLabel, boardDeliveryLabel, boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
+import { boardDeliveryLabel, boardIdleBackground, boardStatusLabel, formatBoardUpdateTime } from '../../lib/task-board'
+import { BoardCardAttention } from '../board-card-attention'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '../context-menu'
 import { SessionLabelBadge } from '../session-label-badge'
 import { renderSessionStatusIndicator, UnreadBullet } from '../sidebar/status-indicators'
@@ -128,7 +129,6 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
   const updated = card.updatedAtMs === undefined ? null : formatBoardUpdateTime(card.updatedAtMs, nowMs)
   const status = card.status ?? (card.isDraft ? 'draft' : 'not_started')
   const attention = card.attention?.[0]
-  const gap = boardAttentionGapLabel(attention?.alert)
   const delivery = card.delivery?.status === 'blocked' && attention && attention.kind !== 'blocked' ? null : card.delivery
 
   return (
@@ -189,16 +189,7 @@ function KanbanCardContent({ card, nowMs }: { card: KanbanCardModel; nowMs: numb
           </time>
         )}
       </div>
-      {attention && attention.kind !== 'blocked' ? (
-        <div className="space-y-1 break-words text-xs">
-          <strong>{boardAttentionLabel(attention)}</strong>
-          <p>{attention.nextAction ?? attention.reason}</p>
-          {attention.followUpAt !== undefined && <p>{boardAttentionFollowUpLabel(attention.followUpAt, nowMs)}</p>}
-          {gap && <p>{gap}</p>}
-        </div>
-      ) : card.delivery?.status === 'blocked' && (
-        <p className="break-words text-xs">{card.delivery.reason}<br />{boardDeliveryAlertLabel(card.delivery)}</p>
-      )}
+      <BoardCardAttention item={attention} delivery={card.delivery} nowMs={nowMs} />
     </div>
   )
 }

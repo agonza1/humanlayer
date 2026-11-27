@@ -44,7 +44,7 @@ function AttentionDetails({ item }: { item: BoardAttention }) {
 			{item.responsible && item.kind !== 'external_wait' && <p>Responsible · {item.responsible}</p>}
 			{item.recoveryAttempts !== undefined && <p>Recovery attempts · {item.recoveryAttempts}</p>}
 			{item.followUpAt !== undefined && item.resolvedAt === undefined && (
-				<p>{boardAttentionFollowUpLabel(item.followUpAt, nowMs)}</p>
+				<p>{boardAttentionFollowUpLabel(item, nowMs)}</p>
 			)}
 			{item.acknowledgedAt !== undefined && item.source === 'task' && <p>Notice acknowledged</p>}
 			{item.alert && <p>{boardAttentionAlertLabel(item.alert)}</p>}

@@ -1,7 +1,7 @@
+import { HOST_STALE_AFTER_MS as STALE_AFTER_MS } from '@humanlayer/schemas/zod/host/heartbeat'
 import { useSyncExternalStore } from 'react'
 
-/** A host whose last heartbeat is older than this is stale; the daemon beats every 15 s. */
-export const STALE_AFTER_MS = 30_000
+export { STALE_AFTER_MS }
 /** How long after a wake a host that was live before it keeps reading live while fresh rows arrive. */
 export const RESUME_GRACE_MS = 20_000
 

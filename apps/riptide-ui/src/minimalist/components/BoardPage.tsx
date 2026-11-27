@@ -5,11 +5,8 @@ import {
 	type BoardStatus,
 	describeBoardTask,
 } from '@humanlayer/schemas/task-board'
+import { BoardCardAttention } from '@humanlayer/ui/components/board-card-attention'
 import {
-	boardAttentionFollowUpLabel,
-	boardAttentionGapLabel,
-	boardAttentionLabel,
-	boardDeliveryAlertLabel,
 	boardDeliveryLabel,
 	boardIdleBackground,
 	boardStatusLabel,
@@ -18,6 +15,7 @@ import {
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
+import { useBoardHosts } from '@/hooks/useBoardHosts'
 import { useMinuteClock } from '@/hooks/useMinuteClock'
 import { WiredUserAvatar } from '@/minimalist/components/Avatar'
 import { Segmented } from '@/minimalist/components/SettingsControls'
@@ -44,11 +42,20 @@ export function BoardPage() {
 	const [attentionOnly, setAttentionOnly] = useState(false)
 	const { recent: rows, isReady } = useTaskTree(false, scope)
 	const nowMs = useMinuteClock()
+	const hosts = useBoardHosts(
+		rows.map(({ task }) => task),
+		nowMs,
+	)
 	const columns = BOARD_COLUMNS.map((column) => ({ ...column, rows: [] as BoardRow[] }))
 	const byId = new Map(columns.map((column) => [column.id, column]))
 	let attentionCount = 0
 	for (const row of rows) {
-		const { columnId, status, lastUpdatedAtMs, delivery, attention } = describeBoardTask(row.task, row.sessions)
+		const { columnId, status, lastUpdatedAtMs, delivery, attention } = describeBoardTask(
+			row.task,
+			row.sessions,
+			hosts,
+			nowMs,
+		)
 		if (attention.length > 0) attentionCount++
 		if (!attentionOnly || attention.length > 0) {
 			byId.get(columnId)?.rows.push({ row, status, lastUpdatedAtMs, delivery, attention })
@@ -106,7 +113,6 @@ function BoardCard({ row, status, lastUpdatedAtMs, delivery, attention, nowMs }:
 	const updated = lastUpdatedAtMs === null ? null : formatBoardUpdateTime(lastUpdatedAtMs, nowMs)
 	const { closeSidebarOnNarrow } = useUi()
 	const primary = attention[0]
-	const gap = boardAttentionGapLabel(primary?.alert)
 	const visibleDelivery = delivery?.status === 'blocked' && primary?.kind !== 'blocked' ? null : delivery
 	return (
 		<Link
@@ -138,23 +144,7 @@ function BoardCard({ row, status, lastUpdatedAtMs, delivery, attention, nowMs }:
 					</time>
 				)}
 			</span>
-			{primary && primary.kind !== 'blocked' ? (
-				<span className="block space-y-1 break-words text-xs">
-					<strong className="block">{boardAttentionLabel(primary)}</strong>
-					<span className="block">{primary.nextAction ?? primary.reason}</span>
-					{primary.followUpAt !== undefined && (
-						<span className="block">{boardAttentionFollowUpLabel(primary.followUpAt, nowMs)}</span>
-					)}
-					{gap && <span className="block">{gap}</span>}
-				</span>
-			) : (
-				delivery?.status === 'blocked' && (
-					<span className="board-card-status">
-						<span>{delivery.reason}</span>
-						<span>{boardDeliveryAlertLabel(delivery)}</span>
-					</span>
-				)
-			)}
+			<BoardCardAttention item={primary} delivery={delivery} nowMs={nowMs} />
 		</Link>
 	)
 }

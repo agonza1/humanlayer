@@ -2,6 +2,8 @@ import { expect, test, vi } from 'vitest'
 
 import { readBoard } from '../src/commands/board'
 
+const v2 = { onlineHosts: vi.fn() }
+
 test('reads the full project board and exports active session status and timestamps', async () => {
 	const projectId = 'test-project'
 	const savedDrafts = Array.from({ length: 250 }, (_, index) => ({
@@ -33,7 +35,7 @@ test('reads the full project board and exports active session status and timesta
 			],
 		})
 
-	const board = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000', projectId)
+	const board = await readBoard({ tasks, sessions, v2 }, 'http://127.0.0.1:3000', projectId)
 
 	expect(tasks).toHaveBeenCalledTimes(2)
 	expect(tasks).toHaveBeenLastCalledWith(
@@ -82,7 +84,7 @@ test.each([
 		],
 	})
 
-	const board = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000')
+	const board = await readBoard({ tasks, sessions, v2 }, 'http://127.0.0.1:3000')
 	expect(board.columns.find((column) => column.id === 'implementation')?.cards).toMatchObject([
 		{ id: 'task', delivery: { status: expected } },
 	])
@@ -116,7 +118,7 @@ test.each([
 		],
 	})
 	const sessions = vi.fn().mockResolvedValue({ rows: [] })
-	const board = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000')
+	const board = await readBoard({ tasks, sessions, v2 }, 'http://127.0.0.1:3000')
 	const delivery = board.columns.find((column) => column.id === 'implementation')?.cards[0]?.delivery
 	expect(delivery?.status === 'blocked' && delivery.alert).toEqual(expectedAlert)
 })
@@ -128,6 +130,8 @@ test('filters to attention without reassigning an external wait to another colum
 			{
 				id: 'waiting',
 				name: 'Carrier review',
+				organization_id: 'org',
+				resource_owner_user_id: 'owner',
 				project_id: 'project',
 				task_attention: {
 					id: '019abcde-1234-7abc-8abc-123456789abc',
@@ -149,6 +153,8 @@ test('filters to attention without reassigning an external wait to another colum
 			{
 				id: 'session',
 				task_id: 'waiting',
+				host_id: 'assigned',
+				resource_owner_user_id: 'owner',
 				archived: false,
 				last_activity_at: 10,
 				status: 'ready_for_input',
@@ -156,14 +162,42 @@ test('filters to attention without reassigning an external wait to another colum
 			},
 		],
 	})
-	const result = await readBoard({ tasks, sessions }, 'http://127.0.0.1:3000', 'project', true)
+	v2.onlineHosts.mockResolvedValue({
+		rows: [{ organization_id: 'org', user_id: 'owner', host_id: 'assigned', status: 'offline', last_seen: '60' }],
+	})
+	const result = await readBoard({ tasks, sessions, v2 }, 'http://127.0.0.1:3000', 'project', true)
+	expect(v2.onlineHosts).toHaveBeenCalledWith({
+		where: {
+			type: 'and',
+			conditions: [
+				{ type: 'comparison', field: ['host_id'], operator: 'eq', value: 'assigned' },
+				{ type: 'comparison', field: ['organization_id'], operator: 'eq', value: 'org' },
+				{ type: 'comparison', field: ['user_id'], operator: 'eq', value: 'owner' },
+			],
+		},
+		sorts: [],
+		limit: 1,
+	})
 	expect(result.attentionCount).toBe(1)
 	expect(result.columns.flatMap((column) => column.cards)).toMatchObject([
 		{
 			id: 'waiting',
 			columnId: 'implementation',
 			status: 'ready_for_input',
-			attention: [{ kind: 'external_wait', responsible: 'SignalWire', followUpAt: 100 }],
+			attention: [
+				{
+					kind: 'external_wait',
+					responsible: 'SignalWire',
+					followUpAt: 100,
+					followUpHost: { id: 'assigned', status: 'offline', lastHeartbeatAt: 60 },
+				},
+			],
 		},
 	])
+	v2.onlineHosts.mockRejectedValueOnce(new Error('Host status temporarily unavailable'))
+	const impaired = await readBoard({ tasks, sessions, v2 }, 'http://127.0.0.1:3000', 'project', true)
+	expect(impaired.columns.flatMap((column) => column.cards)[0]?.attention[0]?.followUpHost).toEqual({
+		id: 'assigned',
+		status: 'unknown',
+	})
 })

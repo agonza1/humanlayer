@@ -257,6 +257,24 @@ describe('local Slack delivery alert relay', () => {
 		expect(legacyRequest).not.toHaveProperty('attention')
 	})
 
+	it('bounds managed guidance and drops noncanonical GitHub links from the relay request', async () => {
+		const input = standingAlert()
+		const alert = {
+			...input,
+			standing: {
+				...input.standing,
+				guidance: 'x'.repeat(999) + '😀',
+				githubUrl: 'https://github.com/org/repo/pull/2',
+			},
+		}
+		await expect(postLocalSlackDeliveryBlocker(alert)).resolves.toEqual(confirmed)
+		alert.standing.githubUrl += '?private=secret'
+		await expect(postLocalSlackDeliveryBlocker(alert)).resolves.toEqual(confirmed)
+		const [valid, invalid] = readRequests()
+		expect(valid).toMatchObject({ guidance: 'x'.repeat(999), githubUrl: 'https://github.com/org/repo/pull/2' })
+		expect(invalid).not.toHaveProperty('githubUrl')
+	})
+
 	it('keeps version, grant, project, task, destination, and sender mismatches unconfirmed', async () => {
 		const input = standingAlert()
 		for (const mismatch of [

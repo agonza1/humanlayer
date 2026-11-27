@@ -16,7 +16,7 @@ export async function dispatchDeliveryAlerts(
 	alerts: readonly SlackBlockerDispatch[],
 ) {
 	for (const dispatch of alerts) {
-		const { slots, attention } = await db.transaction((tx) => validateSlackBlockerDispatch(tx, dispatch))
+		const { slots, ...privateFields } = await db.transaction((tx) => validateSlackBlockerDispatch(tx, dispatch))
 		const unavailable = dispatch.slots.filter((slot) => !slots.includes(slot))
 		if (unavailable.length) {
 			await db.transaction((tx) =>
@@ -30,15 +30,10 @@ export async function dispatchDeliveryAlerts(
 		if (!slots.length) continue
 		const receipt = dispatch.relayRouteId
 			? await postLocalSlackDeliveryBlocker({
+					...dispatch,
 					routeId: dispatch.relayRouteId,
-					organizationId: dispatch.organizationId,
-					ownerId: dispatch.ownerId,
-					taskId: dispatch.taskId,
-					alertId: dispatch.alertId,
-					teamId: dispatch.teamId,
-					channelId: dispatch.channelId,
 					reason: dispatch.relayReason,
-					standing: dispatch.standing ? { ...dispatch.standing, attention } : undefined,
+					standing: dispatch.standing ? { ...dispatch.standing, ...privateFields } : undefined,
 				})
 			: await effectRuntime.runPromise(
 					Effect.gen(function* () {

@@ -5,21 +5,23 @@ import { and, eq, inArray, or } from 'drizzle-orm'
 import type { PgDatabase } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 
-export type TaskWithAuth = {
-	id: string
-	slug: string | null
-	resource_owner_user_id: string | null
-	organization_id: string
-	default_working_directory: string | null
-	auto_advance_questions_to_research: boolean
-	auto_advance_research_to_design: boolean
-	auto_advance_plan_to_worktree: boolean
-	auto_advance_worktree_to_implementation: boolean
-	auto_advance_implementation_to_pr: boolean
-	ticket_provider: typeof tasks.$inferSelect.ticket_provider
-	github_connection_id: string | null
-	ticket_repository_id: string | null
+const taskAuthFields = {
+	id: tasks.id,
+	slug: tasks.slug,
+	resource_owner_user_id: tasks.resource_owner_user_id,
+	organization_id: tasks.organization_id,
+	default_working_directory: tasks.default_working_directory,
+	auto_advance_questions_to_research: tasks.auto_advance_questions_to_research,
+	auto_advance_research_to_design: tasks.auto_advance_research_to_design,
+	auto_advance_plan_to_worktree: tasks.auto_advance_plan_to_worktree,
+	auto_advance_worktree_to_implementation: tasks.auto_advance_worktree_to_implementation,
+	auto_advance_implementation_to_pr: tasks.auto_advance_implementation_to_pr,
+	ticket_provider: tasks.ticket_provider,
+	github_connection_id: tasks.github_connection_id,
+	ticket_repository_id: tasks.ticket_repository_id,
 }
+
+export type TaskWithAuth = Pick<typeof tasks.$inferSelect, keyof typeof taskAuthFields>
 
 export type TaskWithEffectivePermissions = TaskWithAuth & {
 	effectivePermission: AclPermissionLevel
@@ -55,21 +57,7 @@ export async function maybeGetTaskWithAuthCheck(
 	organizationId: string,
 ): Promise<TaskWithAuth | null> {
 	const [task] = await tx
-		.select({
-			id: tasks.id,
-			slug: tasks.slug,
-			resource_owner_user_id: tasks.resource_owner_user_id,
-			organization_id: tasks.organization_id,
-			default_working_directory: tasks.default_working_directory,
-			auto_advance_questions_to_research: tasks.auto_advance_questions_to_research,
-			auto_advance_research_to_design: tasks.auto_advance_research_to_design,
-			auto_advance_plan_to_worktree: tasks.auto_advance_plan_to_worktree,
-			auto_advance_worktree_to_implementation: tasks.auto_advance_worktree_to_implementation,
-			auto_advance_implementation_to_pr: tasks.auto_advance_implementation_to_pr,
-			ticket_provider: tasks.ticket_provider,
-			github_connection_id: tasks.github_connection_id,
-			ticket_repository_id: tasks.ticket_repository_id,
-		})
+		.select(taskAuthFields)
 		.from(tasks)
 		.where(
 			and(
@@ -128,21 +116,7 @@ export async function getTaskWithEffectivePermissions(
 ): Promise<TaskWithEffectivePermissions | null> {
 	// First get the task and verify org
 	const taskQuery = tx
-		.select({
-			id: tasks.id,
-			slug: tasks.slug,
-			resource_owner_user_id: tasks.resource_owner_user_id,
-			organization_id: tasks.organization_id,
-			default_working_directory: tasks.default_working_directory,
-			auto_advance_questions_to_research: tasks.auto_advance_questions_to_research,
-			auto_advance_research_to_design: tasks.auto_advance_research_to_design,
-			auto_advance_plan_to_worktree: tasks.auto_advance_plan_to_worktree,
-			auto_advance_worktree_to_implementation: tasks.auto_advance_worktree_to_implementation,
-			auto_advance_implementation_to_pr: tasks.auto_advance_implementation_to_pr,
-			ticket_provider: tasks.ticket_provider,
-			github_connection_id: tasks.github_connection_id,
-			ticket_repository_id: tasks.ticket_repository_id,
-		})
+		.select(taskAuthFields)
 		.from(tasks)
 		.where(and(eq(tasks.id, taskId), eq(tasks.organization_id, organizationId)))
 		.limit(1)

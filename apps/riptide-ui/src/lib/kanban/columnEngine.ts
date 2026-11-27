@@ -1,6 +1,7 @@
 import {
 	BOARD_COLUMNS,
 	type BoardColumnId,
+	type BoardHostInput,
 	type BoardSessionInput,
 	type BoardTaskInput,
 	describeBoardTask,
@@ -15,7 +16,6 @@ export type ColumnId = BoardColumnId
 
 export interface KanbanSessionInput extends BoardSessionInput {
 	last_activity_at: bigint | null
-	resource_owner_user_id?: string | null
 }
 
 export function assignColumn(_task: { is_draft?: boolean }, sessions: KanbanSessionInput[]): ColumnId {
@@ -38,25 +38,17 @@ export interface KanbanOwnerInfo {
 }
 
 function getTaskOwnerIds(task: KanbanTaskInput): string[] {
-	const ownerIds: string[] = []
-	const seen = new Set<string>()
-
-	const addOwner = (userId: string | null | undefined) => {
-		if (!userId || seen.has(userId)) return
-		seen.add(userId)
-		ownerIds.push(userId)
-	}
-
-	addOwner(task.resource_owner_user_id)
+	const owners = new Set<string>()
+	if (task.resource_owner_user_id) owners.add(task.resource_owner_user_id)
 	for (const session of task.sessions) {
-		if (session.archived) continue
-		addOwner(session.resource_owner_user_id)
+		if (!session.archived && session.resource_owner_user_id) owners.add(session.resource_owner_user_id)
 	}
-
-	return ownerIds
+	return [...owners]
 }
 
 export interface BuildKanbanColumnsInput {
+	hosts?: readonly BoardHostInput[]
+	nowMs?: number
 	tasks: KanbanTaskInput[]
 	/** Resolve owner display info from a task's `resource_owner_user_id`. */
 	resolveOwner: (userId: string | null) => KanbanOwnerInfo
@@ -89,7 +81,7 @@ export function buildKanbanColumns(input: BuildKanbanColumnsInput): KanbanColumn
 
 	for (const task of input.tasks) {
 		const { columnId, workflowLabel, stageActivityMs, status, lastUpdatedAtMs, delivery, attention } =
-			describeBoardTask(task, task.sessions)
+			describeBoardTask(task, task.sessions, input.hosts, input.nowMs)
 		const owner = input.resolveOwner(task.resource_owner_user_id)
 		const owners = getTaskOwnerIds(task).map((userId) => ({ id: userId, ...input.resolveOwner(userId) }))
 

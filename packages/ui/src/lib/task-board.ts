@@ -68,9 +68,17 @@ export function boardAttentionLabel(attention: BoardAttention) {
 	return 'Blocked'
 }
 
-export function boardAttentionFollowUpLabel(followUpAt: number, nowMs: number) {
+export function boardAttentionFollowUpLabel(item: BoardAttention, nowMs: number) {
+	const { followUpAt, followUpHost: host } = item
+	if (followUpAt === undefined || item.resolvedAt !== undefined) return null
 	const date = FULL_DATE_AND_TIME.format(followUpAt)
-	return followUpAt <= nowMs ? `Follow-up due · ${date}` : `Follow-up ${date}`
+	if (followUpAt > nowMs || item.acknowledgedAt !== undefined) return `Follow-up ${date}`
+	if (item.lastNoticeAt !== undefined && !host) return `Follow-up scheduled for ${date} · Notice attempted ${FULL_DATE_AND_TIME.format(item.lastNoticeAt)}`
+	const due = `Follow-up due · ${date}`
+	if (!host) return due
+	if (host.status === 'unknown') return `${due} · Assigned host status unavailable`
+	const state = host.status === 'stale' ? 'heartbeat late' : host.status
+	return `${due} · Assigned host ${state} · Last heartbeat ${FULL_DATE_AND_TIME.format(host.lastHeartbeatAt)}`
 }
 
 export function boardIdleBackground(status: BoardStatus | undefined, updatedAtMs: number | null | undefined, nowMs: number) {

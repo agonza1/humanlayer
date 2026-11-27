@@ -2,6 +2,8 @@ import type { SyncInput, WhereExpression } from '@humanlayer/riptide-api-contrac
 import {
 	BOARD_COLUMNS,
 	type BoardSessionInput,
+	type BoardHostInput,
+	describeFollowUpHost,
 	type BoardTaskInput,
 	describeBoardTask,
 } from '@humanlayer/schemas/task-board'
@@ -17,7 +19,11 @@ const TASK_ID_BATCH_SIZE = 100
 type TaskRow = BoardTaskInput & { id: string; name: string; project_id: string | null }
 type SessionRow = BoardSessionInput & { id: string; task_id: string | null }
 type ReadRows<Row> = (input: SyncInput) => Promise<{ rows: Row[] }>
-type BoardSync = { tasks: ReadRows<TaskRow>; sessions: ReadRows<SessionRow> }
+type BoardSync = {
+	tasks: ReadRows<TaskRow>
+	sessions: ReadRows<SessionRow>
+	v2: { onlineHosts: ReadRows<BoardHostInput> }
+}
 
 function filter(field: string, operator: string, value: unknown): WhereExpression {
 	return { type: 'comparison', field: [field], operator, value }
@@ -61,21 +67,48 @@ export async function readBoard(sync: BoardSync, appOrigin: string, projectId?: 
 		}
 	}
 
-	const cards = tasks.map((task) => {
-		const state = describeBoardTask(task, sessionsByTaskId.get(task.id) ?? [])
-		return {
-			columnId: state.columnId,
-			id: task.id,
-			title: task.name,
-			projectId: task.project_id,
-			status: state.status,
-			delivery: state.delivery,
-			attention: state.attention,
-			workflowLabel: state.workflowLabel,
-			lastUpdatedAt: state.lastUpdatedAtMs === null ? null : new Date(state.lastUpdatedAtMs).toISOString(),
-			url: new URL(`/tasks/${task.id}`, appOrigin).href,
-		}
-	})
+	const now = Date.now()
+	const hostReads = new Map<string, Promise<{ rows: BoardHostInput[] }>>()
+	const cards = await Promise.all(
+		tasks.map(async (task) => {
+			const state = describeBoardTask(task, sessionsByTaskId.get(task.id) ?? [], [], now)
+			const item = state.attention[0]
+			if (item?.followUpHost) {
+				const id = item.followUpHost.id
+				const key = JSON.stringify([id, task.organization_id, task.resource_owner_user_id])
+				let read = hostReads.get(key)
+				if (!read) {
+					read = sync.v2.onlineHosts({
+						where: {
+							type: 'and',
+							conditions: [
+								filter('host_id', 'eq', id),
+								filter('organization_id', 'eq', task.organization_id),
+								filter('user_id', 'eq', task.resource_owner_user_id),
+							],
+						},
+						sorts: [],
+						limit: 1,
+					})
+					hostReads.set(key, read)
+				}
+				// Host telemetry is diagnostic. A failed lookup leaves the scoped host unknown on an otherwise readable board.
+				item.followUpHost = describeFollowUpHost(task, id, (await read.catch(() => ({ rows: [] }))).rows, now)
+			}
+			return {
+				columnId: state.columnId,
+				id: task.id,
+				title: task.name,
+				projectId: task.project_id,
+				status: state.status,
+				delivery: state.delivery,
+				attention: state.attention,
+				workflowLabel: state.workflowLabel,
+				lastUpdatedAt: state.lastUpdatedAtMs === null ? null : new Date(state.lastUpdatedAtMs).toISOString(),
+				url: new URL(`/tasks/${task.id}`, appOrigin).href,
+			}
+		}),
+	)
 	cards.sort((a, b) => (b.lastUpdatedAt ?? '').localeCompare(a.lastUpdatedAt ?? ''))
 
 	return {

@@ -1,4 +1,3 @@
-import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import { ArtifactFullscreenModal } from '@humanlayer/ui/components/artifact-fullscreen-modal'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@humanlayer/ui/components/resizable'
 import { useNavigate } from '@tanstack/react-router'
@@ -120,18 +119,9 @@ export function DesktopTaskDetailPage({
 	)
 
 	if (!task && (data.isTaskLoading || !data.isTaskReady)) return <TaskDetailLoading />
-	if (!task) return <TaskDetailNotFound />
+	if (!task || !data.board) return <TaskDetailNotFound />
 
-	const { delivery, attention } = describeBoardTask(
-		task,
-		data.sessions.map((session) => ({
-			id: session.id,
-			archived: session.archived ?? false,
-			labels: session.labels ?? null,
-			status: session.status,
-			last_activity_at: session.lastActivityAt ? Date.parse(session.lastActivityAt) : null,
-		})),
-	)
+	const { delivery, attention } = data.board
 	const loadedTaskDetail: LoadedTaskDetailPageState = { ...taskDetail, task }
 	const canShowTerminalPanel = isDesktop() && canEditTask && !!resolvedWorkingDirectory
 

@@ -1,6 +1,7 @@
 import z from 'zod/v4'
 
 import { DeliveryBlockerAlertSchema, DeliveryAlertRoutesSchema, DeliveryHeadSchema } from './automatic-delivery'
+import { decodeJsonColumn } from './decode-json-column'
 
 export const IMPLEMENTATION_BLOCKERS = {
 	'owner-required':
@@ -66,12 +67,5 @@ export const ImplementationReconciliationSchema = z.object({
 export type ImplementationReconciliation = z.infer<typeof ImplementationReconciliationSchema>
 
 export function decodeImplementationReconciliation(value: unknown): ImplementationReconciliation | null {
-	try {
-		return (
-			ImplementationReconciliationSchema.safeParse(typeof value === 'string' ? JSON.parse(value) : value).data ??
-			null
-		)
-	} catch {
-		return null
-	}
+	return decodeJsonColumn(ImplementationReconciliationSchema, value)
 }
