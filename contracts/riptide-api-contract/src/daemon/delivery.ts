@@ -17,7 +17,12 @@ export const DeliveryActionSchema = z.object({
 })
 export type DeliveryAction = z.infer<typeof DeliveryActionSchema>
 export const claimDeliveryContract = contractBuilder
-	.input(z.object({ supportsObservation: z.boolean().optional() }))
+	.input(
+		z.object({
+			supportsObservation: z.boolean().optional(),
+			supportsMergedPublicationRecovery: z.boolean().optional(),
+		}),
+	)
 	.output(z.object({ action: DeliveryActionSchema.nullable() }))
 export const validateDeliveryContract = contractBuilder
 	.input(z.object({ taskId: z.uuidv7(), leaseId: z.uuid() }))

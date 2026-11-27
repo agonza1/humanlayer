@@ -78,6 +78,29 @@ describe('board projection of read-only PR observation', () => {
 		expect(JSON.stringify(current)).toBe(original)
 	})
 
+	it('keeps the specific verification blocker after a merged publication recovery attempt', () => {
+		const reason = 'The checkout contains uncommitted product changes.'
+		const current = { ...delivery([mergedHead]), mergedPublicationRecovery: true, attention: reason }
+		expect(describeBoardTask({ automatic_delivery: current }, [{ ...idle, last_activity_at: 40 }])).toMatchObject({
+			columnId: 'in-review',
+			delivery: { status: 'blocked', stage: 'in-review', reason },
+		})
+	})
+
+	it('keeps verification of a merged publication in Review', () => {
+		const current = {
+			...delivery([mergedHead]),
+			mergedPublicationRecovery: true,
+			phase: 'inspect',
+			lease: { id: sourceSessionId, kind: 'inspect', revision: 'current', expiresAt: 50 },
+		}
+		expect(describeBoardTask({ automatic_delivery: current }, [idle])).toMatchObject({
+			columnId: 'in-review',
+			workflowLabel: { name: 'rpi:review' },
+			delivery: { status: 'verifying', deadlineAt: 50 },
+		})
+	})
+
 	it.each([
 		{ heads: [], status: 'ready_for_input' },
 		{ heads: [{ ...mergedHead, merged: false }], status: 'ready_for_input' },

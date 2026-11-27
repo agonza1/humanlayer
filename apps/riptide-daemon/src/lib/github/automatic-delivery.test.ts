@@ -1,4 +1,7 @@
+import { execFileSync } from 'node:child_process'
+import { mkdir, mkdtemp, realpath, rm, rmdir, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 import { describe, it } from '@effect/vitest'
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
@@ -6,6 +9,7 @@ import { deliveryReviewVerdict, type DeliveryReview } from '@humanlayer/schemas/
 import { Effect } from 'effect'
 import { expect, vi } from 'vitest'
 
+import { getArtifactStoragePath, getArtifactSymlinkPath } from '../artifact-location'
 import { executeDeliveryAction, inspectCommittedImplementation, type DeliveryCommands } from './automatic-delivery'
 
 describe('Exact-head delivery host adapter', () => {
@@ -199,6 +203,120 @@ describe('Exact-head delivery host adapter', () => {
 			const f = fake()
 			await expect(executeDeliveryAction(action, f.commands, async () => false)).rejects.toThrow('authorization')
 			expect(f.mutations).toHaveLength(0)
+		}),
+	)
+})
+
+describe('Delivery inspection of HumanLayer artifact links', () => {
+	const taskId = '01a17a61-73b7-760a-bfc3-1a0e8caac050'
+
+	it.effect('ignores only the exact untracked artifact symlink, without hiding real checkout changes', () =>
+		Effect.promise(async () => {
+			const root = await realpath(await mkdtemp(join(tmpdir(), 'delivery-artifact-link-')))
+			try {
+				const directory = join(root, 'repo')
+				const home = join(root, 'home')
+				await mkdir(directory)
+				vi.stubEnv('HOME', home)
+				const git = (...args: string[]) =>
+					execFileSync('git', ['-c', 'core.excludesFile=/dev/null', ...args], {
+						cwd: directory,
+						encoding: 'utf8',
+					})
+				git('init', '-b', 'feature')
+				git('remote', 'add', 'origin', 'https://github.com/test/repo.git')
+				await writeFile(join(directory, 'file.txt'), 'committed content')
+				git('add', 'file.txt')
+				git(
+					'-c',
+					'user.name=Test',
+					'-c',
+					'user.email=test@example.test',
+					'-c',
+					'commit.gpgsign=false',
+					'commit',
+					'-m',
+					'Fixture',
+				)
+
+				const target = { repository: 'test/repo', branch: 'feature', base: 'main', directory }
+				const sha = git('rev-parse', 'HEAD').trim()
+				const head = { ...target, sha, number: 4, merged: true, draft: false }
+				const action: DeliveryAction = {
+					taskId,
+					leaseId: 'lease',
+					kind: 'archive',
+					targets: [target],
+					heads: [head],
+				}
+				const authorize = vi.fn(async () => true)
+				const run = vi.fn<DeliveryCommands['run']>(async (binary, args) => {
+					if (binary === 'git') {
+						if (args[0] === 'ls-remote') return ''
+						const stdout = git(...args)
+						return args[0] === 'status' ? stdout : stdout.trim()
+					}
+					expect(args.slice(0, 2)).toEqual(['pr', 'list'])
+					return JSON.stringify([
+						{
+							number: head.number,
+							headRefOid: sha,
+							headRefName: 'feature',
+							baseRefName: 'main',
+							state: 'MERGED',
+							isDraft: false,
+							mergeStateStatus: 'UNKNOWN',
+							reviewDecision: '',
+							labels: [],
+						},
+					])
+				})
+				const inspect = () => executeDeliveryAction(action, { run }, authorize)
+				const artifactLink = getArtifactSymlinkPath(directory, 'referral-task')
+				const storage = getArtifactStoragePath(taskId)
+				await mkdir(dirname(artifactLink), { recursive: true })
+				await mkdir(storage, { recursive: true })
+				await symlink(storage, artifactLink)
+				expect(git('status', '--porcelain=v1', '-z', '--untracked-files=all')).toBe(
+					'?? .humanlayer/tasks/referral-task\0',
+				)
+				await expect(inspect()).resolves.toEqual([head])
+
+				const other = join(directory, '.humanlayer', 'tasks', 'additional\nfile.txt')
+				await writeFile(other, 'untracked source or user data')
+				await expect(inspect()).rejects.toThrow('Local checkout')
+				await unlink(other)
+
+				git('add', '.humanlayer/tasks/referral-task')
+				await expect(inspect()).rejects.toThrow('Local checkout')
+				git('rm', '--cached', '.humanlayer/tasks/referral-task')
+				await writeFile(join(directory, 'file.txt'), 'unstaged edit')
+				await expect(inspect()).rejects.toThrow('Local checkout')
+				await writeFile(join(directory, 'file.txt'), 'committed content')
+
+				await unlink(artifactLink)
+				const otherStorage = getArtifactStoragePath('01a17a61-73b7-760a-bfc3-1a0e8caac051')
+				await mkdir(otherStorage, { recursive: true })
+				await symlink(otherStorage, artifactLink)
+				await expect(inspect()).rejects.toThrow('Local checkout')
+				await unlink(artifactLink)
+				await writeFile(artifactLink, storage)
+				await expect(inspect()).rejects.toThrow('Local checkout')
+
+				await unlink(artifactLink)
+				const parent = dirname(artifactLink)
+				await rmdir(parent)
+				const outside = join(root, 'outside')
+				await mkdir(outside)
+				await symlink(storage, join(outside, 'referral-task'))
+				await symlink(outside, parent)
+				await expect(inspect()).rejects.toThrow('Local checkout')
+
+				expect(authorize).not.toHaveBeenCalled()
+			} finally {
+				vi.unstubAllEnvs()
+				await rm(root, { recursive: true, force: true })
+			}
 		}),
 	)
 })

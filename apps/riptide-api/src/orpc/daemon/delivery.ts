@@ -57,7 +57,12 @@ export const claimDeliveryProcedure = daemonBase.delivery.claim
 			for (const task of candidates) {
 				await enrollProjectDelivery(tx, task, hostId)
 				if (decodeDelivery(task.automatic_delivery)?.hostId !== hostId) continue
-				const action = await claimTaskDelivery(tx, task, input.supportsObservation === true)
+				const action = await claimTaskDelivery(
+					tx,
+					task,
+					input.supportsObservation === true,
+					input.supportsMergedPublicationRecovery === true,
+				)
 				if (action && action.kind !== 'observe') return withTaskAttention(action)
 				const updated = await lockDeliveryTask(tx, task.id, organizationId)
 				if (!updated) continue

@@ -1,9 +1,12 @@
 import { execFile } from 'node:child_process'
+import { lstat, readlink, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import {
+	DELIVERY_CHECKOUT_BLOCKER,
 	sameDeliveryHeads,
 	type DeliveryCommit,
 	type DeliveryHead,
@@ -13,6 +16,8 @@ import {
 import z from 'zod/v4'
 
 import type { ORPCClient } from '@/orpc/client'
+
+import { getArtifactStoragePath } from '../artifact-location'
 
 const exec = promisify(execFile)
 
@@ -99,16 +104,45 @@ export interface DeliveryCommands {
 }
 const liveCommands: DeliveryCommands = {
 	run: async (binary, args, cwd) => {
-		return (
-			await exec(binary, args, { cwd, timeout: 10_000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' })
-		).stdout.trim()
+		const { stdout } = await exec(binary, args, {
+			cwd,
+			timeout: 10_000,
+			maxBuffer: 2 * 1024 * 1024,
+			encoding: 'utf8',
+		})
+		return binary === 'git' && args[0] === 'status' ? stdout : stdout.trim()
 	},
 }
 
-async function inspectCheckout(commands: DeliveryCommands, target: DeliveryTarget): Promise<string> {
+async function isOnlyTaskArtifactLink(commands: DeliveryCommands, directory: string, status: string, taskId?: string) {
+	// Git reports paths relative to the repository root. Allow one generated,
+	// untracked link only. Full porcelain output keeps every other file visible.
+	const relative = /^\?\? (\.humanlayer\/tasks\/[A-Za-z0-9][A-Za-z0-9._-]*)\0$/.exec(status)?.[1]
+	if (!relative || !status.endsWith('\0') || !taskId || !z.uuidv7().safeParse(taskId).success) return false
+	try {
+		const [root, physicalDirectory] = await Promise.all([
+			commands.run('git', ['rev-parse', '--show-toplevel'], directory),
+			realpath(directory),
+		])
+		if (physicalDirectory !== root) return false
+		if (!(await lstat(join(root, '.humanlayer'))).isDirectory()) return false
+		if (!(await lstat(join(root, '.humanlayer', 'tasks'))).isDirectory()) return false
+		const path = join(root, relative)
+		const expected = getArtifactStoragePath(taskId)
+		return (
+			(await lstat(path)).isSymbolicLink() &&
+			(await readlink(path)) === expected &&
+			(await lstat(expected)).isDirectory()
+		)
+	} catch {
+		return false
+	}
+}
+
+async function inspectCheckout(commands: DeliveryCommands, target: DeliveryTarget, taskId?: string): Promise<string> {
 	const cwd = target.directory
-	const [dirty, branch, localSha, origin] = await Promise.all([
-		commands.run('git', ['status', '--porcelain'], cwd),
+	const [status, branch, localSha, origin] = await Promise.all([
+		commands.run('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], cwd),
 		commands.run('git', ['branch', '--show-current'], cwd),
 		commands.run('git', ['rev-parse', 'HEAD'], cwd),
 		commands.run('git', ['remote', 'get-url', 'origin'], cwd),
@@ -118,11 +152,12 @@ async function inspectCheckout(commands: DeliveryCommands, target: DeliveryTarge
 		.replace(/^https:\/\/github.com\//, '')
 		.replace(/\.git$/, '')
 		.toLowerCase()
-	if (dirty || branch !== target.branch || normalizedOrigin !== target.repository.toLowerCase())
-		throw new DeliveryInspectionError(
-			'checkout',
-			'Local checkout has newer/uncommitted work, a different branch, or a different repository',
-		)
+	if (
+		branch !== target.branch ||
+		normalizedOrigin !== target.repository.toLowerCase() ||
+		(status && !(await isOnlyTaskArtifactLink(commands, cwd, status, taskId)))
+	)
+		throw new DeliveryInspectionError('checkout', DELIVERY_CHECKOUT_BLOCKER)
 	return localSha
 }
 
@@ -153,6 +188,7 @@ async function readPullRequests(commands: DeliveryCommands, target: DeliveryTarg
 export async function inspectCommittedImplementation(
 	targets: DeliveryTarget[],
 	commands: DeliveryCommands,
+	taskId?: string,
 ): Promise<DeliveryCommit[]> {
 	const deadline = Date.now() + 90_000
 	const commits: DeliveryCommit[] = []
@@ -160,7 +196,7 @@ export async function inspectCommittedImplementation(
 		if (Date.now() > deadline) throw new Error('Implementation recovery inspection exceeded its bound')
 		const { directory, branch, base } = target
 		if (branch === base) throw new Error('Implementation recovery requires a separate task branch')
-		const sha = await inspectCheckout(commands, target)
+		const sha = await inspectCheckout(commands, target, taskId)
 		const baseRef = `refs/heads/${base}`
 		const branchRef = `refs/heads/${branch}`
 		const refs = await commands.run('git', ['ls-remote', '--refs', 'origin', baseRef, branchRef], directory)
@@ -198,9 +234,10 @@ async function inspectTarget(
 	commands: DeliveryCommands,
 	target: DeliveryTarget,
 	merging: boolean,
+	taskId: string,
 ): Promise<DeliveryHead> {
 	const cwd = target.directory
-	const localSha = await inspectCheckout(commands, target)
+	const localSha = await inspectCheckout(commands, target, taskId)
 	const prs = await readPullRequests(commands, target)
 	if (prs.length !== 1)
 		throw new DeliveryInspectionError(
@@ -324,7 +361,7 @@ export async function executeDeliveryAction(
 		const head =
 			action.kind === 'observe'
 				? await observeTarget(commands, target, action.heads)
-				: await inspectTarget(commands, target, action.kind === 'merge')
+				: await inspectTarget(commands, target, action.kind === 'merge', action.taskId)
 		heads.push(head)
 	}
 	if (action.kind === 'merge') {
@@ -362,7 +399,7 @@ export async function executeDeliveryAction(
 				head.directory,
 			)
 		}
-		return Promise.all(action.targets.map((target) => inspectTarget(commands, target, false)))
+		return Promise.all(action.targets.map((target) => inspectTarget(commands, target, false, action.taskId)))
 	}
 	return heads
 }
@@ -375,7 +412,7 @@ export function createDeliveryHeartbeatContinuation(orpc: ORPCClient, onError: (
 		inFlight = true
 		try {
 			const { action } = await orpc.delivery.claim(
-				{ supportsObservation: true },
+				{ supportsObservation: true, supportsMergedPublicationRecovery: true },
 				{ signal: AbortSignal.timeout(15_000) },
 			)
 			if (!action) return
@@ -385,7 +422,7 @@ export function createDeliveryHeartbeatContinuation(orpc: ORPCClient, onError: (
 			let inspectionIssue: DeliveryInspectionIssue | undefined
 			try {
 				if (action.kind === 'recover')
-					recoveredCommits = await inspectCommittedImplementation(action.targets, liveCommands)
+					recoveredCommits = await inspectCommittedImplementation(action.targets, liveCommands, action.taskId)
 				else
 					heads = await executeDeliveryAction(
 						action,

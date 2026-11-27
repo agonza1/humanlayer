@@ -5,15 +5,22 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { useHermeticGitConfig } from '@humanlayer/git-attribution/testing'
+import { DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL } from '@humanlayer/schemas/zod/automatic-delivery'
 import { afterAll, describe, expect, test } from 'vitest'
 
-import { getArtifactStoragePath, isGitRepository, setupArtifactPaths } from '../../../src/lib/artifact-paths'
+import {
+	ensureArtifactSymlink,
+	getArtifactStoragePath,
+	isGitRepository,
+	setupArtifactPaths,
+} from '../../../src/lib/artifact-paths'
 import { createMockDaemonServices } from '../../helpers/create-mock-daemon-services'
 
 const execFileAsync = promisify(execFile)
 const createdTaskIds: string[] = []
 const createdTempDirectories: string[] = []
-const daemonRuntime = createMockDaemonServices().daemonRuntime
+const mockServices = createMockDaemonServices()
+const { daemonRuntime } = mockServices
 
 useHermeticGitConfig()
 
@@ -144,6 +151,48 @@ describe('setupArtifactPaths gitignore handling', () => {
 		expect(await readFile(join(cwd, '.gitignore'), 'utf-8')).toBe(
 			'\n# Riptide artifacts (cloud-synced)\n.humanlayer/tasks/\n',
 		)
+	})
+
+	test('keeps a committed .gitignore untouched during a recovered publication review', async () => {
+		const cwd = await initRepository()
+		const gitignorePath = join(cwd, '.gitignore')
+		const originalContents = 'node_modules/\n'
+		await writeFile(gitignorePath, originalContents)
+		await runGit(cwd, 'add', '.gitignore')
+		await runGit(cwd, 'commit', '--quiet', '-m', 'initial commit')
+		const taskId = uniqueTaskId()
+		await ensureArtifactSymlink(cwd, taskId, 'resume-review-task')
+
+		const { collections } = mockServices
+		const recoveryRuntime = createMockDaemonServices({
+			collections: {
+				...collections,
+				sessions: {
+					...collections.sessions,
+					toArray: [
+						{
+							task_id: taskId,
+							archived: false,
+							status: 'running',
+							labels: [{ name: DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL, title: 'review' }],
+						},
+					],
+				} as typeof collections.sessions,
+			},
+		}).daemonRuntime
+		try {
+			await setupArtifactPaths(cwd, taskId, 'resume-review-task', recoveryRuntime)
+			expect(await readFile(gitignorePath, 'utf-8')).toBe(originalContents)
+			const { stdout } = await execFileAsync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+				cwd,
+			})
+			expect(stdout).toBe('?? .humanlayer/tasks/resume-review-task\0')
+		} finally {
+			await recoveryRuntime.dispose()
+		}
+
+		await setupArtifactPaths(cwd, taskId, 'resume-review-task', daemonRuntime)
+		expect(await readFile(gitignorePath, 'utf-8')).toContain('.humanlayer/tasks/\n')
 	})
 
 	test('does not append a second block on repeated setup', async () => {

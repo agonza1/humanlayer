@@ -1,26 +1,21 @@
 import { appendFile, lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+
+import {
+	AutomaticDeliverySchema,
+	DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL,
+} from '@humanlayer/schemas/zod/automatic-delivery'
+import { decodeJsonColumn } from '@humanlayer/schemas/zod/decode-json-column'
+import { Effect } from 'effect'
 
 import { checkArtifactsGitignored } from '@/effects/check-artifacts-gitignored'
 import type { DaemonRuntime } from '@/effects/runtime'
+import { DaemonCollections } from '@/effects/services/daemon-collections/daemon-collections.service'
 import { logger } from '@/logger'
 
-/**
- * Get the UUID-based artifact storage path.
- * ~/.humanlayer/riptide/artifacts/{taskId}/
- */
-export function getArtifactStoragePath(taskId: string): string {
-	return join(homedir(), '.humanlayer', 'riptide', 'artifacts', taskId)
-}
+import { getArtifactStoragePath, getArtifactSymlinkPath } from './artifact-location'
 
-/**
- * Get the in-repo symlink path for artifacts.
- * {cwd}/.humanlayer/tasks/{taskSlug}/
- */
-export function getArtifactSymlinkPath(cwd: string, taskSlug: string): string {
-	return join(cwd, '.humanlayer', 'tasks', taskSlug)
-}
+export { getArtifactStoragePath, getArtifactSymlinkPath } from './artifact-location'
 
 /**
  * Ensure the symlink from in-repo path to UUID storage.
@@ -120,11 +115,36 @@ export async function ensureGitignore(cwd: string): Promise<void> {
 	logger.info({ cwd }, 'Added .humanlayer/tasks/ to .gitignore')
 }
 
+const isMergedPublicationVerification = (taskId: string) =>
+	Effect.gen(function* () {
+		const { tasks, sessions } = yield* (yield* DaemonCollections).current
+		const task = tasks.toArray.find((candidate) => candidate.id === taskId)
+		const delivery = decodeJsonColumn(AutomaticDeliverySchema, task?.automatic_delivery)
+		if (
+			task &&
+			!task.archived &&
+			delivery?.mergedPublicationRecovery &&
+			['inspect', 'review', 'archive'].includes(delivery.phase)
+		)
+			return true
+		// Session and task rows sync separately. The review label keeps its
+		// checkout read-only while the matching task snapshot catches up.
+		return (sessions.toArray ?? []).some(
+			(session) =>
+				session.task_id === taskId &&
+				!session.archived &&
+				['ready_for_launch', 'waiting_for_workspace', 'launching', 'running', 'resuming'].includes(
+					session.status,
+				) &&
+				session.labels?.some((label) => label.name === DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL),
+		)
+	})
+
 /**
  * Set up artifact directory structure for a task.
  * 1. Ensure symlink from {cwd}/.humanlayer/tasks/{slug}/ → UUID storage (also creates storage)
- * 2. Ensure .humanlayer/tasks/ is in .gitignore — skipped when the cwd is not a
- *    git repo (e.g. a multi-repo workspace root), so no stray .gitignore is written there.
+ * 2. Ensure .humanlayer/tasks/ is in .gitignore for ordinary Git checkouts.
+ *    Merged publication verification must leave the checkout unchanged.
  *
  * The symlink (step 1) is required for artifacts to sync, so its failures
  * propagate. The .gitignore step (step 2) is best-effort convenience — a write
@@ -140,6 +160,8 @@ export async function setupArtifactPaths(
 
 	try {
 		if (await isGitRepository(cwd)) {
+			if (await daemonRuntime.runPromise(isMergedPublicationVerification(taskId)))
+				return { storagePath, symlinkPath }
 			const ignoreStatus = await daemonRuntime.runPromise(checkArtifactsGitignored({ cwd }))
 			if (ignoreStatus === 'not-ignored') await ensureGitignore(cwd)
 		} else {
