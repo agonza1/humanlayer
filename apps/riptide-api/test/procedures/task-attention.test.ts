@@ -1,6 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
@@ -19,8 +21,11 @@ import { Effect, Layer } from 'effect'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { lockDeliveryTask } from '../../src/db/automatic-delivery'
+import { reserveTaskAttentionAlert, validateSlackBlockerDispatch } from '../../src/db/delivery-blocker-alerts'
 import type { AppRuntime } from '../../src/effects/app-runtime'
 import { SlackService } from '../../src/effects/services/slack/slack.service'
+import { syncTasksProcedure } from '../../src/orpc/api/sync/tasks'
 import {
 	acknowledgeTaskAttentionProcedure,
 	clearTaskAttentionProcedure,
@@ -35,6 +40,8 @@ import { createTestDb } from '../utils/test-db'
 
 await requireExternalTestServices()
 
+const bridgeRelay = process.env.HUMANLAYER_SLACK_E2E_RELAY
+const exec = promisify(execFile)
 const confirmed = { status: 'delivered', receipt: 'T_TEST/C_TEST/1710000000.000002' } as const
 const externalWait = {
 	kind: 'external_wait' as const,
@@ -269,6 +276,8 @@ describe('Authored task attention', () => {
 		})
 		expect(sends.slice(initialSends)).toHaveLength(1)
 		expect(sends.at(-1)?.reason).toBe('An external follow-up is due.')
+		expect(sends.at(-1)).not.toHaveProperty('attention')
+		expect(sends.at(-1)).not.toHaveProperty('standing.attention')
 
 		const { attention: edited } = await f.set(
 			{ ...externalWait, reason: 'Same dependency, updated evidence.', followUpAt },
@@ -340,8 +349,7 @@ describe('Authored task attention', () => {
 		expect(sends.slice(start)).toHaveLength(1)
 	})
 
-	it('rearms after a new standing grant and does not reissue an uncertain acknowledgement', async () => {
-		const f = await fixture('none', false)
+	async function standingGrant(f: Awaited<ReturnType<typeof fixture>>, script?: string) {
 		const [project] = await db
 			.insert(projects)
 			.values({
@@ -367,12 +375,18 @@ describe('Authored task attention', () => {
 			channelId: 'DSTANDING',
 			botUserId: 'USTANDINGBOT',
 			recipientUserId: 'USTANDINGOWNER',
-			executable: '/bin/false',
-			script: '/unused-provider',
-			providerConfigFile: '/unused-config',
+			executable: script ? process.execPath : '/bin/false',
+			script: script ?? '/unused-provider',
+			providerConfigFile: script ? join(directory, 'provider.json') : '/unused-config',
 		}
 		vi.stubEnv('APP_ORIGIN', appOrigin)
 		vi.stubEnv('HUMANLAYER_LOCAL_STANDING_SLACK_ALERT_RELAY_FILE', grant)
+		return { directory, grant, route }
+	}
+
+	it('rearms after a new standing grant and does not reissue an uncertain acknowledgement', async () => {
+		const f = await fixture('none', false)
+		const { directory, grant, route } = await standingGrant(f)
 		try {
 			await f.set(ownerInput)
 			await f.heartbeat()
@@ -396,4 +410,118 @@ describe('Authored task attention', () => {
 			await rm(directory, { recursive: true, force: true })
 		}
 	})
+
+	it('prepares the current authored details only for a still-due private dispatch', async () => {
+		const f = await fixture('none', false)
+		const { directory, grant, route } = await standingGrant(f)
+		try {
+			await writeFile(grant, JSON.stringify(route), { mode: 0o600 })
+			const followUpAt = Date.now() - 100
+			const { attention } = await f.set({ ...externalWait, followUpAt })
+			const [dispatch] = await db.transaction(async (tx) => {
+				const task = await lockDeliveryTask(tx, f.taskId, f.organizationId)
+				return reserveTaskAttentionAlert(tx, task!, f.hostId, Date.now())
+			})
+			expect(dispatch).toBeDefined()
+
+			const revised = { ...externalWait, nextAction: 'Ask the provider for the exact window.', followUpAt }
+			const withEvidence = { ...revised, evidence: 'Private meeting notes.' }
+			const { attention: current } = await f.set(withEvidence, key(attention!))
+			const preflight = () => db.transaction((tx) => validateSlackBlockerDispatch(tx, dispatch!))
+			expect(await preflight()).toEqual({ slots: ['slack'], attention: revised })
+
+			await f.set({ ...revised, followUpAt: Date.now() + 60_000 }, key(current!))
+			expect(await preflight()).toEqual({ slots: [] })
+		} finally {
+			vi.unstubAllEnvs()
+			await rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(!bridgeRelay)(
+		'delivers a due private Slack alert once and answers a reply with the current task',
+		async () => {
+			if (!bridgeRelay || !isAbsolute(bridgeRelay))
+				throw new Error('Expected an absolute Slack bridge fixture path')
+
+			const f = await fixture('none', false)
+			const { directory, grant, route } = await standingGrant(f, bridgeRelay)
+			try {
+				await writeFile(route.providerConfigFile, JSON.stringify({ route }), { mode: 0o600 })
+				await writeFile(grant, JSON.stringify(route), { mode: 0o600 })
+				const followUpAt = Date.parse('2025-06-15T12:00:00Z')
+				const due = {
+					kind: 'external_wait' as const,
+					reason: 'The example provider is checking campaign limits.',
+					responsible: 'Example provider',
+					nextAction: 'Confirm the original counting window.',
+					evidence: 'Private fixture evidence.',
+					followUpAt,
+				}
+				const { attention } = await f.set(due)
+				await f.heartbeat()
+
+				const notice = (await f.read()).task_attention!.notice!
+				const ts = '1750000000.000001'
+				expect(notice.slack).toMatchObject({
+					status: 'delivered',
+					receipt: `${route.teamId}/${route.channelId}/${ts}`,
+				})
+				const postedPath = route.providerConfigFile + '.posted'
+				const posted = await readFile(postedPath, 'utf8')
+				expect(JSON.parse(posted)).toMatchObject({
+					channel: route.channelId,
+					ts,
+					text: expect.stringContaining(due.reason),
+				})
+				expect(posted).toContain(due.responsible)
+				expect(posted).toContain(due.nextAction)
+				expect(posted).toContain('Due · 2025-06-15 12:00 UTC')
+				expect(posted).toContain(`${route.appOrigin}/tasks/${f.taskId}`)
+				expect(posted).not.toContain(due.evidence)
+
+				const retainedPost = postedPath + '.retained'
+				await rename(postedPath, retainedPost)
+				await f.heartbeat()
+				expect((await f.read()).task_attention!.notice).toEqual(notice)
+				await expect(readFile(postedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+				await rename(retainedPost, postedPath)
+
+				const reason = 'The example provider changed the accounting period.'
+				const nextAction = 'Request the revised counting window in writing.'
+				await f.set({ ...due, reason, nextAction }, key(attention!))
+				const { rows } = await call(
+					syncTasksProcedure,
+					{ where: { type: 'comparison', field: ['id'], operator: 'eq', value: f.taskId }, limit: 1 },
+					f.api(),
+				)
+				const [task] = rows
+				expect(task?.task_attention).toMatchObject({ reason, nextAction, notice })
+
+				const request = JSON.stringify({ task, expectedNextAction: nextAction }, (_key, value) =>
+					typeof value === 'bigint' ? value.toString() : value,
+				)
+				const reply = exec(process.execPath, [bridgeRelay, 'reply', route.providerConfigFile], {
+					encoding: 'utf8',
+					timeout: 15_000,
+					maxBuffer: 4096,
+					env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+				})
+				reply.child.stdin?.on('error', () => undefined)
+				reply.child.stdin?.end(request)
+				const { stdout } = await reply
+				expect(JSON.parse(stdout)).toEqual({
+					nextAction,
+					specialist: 'coder',
+					sameThread: true,
+					postedReplies: 2,
+					duplicateRuns: 0,
+				})
+			} finally {
+				vi.unstubAllEnvs()
+				await rm(directory, { recursive: true, force: true })
+			}
+		},
+		30_000,
+	)
 })

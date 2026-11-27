@@ -8,10 +8,15 @@ import {
 	IMPLEMENTATION_BLOCKERS,
 	type ImplementationBlocker,
 } from '@humanlayer/schemas/zod/implementation-reconciliation'
+import { TaskAttentionInputSchema, type TaskAttention } from '@humanlayer/schemas/zod/task-attention'
 import { z } from 'zod/v4'
 
 type RouteScope = { routeId: string; organizationId: string; ownerId: string; taskId: string }
 type StandingScope = Omit<RouteScope, 'routeId'> & { projectId: string }
+export type LocalSlackTaskAttention = Pick<
+	TaskAttention,
+	'kind' | 'reason' | 'responsible' | 'nextAction' | 'followUpAt'
+>
 type LocalSlackAlert = RouteScope & {
 	alertId: string
 	teamId: string
@@ -22,6 +27,7 @@ type LocalSlackAlert = RouteScope & {
 		taskLabel: string
 		blocker?: ImplementationBlocker
 		revision: string
+		attention?: LocalSlackTaskAttention
 	}
 }
 
@@ -191,6 +197,24 @@ function normalizeTaskLabel(label: string, taskId: string) {
 	return normalized || `Task ${taskId.slice(-8)}`
 }
 
+function normalizeAttentionText(value: string) {
+	return value
+		.replace(/[\p{Cc}\p{Bidi_Control}\p{Cs}]/gu, ' ')
+		.replace(/\s+/gu, ' ')
+		.trim()
+}
+
+function normalizeAttention(attention: LocalSlackTaskAttention | undefined) {
+	if (!attention) return undefined
+	return TaskAttentionInputSchema.safeParse({
+		kind: attention.kind,
+		reason: normalizeAttentionText(attention.reason),
+		responsible: normalizeAttentionText(attention.responsible),
+		nextAction: normalizeAttentionText(attention.nextAction),
+		followUpAt: attention.followUpAt,
+	}).data
+}
+
 /** The local runner owns the Slack token. The relay receives only the approved destination and notice fields. */
 export function postLocalSlackDeliveryBlocker(input: LocalSlackAlert): Promise<DeliveryAlertReceipt> {
 	const { standing } = input
@@ -227,6 +251,7 @@ export function postLocalSlackDeliveryBlocker(input: LocalSlackAlert): Promise<D
 				projectId: standing.projectId,
 				taskLabel: normalizeTaskLabel(standing.taskLabel, input.taskId),
 				blocker: standing.blocker,
+				attention: normalizeAttention(standing.attention),
 			}
 		: commonRequest
 	return new Promise((resolve) => {

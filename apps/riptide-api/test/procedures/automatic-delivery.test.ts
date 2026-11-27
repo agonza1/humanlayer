@@ -592,10 +592,10 @@ describe('Persisted automatic delivery', () => {
 				standing: { projectId: project!.id, taskLabel: 'Deliver' },
 				slots: ['slack'],
 			})
-			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual(['slack'])
+			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual({ slots: ['slack'] })
 
 			await rm(grant)
-			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual([])
+			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual({ slots: [] })
 			await f.locked((tx) => finishSlackBlockerDispatch(tx, dispatch!, { kind: 'preflight', canceled: true }))
 			await writeFile(grant, JSON.stringify({ ...route, routeId: uuidv7() }), { mode: 0o600 })
 			const [retry] = await f.locked(reserveDeliveryBlockerAlerts)

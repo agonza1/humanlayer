@@ -226,6 +226,37 @@ describe('local Slack delivery alert relay', () => {
 		])
 	})
 
+	it('sends only useful authored details through the private standing grant', async () => {
+		const input = standingAlert('Follow-up due · Confirm provider limits')
+		const attention = {
+			kind: 'external_wait' as const,
+			reason: '\n Wait for a résumé and R&D figures.\u202e  ',
+			responsible: ' Jo\u0000 Santos ',
+			nextAction: 'Confirm <10  cases\nwith Jo 👩‍💻.\ud800',
+			followUpAt: 1710000000000,
+			evidence: 'private transcript',
+			authorizedBy: scope.ownerId,
+		}
+		await expect(
+			postLocalSlackDeliveryBlocker({
+				...input,
+				standing: { ...input.standing, blocker: undefined, attention },
+			}),
+		).resolves.toEqual(confirmed)
+		const legacy = { ...alert, attention }
+		await expect(postLocalSlackDeliveryBlocker(legacy)).resolves.toEqual(confirmed)
+
+		const [standingRequest, legacyRequest] = readRequests()
+		expect(standingRequest.attention).toEqual({
+			kind: 'external_wait',
+			reason: 'Wait for a résumé and R&D figures.',
+			responsible: 'Jo Santos',
+			nextAction: 'Confirm <10 cases with Jo 👩‍💻.',
+			followUpAt: 1710000000000,
+		})
+		expect(legacyRequest).not.toHaveProperty('attention')
+	})
+
 	it('keeps version, grant, project, task, destination, and sender mismatches unconfirmed', async () => {
 		const input = standingAlert()
 		for (const mismatch of [
