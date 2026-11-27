@@ -31,6 +31,13 @@ vi.mock('@tanstack/react-router', () => ({
 		</a>
 	),
 }))
+vi.mock('@/hooks/useBoardHosts', async () => {
+	const { describeBoardTask } = await import('@humanlayer/schemas/task-board')
+	return {
+		useBoardTask: (task: Parameters<typeof describeBoardTask>[0] | null, sessions: Session[]) =>
+			task && describeBoardTask(task, sessions),
+	}
+})
 vi.mock('@/minimalist/lib/data', () => ({
 	useTask: () => ({ task: data.task, sessions: data.sessions, isReady: true }),
 	useSession: (id: string) => data.sessions.find((session) => session.id === id) ?? null,

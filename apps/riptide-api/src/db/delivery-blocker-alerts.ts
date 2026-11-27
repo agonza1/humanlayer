@@ -8,6 +8,8 @@ import { slackNotificationThreads } from '@humanlayer/db/tables/slack-notificati
 import type { tasks } from '@humanlayer/db/tables/tasks'
 import {
 	decodeDelivery,
+	mergedAttentionObservation,
+	MERGED_PR_ATTENTION,
 	type AutomaticDelivery,
 	type DeliveryAlertReceipt,
 	type DeliveryAlertRoutesInputSchema,
@@ -26,6 +28,7 @@ import {
 	resolveLocalSlackAlertRoute,
 	resolveStandingLocalSlackAlertRoute,
 	type LocalSlackTaskAttention,
+	type PrivateSlackFields,
 } from '../lib/local-slack-alert-relay'
 import { deliveryContext, lockDeliveryTask, saveDelivery, type DeliveryTransaction } from './automatic-delivery'
 import {
@@ -348,17 +351,9 @@ async function isExhaustedAndIdle(tx: DeliveryTransaction, task: Task, blocker: 
 	)
 }
 
-function wasMergedOnGitHub(delivery: AutomaticDelivery | undefined) {
-	const observed = delivery?.attentionObservation
-	return (
-		!!observed && observed.heads.length === delivery?.targets.length && observed.heads.every((head) => head.merged)
-	)
-}
-
 function reminderReason(blocker: ActiveBlocker) {
 	const diagnosis = blocker.delivery?.attentionDiagnosis
-	if (wasMergedOnGitHub(blocker.delivery))
-		return 'PR merged on GitHub. Verify remaining acceptance before completing this task.'
+	if (mergedAttentionObservation(blocker.delivery)) return MERGED_PR_ATTENTION
 	if (diagnosis) return [diagnosis.reason, diagnosis.nextAction].join(' ')
 	return blocker.reason
 }
@@ -631,13 +626,15 @@ function dispatchAlert(alert: BlockerAlert, alertId: string) {
 export async function validateSlackBlockerDispatch(
 	tx: DeliveryTransaction,
 	dispatch: SlackBlockerDispatch,
-): Promise<{ slots: Slot[]; attention?: LocalSlackTaskAttention }> {
+): Promise<{ slots: Slot[] } & PrivateSlackFields> {
 	const task = await lockDeliveryTask(tx, dispatch.taskId, dispatch.organizationId)
 	if (!task || task.resource_owner_user_id !== dispatch.ownerId) return { slots: [] }
 	const authored = dispatch.taskAttention
 	let alert: AlertDelivery | undefined
 	let routes: AlertRoutes | undefined
 	let currentAttention: LocalSlackTaskAttention | undefined
+	let guidance: string | undefined
+	let githubUrl = task.ticket_provider === 'github' ? (task.ticket_url ?? undefined) : undefined
 	if (authored) {
 		const attention = activeTaskAttention(task)
 		if (
@@ -678,6 +675,12 @@ export async function validateSlackBlockerDispatch(
 			if (!managed || managed.archived || !['needs_approval', 'waiting_for_usage_limit'].includes(managed.status))
 				return { slots: [] }
 		}
+		if (blocker.delivery) {
+			guidance = reminderReason(blocker)
+			const heads = blocker.delivery.attentionObservation?.heads ?? blocker.delivery.heads
+			const head = heads.length === 1 ? heads[0] : undefined
+			if (head) githubUrl = `https://github.com/${head.repository}/pull/${head.number}`
+		}
 		routes = blocker.routes
 	}
 
@@ -702,7 +705,7 @@ export async function validateSlackBlockerDispatch(
 			continue
 		slots.push(slot)
 	}
-	return { slots, attention: dispatch.standing && slots.length ? currentAttention : undefined }
+	return dispatch.standing && slots.length ? { slots, attention: currentAttention, guidance, githubUrl } : { slots }
 }
 
 export async function finishSlackBlockerDispatch(

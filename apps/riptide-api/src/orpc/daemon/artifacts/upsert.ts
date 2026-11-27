@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto'
+
 import { checkIfDesignDocHasOpenQuestions } from '@humanlayer/ai/design-doc-open-questions'
 import { artifactOperationsLog } from '@humanlayer/db/tables/artifact-operations-log'
-import { artifactVersions } from '@humanlayer/db/tables/artifact-versions'
 import { artifacts } from '@humanlayer/db/tables/artifacts'
 import { sessions } from '@humanlayer/db/tables/sessions'
 import {
@@ -10,15 +11,20 @@ import {
 	DeliveryAttentionDiagnosisSchema,
 	DeliveryReviewSchema,
 } from '@humanlayer/schemas/zod/automatic-delivery'
+import { decodeJsonColumn } from '@humanlayer/schemas/zod/decode-json-column'
 import { and, eq, sql } from 'drizzle-orm'
 import { Effect } from 'effect'
 import { hash } from 'ohash'
+import z from 'zod/v4'
 
+import { authorTaskAttention } from '../../../db/author-task-attention'
 import { acceptDeliveryReview, lockDeliveryTask, saveDelivery } from '../../../db/automatic-delivery'
 import { getTxId } from '../../../db/get-tx-id'
+import { activeTaskAttention, saveTaskAttention } from '../../../db/task-attention'
 import { getTaskWithEffectivePermissions } from '../../../db/task-auth'
+import { findDesignSession, findTaskArtifact, persistTextArtifact } from '../../../db/text-artifact'
 import { OnboardingService } from '../../../effects/services/onboarding/onboarding.service'
-import { SlackService } from '../../../effects/services/slack/slack.service'
+import { notifyArtifactCreated } from '../../../effects/services/slack/slack.service'
 import { Sentry } from '../../../instrument'
 import { MAX_TEXT_CONTENT_BYTES } from '../../../lib/constants'
 import { normalizeSubpath } from '../../../lib/normalize-subpath'
@@ -28,16 +34,26 @@ import { daemonBase, requiresDaemonBillingMiddleware } from '../../base'
 
 const DESIGN_QUESTION_RESOLUTION_DOCUMENT_TYPES: readonly string[] = ['design-discussion']
 
+// Each named sign-off is one immutable receipt per saved design revision, including after resolution.
+const reviewCheckpoint =
+	/^(\d+-(prd|tdd)-[a-z0-9-]+)\.(solution-review|system-design-review|program-design-review)\.([a-f0-9]{64})\.json$/
+const decisionDetails = z.strictObject({
+	question: z.string().trim().min(1).max(240),
+	recommendation: z.string().trim().min(1).max(240),
+	nextAction: z.string().trim().min(1).max(500),
+})
+
 export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 	.use(requiresDaemonBillingMiddleware)
 	.handler(async ({ input, context, errors }) => {
-		const { id: clientId, taskId, fileName: rawFileName, sessionId, operationType } = input
+		const { taskId, fileName: rawFileName, sessionId, operationType } = input
 		// Postgres rejects U+0000 in text and jsonb. Strip before hashing so content_hash
 		// matches the stored content (see lib/strip-null-bytes.ts).
 		const content = stripNullBytes(input.content)
 		const operationContents = stripNullBytes(input.operationContents)
 		const frontmatter = stripNullBytes(input.frontmatter)
 		const fileName = normalizeSubpath(rawFileName)
+		const checkpoint = reviewCheckpoint.exec(fileName)
 		const deliveryDiagnosis = sessionId && fileName === `delivery-diagnosis-${sessionId}.json`
 		const { organizationId, userId } = context.auth
 		const { services } = context
@@ -70,6 +86,23 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 					throw errors.FORBIDDEN({ message: 'Edit permission required to create or update artifacts' })
 				}
 
+				const evidenceSession = async (id: string) => {
+					const [writer] = await tx
+						.select()
+						.from(sessions)
+						.where(
+							and(
+								eq(sessions.id, id),
+								eq(sessions.organization_id, organizationId),
+								eq(sessions.task_id, taskId),
+								eq(sessions.host_id, context.auth.hostId),
+								eq(sessions.created_by, userId),
+							),
+						)
+						.for('no key update')
+					if (!writer) throw errors.FORBIDDEN()
+					return writer
+				}
 				const taskSlug = task.slug
 				if (deliveryDiagnosis) {
 					const deliveryTask = await lockDeliveryTask(tx, taskId, organizationId)
@@ -86,18 +119,10 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 						delivery.managedSessionId !== sessionId
 					)
 						throw errors.FORBIDDEN()
-					const [diagnostician] = await tx
-						.select()
-						.from(sessions)
-						.where(and(eq(sessions.id, sessionId), eq(sessions.organization_id, organizationId)))
-						.for('no key update')
+					const diagnostician = await evidenceSession(sessionId)
 					if (
-						!diagnostician ||
 						diagnostician.archived ||
 						diagnostician.status !== 'running' ||
-						diagnostician.host_id !== context.auth.hostId ||
-						diagnostician.task_id !== taskId ||
-						diagnostician.created_by !== userId ||
 						diagnostician.resource_owner_user_id !== userId ||
 						diagnostician.coding_agent !== 'codelayer' ||
 						diagnostician.provider !== 'codex' ||
@@ -106,25 +131,16 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 						!diagnostician.labels?.some((label) => label.name === DELIVERY_DIAGNOSIS_LABEL)
 					)
 						throw errors.FORBIDDEN()
-					let value: unknown
-					try {
-						if (contentBytes <= 4096) value = JSON.parse(content)
-					} catch {
-						// Report malformed evidence without including the generated text in logs.
-					}
-					const parsed = DeliveryAttentionDiagnosisSchema.safeParse(value)
-					if (!parsed.success)
+					const parsed = contentBytes <= 4096 && decodeJsonColumn(DeliveryAttentionDiagnosisSchema, content)
+					if (!parsed)
 						throw errors.BAD_REQUEST({
 							data: { message: 'Blocker diagnosis must contain a short reason and a next action.' },
 						})
 					const existing = delivery.attentionDiagnosis
-					if (
-						existing &&
-						(existing.reason !== parsed.data.reason || existing.nextAction !== parsed.data.nextAction)
-					)
+					if (existing && (existing.reason !== parsed.reason || existing.nextAction !== parsed.nextAction))
 						throw errors.FORBIDDEN()
 					if (!existing) {
-						delivery.attentionDiagnosis = parsed.data
+						delivery.attentionDiagnosis = parsed
 						await saveDelivery(tx, deliveryTask, delivery)
 					}
 				}
@@ -132,33 +148,12 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 					const deliveryTask = await lockDeliveryTask(tx, taskId, organizationId)
 					const delivery = decodeDelivery(deliveryTask?.automatic_delivery)
 					if (deliveryTask && delivery?.phase === 'review' && sessionId === delivery.managedSessionId) {
-						const [reviewer] = await tx
-							.select()
-							.from(sessions)
-							.where(and(eq(sessions.id, sessionId), eq(sessions.organization_id, organizationId)))
+						await evidenceSession(sessionId)
+						const parsed = decodeJsonColumn(DeliveryReviewSchema, content)
 						if (
-							!reviewer ||
-							reviewer.host_id !== context.auth.hostId ||
-							reviewer.task_id !== taskId ||
-							reviewer.created_by !== userId
-						)
-							throw errors.FORBIDDEN()
-						let value: unknown
-						try {
-							value = JSON.parse(content)
-						} catch {
-							throw errors.BAD_REQUEST({
-								data: {
-									message:
-										'Could not read review evidence. Write a complete JSON document and try again.',
-								},
-							})
-						}
-						const parsed = DeliveryReviewSchema.safeParse(value)
-						if (
-							!parsed.success ||
-							parsed.data.sessionId !== sessionId ||
-							!(await acceptDeliveryReview(tx, deliveryTask, parsed.data))
+							!parsed ||
+							parsed.sessionId !== sessionId ||
+							!(await acceptDeliveryReview(tx, deliveryTask, parsed))
 						)
 							throw errors.BAD_REQUEST({
 								data: {
@@ -168,103 +163,126 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 							})
 					}
 				}
-				const resourceOwnerUserId = task.resource_owner_user_id ?? userId
+				const existingArtifact = await findTaskArtifact(tx, taskId, fileName)
 
-				// 3. Check if artifact exists
-				const [existingArtifact] = await tx
-					.select()
-					.from(artifacts)
-					.where(and(eq(artifacts.task_id, taskId), eq(artifacts.file_name, fileName)))
-					.limit(1)
-
-				let artifactId: string
-				let created = false
-				let versionNumber: number | undefined
-
-				if (existingArtifact) {
-					// UPDATE existing artifact
-					artifactId = existingArtifact.id
-
-					// Only create version if content changed
-					if (existingArtifact.content_hash !== contentHash) {
-						// Get next version number
-						const [maxVersion] = await tx
-							.select({ max: sql<number>`MAX(version_number)` })
-							.from(artifactVersions)
-							.where(eq(artifactVersions.artifact_id, artifactId))
-
-						versionNumber = (maxVersion?.max ?? 0) + 1
-
-						// Create version with previous content
-						await tx.insert(artifactVersions).values({
-							artifact_id: artifactId,
-							task_id: taskId,
-							task_slug: taskSlug,
-							resource_owner_user_id: resourceOwnerUserId,
-							organization_id: organizationId,
-							content: existingArtifact.content ?? '',
-							content_hash: existingArtifact.content_hash ?? '',
-							created_by: userId,
-							version_number: versionNumber,
-						})
+				// Ordinary artifact uploads can share a filename. Only this procedure can
+				// write the acceptance receipt (whose log ID is its own artifact's ID).
+				let newCheckpoint = false
+				if (checkpoint) {
+					const [, stem, kind, gate, digest] = checkpoint
+					const [receipt] = existingArtifact
+						? await tx
+								.select({
+									hash: sql<string>`${artifactOperationsLog.operation_contents} ->> 'contentHash'`,
+								})
+								.from(artifactOperationsLog)
+								.where(
+									and(
+										eq(artifactOperationsLog.id, existingArtifact.id),
+										eq(artifactOperationsLog.artifact_id, existingArtifact.id),
+									),
+								)
+						: []
+					if (receipt) {
+						if (receipt.hash !== contentHash || existingArtifact?.is_deleted)
+							throw errors.BAD_REQUEST({
+								data: { message: 'A recorded review checkpoint cannot be rewritten.' },
+							})
+					} else {
+						if (
+							!sessionId ||
+							!operationType ||
+							operationType === 'Read' ||
+							task.resource_owner_user_id !== userId
+						)
+							throw errors.FORBIDDEN()
+						const deliveryTask = await lockDeliveryTask(tx, taskId, organizationId)
+						if (!deliveryTask || deliveryTask.archived || deliveryTask.is_draft) throw errors.FORBIDDEN()
+						const delivery = decodeDelivery(deliveryTask.automatic_delivery)
+						if (
+							delivery?.authorizedBy === userId &&
+							delivery.hostId &&
+							delivery.hostId !== context.auth.hostId
+						)
+							throw errors.FORBIDDEN()
+						const writer = await evidenceSession(sessionId)
+						const type = `design-${kind}`
+						if (
+							writer.resource_owner_user_id !== userId ||
+							writer.status !== 'running' ||
+							writer.archived ||
+							!writer.labels?.some((label) => label.name === `rpi:${type}`) ||
+							(kind === 'prd') !== (gate === 'solution-review')
+						)
+							throw errors.FORBIDDEN()
+						const file = `${stem}.md`
+						const [design] = await tx
+							.select({ frontmatter: artifacts.frontmatter, content: artifacts.content })
+							.from(artifacts)
+							.where(
+								and(
+									eq(artifacts.task_id, taskId),
+									eq(artifacts.organization_id, organizationId),
+									eq(artifacts.file_name, file),
+									eq(artifacts.is_deleted, false),
+								),
+							)
+							.for('share')
+						const decision = contentBytes <= 8192 && decodeJsonColumn(decisionDetails, content)
+						if (
+							design?.frontmatter.type !== type ||
+							createHash('sha256').update(design.content).digest('hex') !== digest ||
+							!decision
+						)
+							throw errors.BAD_REQUEST({
+								data: {
+									message:
+										'Save the matching design revision first and include the checkpoint question, recommendation and next action.',
+								},
+							})
+						if (activeTaskAttention(deliveryTask))
+							throw errors.BAD_REQUEST({
+								data: {
+									message: 'Resolve the current attention request before opening a new checkpoint.',
+								},
+							})
+						newCheckpoint = true
+						const { question, recommendation, nextAction } = decision
+						await saveTaskAttention(
+							tx,
+							deliveryTask,
+							authorTaskAttention(
+								{
+									kind: 'owner_input',
+									responsible: 'Task owner',
+									reason: `${question} Recommendation: ${recommendation}`,
+									nextAction,
+									evidence: file,
+								},
+								userId,
+							),
+							true,
+						)
 					}
+				}
 
-					// Update artifact
-					await tx
-						.update(artifacts)
-						.set({
-							content,
-							content_hash: contentHash,
-							task_slug: taskSlug,
-							frontmatter: frontmatter ?? {},
-							last_updated_at: BigInt(Date.now()),
-							is_deleted: false,
-							// Reset S3 fields — text upsert always means postgres storage
-							storage_type: 'postgres',
-							s3_key: null,
-							content_type: null,
-							file_size_bytes: null,
-						})
-						.where(eq(artifacts.id, artifactId))
-				} else {
-					// CREATE new artifact (use client-provided ID if given)
-					const newArtifactValues: typeof artifacts.$inferInsert = {
-						task_id: taskId,
-						task_slug: taskSlug,
-						file_name: fileName,
+				const result = await persistTextArtifact(
+					tx,
+					existingArtifact,
+					task,
+					userId,
+					{
+						...input,
+						fileName,
 						content,
-						content_hash: contentHash,
-						frontmatter: frontmatter ?? {},
-						resource_owner_user_id: resourceOwnerUserId,
-						organization_id: organizationId,
-						created_by: userId,
-					}
-					if (clientId) newArtifactValues.id = clientId
-					const [newArtifact] = await tx.insert(artifacts).values(newArtifactValues).returning()
-
-					if (!newArtifact) throw new Error('insert returned no row')
-					artifactId = newArtifact.id
-					created = true
-				}
-
-				// Log operation if operationType and operationContents provided
-				if (operationType && operationContents) {
-					await tx.insert(artifactOperationsLog).values({
-						artifact_id: artifactId,
-						session_id: sessionId ?? null,
-						task_id: taskId,
-						task_slug: taskSlug,
-						resource_owner_user_id: resourceOwnerUserId,
-						organization_id: organizationId,
-						created_by: userId,
-						operation_type: operationType,
-						operation_contents: operationContents,
-						version_created: versionNumber !== undefined,
-					})
-				}
-
-				const txid = await getTxId(tx)
-				return { artifactId, txid, created, versionNumber, resourceOwnerUserId, taskSlug }
+						contentHash,
+						frontmatter,
+						operationContents,
+					},
+					Date.now(),
+					newCheckpoint,
+				)
+				return { ...result, txid: await getTxId(tx), taskSlug }
 			})
 
 			const output = {
@@ -274,43 +292,29 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				versionNumber: txResult.versionNumber,
 			}
 
-			// Diagnosis text is private task evidence. The native blocker dispatch owns
-			// external delivery and deliberately keeps its payload independently scoped.
-			if (deliveryDiagnosis) return output
+			// The task attention dispatcher owns external delivery for private evidence.
+			if (deliveryDiagnosis || checkpoint) return output
 
 			// Fire-and-forget onboarding artifact milestones. Each method no-ops unless
 			// the artifact matches its kind (design discussion >=2 versions, structure
 			// outline written, or pr-description written), so detaching unconditionally
 			// is safe. Failures are swallowed to Sentry and never affect the upsert.
 			const onboardingSource = 'daemon.artifacts.upsert'
-			const onboardingFrontmatterType = frontmatter?.type as string | undefined
+			const documentType = frontmatter?.type as string | undefined
+			const milestone = {
+				resourceOwnerUserId: txResult.resourceOwnerUserId,
+				artifactId: txResult.artifactId,
+				taskId,
+				fileName,
+				frontmatterType: documentType,
+				versionNumber: txResult.versionNumber,
+			}
 			services.effectRuntime.runFork(
 				Effect.gen(function* () {
 					const onboarding = yield* OnboardingService
-					// Day-3 (lite): design discussion iterated to >=2 versions.
-					yield* onboarding.recordDesignDocIterated({
-						resourceOwnerUserId: txResult.resourceOwnerUserId,
-						artifactId: txResult.artifactId,
-						taskId,
-						fileName,
-						frontmatterType: onboardingFrontmatterType,
-						versionNumber: txResult.versionNumber,
-					})
-					// Day-7 (full): a structure-outline artifact was written.
-					yield* onboarding.recordStructureOutlineCreated({
-						resourceOwnerUserId: txResult.resourceOwnerUserId,
-						artifactId: txResult.artifactId,
-						taskId,
-						fileName,
-						frontmatterType: onboardingFrontmatterType,
-					})
-					// Day-10 (full): a pr-description artifact was written (implementation complete).
-					yield* onboarding.recordImplementationComplete({
-						resourceOwnerUserId: txResult.resourceOwnerUserId,
-						artifactId: txResult.artifactId,
-						taskId,
-						fileName,
-					})
+					yield* onboarding.recordDesignDocIterated(milestone)
+					yield* onboarding.recordStructureOutlineCreated(milestone)
+					yield* onboarding.recordImplementationComplete(milestone)
 				}).pipe(
 					Effect.catch((err) =>
 						Effect.sync(() => {
@@ -327,62 +331,20 @@ export const upsertArtifactProcedure = daemonBase.artifacts.upsert
 				),
 			)
 
-			if (txResult.created) {
+			if (txResult.created)
 				services.effectRuntime.runFork(
-					Effect.gen(function* () {
-						const slack = yield* SlackService
-						yield* slack.dispatchArtifactEvent({
-							organizationId,
-							taskId,
-							taskSlug: txResult.taskSlug,
-							artifactId: txResult.artifactId,
-							fileName,
-							artifactType: onboardingFrontmatterType,
-							resourceOwnerUserId: txResult.resourceOwnerUserId,
-							actorUserId: userId,
-							created: true,
-							versionNumber: txResult.versionNumber,
-						})
-					}).pipe(
-						Effect.catchCause((cause) =>
-							Effect.gen(function* () {
-								yield* Effect.logError('Slack daemon artifact dispatch defect', cause)
-								yield* Effect.sync(() => {
-									Sentry.captureException(cause, {
-										tags: { error_type: 'slack_dispatch_defect' },
-										extra: { organizationId, taskId, artifactId: txResult.artifactId },
-									})
-								})
-							}),
-						),
-					),
+					notifyArtifactCreated(txResult, {
+						organizationId,
+						taskId,
+						actorUserId: userId,
+						fileName,
+						artifactType: documentType,
+					}),
 				)
-			}
 
-			const documentType = frontmatter?.type as string | undefined
-			if (!documentType || !DESIGN_QUESTION_RESOLUTION_DOCUMENT_TYPES.includes(documentType)) {
+			if (!sessionId || !documentType || !DESIGN_QUESTION_RESOLUTION_DOCUMENT_TYPES.includes(documentType))
 				return output
-			}
-
-			if (!sessionId) {
-				return output
-			}
-
-			const [designSession] = await db
-				.select({ id: sessions.id })
-				.from(sessions)
-				.where(
-					and(
-						eq(sessions.id, sessionId),
-						eq(sessions.organization_id, organizationId),
-						sql`(
-						${sessions.labels} @> '[{"name":"rpi:design"}]'::jsonb
-						OR ${sessions.labels} @> '[{"name":"rpi:design-prd"}]'::jsonb
-						OR ${sessions.labels} @> '[{"name":"rpi:design-tdd"}]'::jsonb
-					)`,
-					),
-				)
-				.limit(1)
+			const [designSession] = await findDesignSession(db, sessionId, organizationId)
 
 			if (!designSession) {
 				return output

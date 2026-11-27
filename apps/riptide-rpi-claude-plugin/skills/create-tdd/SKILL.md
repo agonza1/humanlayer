@@ -160,11 +160,7 @@ When a concept is too complex for Mermaid or plain text - combining data flow, s
 <step index="4" name="system-design-review-gate">
 
 <instructions>
-When the cross-component architecture is settled, stop and hand it back for review. Because you've been fleshing it out section-by-section, the user hasn't read it as a whole yet. Say something like:
-
-> I think the system design is complete. Since we've been building it up decision by decision, can you read the **System Design** section top to bottom and confirm it hangs together before we move on to program design?
-
-Wait for the user's approval. Incorporate any fixes they raise. **Do not open the Program Design phase until the user signs off on the System Design.**
+At sign-off, save the finished TDD first. Read its SHA-256 digest with `shasum -a 256`, then write `<same-document-stem>.system-design-review.<sha256>.json` with three plain-text strings: `question` (the exact decision), `recommendation` (your preferred answer), and `nextAction` (what happens after the owner's answer). Keep the first two under 240 characters each and the action under 500. Use the artifact write tool and confirm it synced. If a request is already open or the write fails, explain the outstanding decision in the chat. Ask the owner to answer in this session and select **Resolve attention** on the task. Wait for that answer before proceeding. The saved receipt prevents duplicate requests for this revision. Acknowledging the notice leaves the decision open.
 </instructions>
 
 </step>
@@ -268,11 +264,7 @@ The same HTML-artifact escape hatch from the System Design step applies here - u
 <step index="6" name="program-design-review-gate">
 
 <instructions>
-When the program design is settled, hand it back for review the same way:
-
-> I think the program design is complete too. Can you review the **Program Design** section and confirm the code shape looks right?
-
-Wait for the user's approval and incorporate any fixes.
+At sign-off, save the finished TDD first. Read its SHA-256 digest with `shasum -a 256`, then write `<same-document-stem>.program-design-review.<sha256>.json` with three plain-text strings: `question` (the exact decision), `recommendation` (your preferred answer), and `nextAction` (what happens after the owner's answer). Keep the first two under 240 characters each and the action under 500. Use the artifact write tool and confirm it synced. If a request is already open or the write fails, explain the outstanding decision in the chat. Ask the owner to answer in this session and select **Resolve attention** on the task. Wait for that answer before proceeding. The saved receipt prevents duplicate requests for this revision. Acknowledging the notice leaves the decision open.
 </instructions>
 
 </step>

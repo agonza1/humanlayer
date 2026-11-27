@@ -17,22 +17,23 @@ export type LocalSlackTaskAttention = Pick<
 	TaskAttention,
 	'kind' | 'reason' | 'responsible' | 'nextAction' | 'followUpAt'
 >
+export type PrivateSlackFields = { attention?: LocalSlackTaskAttention; guidance?: string; githubUrl?: string }
 type LocalSlackAlert = RouteScope & {
 	alertId: string
 	teamId: string
 	channelId: string
 	reason?: 'publication' | 'implementation' | 'review' | 'delivery'
-	standing?: {
+	standing?: PrivateSlackFields & {
 		projectId: string
 		taskLabel: string
 		blocker?: ImplementationBlocker
 		revision: string
-		attention?: LocalSlackTaskAttention
 	}
 }
 
 const MAX_ROUTE_FILE_BYTES = 4096
-const MAX_TASK_LABEL_LENGTH = 120
+const GITHUB_TASK =
+	/^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/(?!\.{1,2}\/)[A-Za-z0-9_.-]{1,100}\/(?:issues|pull)\/[1-9]\d{0,15}$/u
 const id = z.uuid()
 const localRouteSchema = z.object({
 	routeId: id,
@@ -186,31 +187,23 @@ export function resolveStandingLocalSlackAlertRoute(scope: StandingScope) {
 	return { routeId, teamId, channelId, revision: standing.revision }
 }
 
-function normalizeTaskLabel(label: string, taskId: string) {
-	const normalized = label
-		.replace(/[\p{C}<>&]/gu, ' ')
-		.replace(/\s+/gu, ' ')
-		.trim()
-		.slice(0, MAX_TASK_LABEL_LENGTH)
-		.replace(/\p{Cs}$/u, '')
-		.trimEnd()
-	return normalized || `Task ${taskId.slice(-8)}`
-}
-
-function normalizeAttentionText(value: string) {
+function plainText(value: string, limit: number) {
 	return value
 		.replace(/[\p{Cc}\p{Bidi_Control}\p{Cs}]/gu, ' ')
 		.replace(/\s+/gu, ' ')
 		.trim()
+		.slice(0, limit)
+		.replace(/\p{Cs}$/u, '')
+		.trimEnd()
 }
 
 function normalizeAttention(attention: LocalSlackTaskAttention | undefined) {
 	if (!attention) return undefined
 	return TaskAttentionInputSchema.safeParse({
 		kind: attention.kind,
-		reason: normalizeAttentionText(attention.reason),
-		responsible: normalizeAttentionText(attention.responsible),
-		nextAction: normalizeAttentionText(attention.nextAction),
+		reason: plainText(attention.reason, 500),
+		responsible: plainText(attention.responsible, 160),
+		nextAction: plainText(attention.nextAction, 500),
 		followUpAt: attention.followUpAt,
 	}).data
 }
@@ -249,9 +242,12 @@ export function postLocalSlackDeliveryBlocker(input: LocalSlackAlert): Promise<D
 				...commonRequest,
 				schemaVersion: 2,
 				projectId: standing.projectId,
-				taskLabel: normalizeTaskLabel(standing.taskLabel, input.taskId),
+				taskLabel:
+					plainText(standing.taskLabel.replace(/[\p{C}<>&]/gu, ' '), 120) || `Task ${input.taskId.slice(-8)}`,
 				blocker: standing.blocker,
 				attention: normalizeAttention(standing.attention),
+				guidance: plainText(standing.guidance ?? '', 1000) || undefined,
+				githubUrl: standing.githubUrl && GITHUB_TASK.test(standing.githubUrl) ? standing.githubUrl : undefined,
 			}
 		: commonRequest
 	return new Promise((resolve) => {

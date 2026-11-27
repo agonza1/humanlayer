@@ -1,5 +1,4 @@
 import type { KanbanColumns } from '@humanlayer/ui/components/kanban'
-import type { SessionLabel } from '@humanlayer/ui/components/session-label-badge'
 import type { UserOption } from '@humanlayer/ui/components/user-multi-select'
 import { getInitials } from '@humanlayer/ui/lib/comment-utils'
 import { and, eq, inArray, useLiveQuery } from '@tanstack/react-db'
@@ -7,8 +6,10 @@ import { useMemo } from 'react'
 
 import { useSync } from '@/components/providers/SyncProvider'
 import { useUnreadStore } from '@/hooks/stores/unreadStore'
+import { useBoardHosts } from '@/hooks/useBoardHosts'
+import { useMinuteClock } from '@/hooks/useMinuteClock'
 import { useOrgMembers } from '@/hooks/useOrgMembers'
-import { buildKanbanColumns, type KanbanSessionInput, type KanbanTaskInput } from '@/lib/kanban/columnEngine'
+import { buildKanbanColumns, type KanbanTaskInput } from '@/lib/kanban/columnEngine'
 import { isTaskEligibleForBoard, matchesTaskScope, type TaskScope } from '@/lib/tasks/taskScope'
 
 const DEFAULT_SCOPE: TaskScope = { mode: 'everything', selectedUserIds: [], currentUserId: null }
@@ -42,18 +43,13 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 				.where(({ tasks }) => {
 					const visibleTask = and(eq(tasks.archived, false), eq(tasks.is_draft, false))
 
-					if (mode === 'mine') {
-						return visibleTask
-					}
-
-					if (selectedUserIds.length > 0) {
-						return and(visibleTask, inArray(tasks.resource_owner_user_id, selectedUserIds))
-					}
-
-					return visibleTask
+					return mode !== 'mine' && selectedUserIds.length
+						? and(visibleTask, inArray(tasks.resource_owner_user_id, selectedUserIds))
+						: visibleTask
 				})
 				.select(({ tasks }) => ({
 					id: tasks.id,
+					organization_id: tasks.organization_id,
 					name: tasks.name,
 					created_at: tasks.created_at,
 					updated_at: tasks.updated_at,
@@ -79,6 +75,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 				.select(({ sessions }) => ({
 					id: sessions.id,
 					task_id: sessions.task_id,
+					host_id: sessions.host_id,
 					created_by: sessions.created_by,
 					resource_owner_user_id: sessions.resource_owner_user_id,
 					labels: sessions.labels,
@@ -137,33 +134,17 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 		[taskRows, sessionsByTaskId, scope],
 	)
 
+	const nowMs = useMinuteClock()
+	const hosts = useBoardHosts(visibleTaskRows, nowMs)
 	const columns = useMemo<KanbanColumns>(() => {
 		const tasks: KanbanTaskInput[] = visibleTaskRows.map((task) => ({
-			id: task.id,
-			name: task.name,
-			created_at: task.created_at,
-			updated_at: task.updated_at,
-			automatic_delivery: task.automatic_delivery,
-			implementation_reconciliation: task.implementation_reconciliation,
-			task_attention: task.task_attention,
-			is_draft: task.is_draft ?? false,
-			resource_owner_user_id: task.resource_owner_user_id,
-			sessions: (sessionsByTaskId.get(task.id) ?? []).map(
-				(s): KanbanSessionInput => ({
-					id: s.id,
-					archived: s.archived ?? false,
-					labels: (s.labels as SessionLabel[] | null) ?? null,
-					last_activity_at: s.last_activity_at,
-					created_at: s.created_at,
-					updated_at: s.updated_at,
-					resource_owner_user_id: s.resource_owner_user_id,
-					status: s.status,
-				}),
-			),
+			...task,
+			sessions: sessionsByTaskId.get(task.id) ?? [],
 		}))
-
 		return buildKanbanColumns({
 			tasks,
+			hosts,
+			nowMs,
 			unreadSessionIds,
 			resolveOwner: (ownerId) => {
 				const member = ownerId ? membersMap.get(ownerId) : undefined
@@ -176,7 +157,7 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 				}
 			},
 		})
-	}, [visibleTaskRows, sessionsByTaskId, membersMap, unreadSessionIds])
+	}, [visibleTaskRows, sessionsByTaskId, membersMap, unreadSessionIds, hosts, nowMs])
 
 	const totalCards = useMemo(() => columns.reduce((sum, column) => sum + column.cards.length, 0), [columns])
 
@@ -212,27 +193,19 @@ export function useKanbanColumns(scope: TaskScope = DEFAULT_SCOPE) {
 			.sort((a, b) => a.name.localeCompare(b.name))
 	}, [ownerRows, membersMap, selectedUserIds])
 
-	const ownerByTaskId = useMemo(() => {
-		const map = new Map<string, string | null>()
+	// Context menu actions use the owner and active sessions of the same visible task.
+	const { ownerByTaskId, sessionIdsByTaskId } = useMemo(() => {
+		const ownerByTaskId = new Map<string, string | null>()
+		const sessionIdsByTaskId = new Map<string, string[]>()
 		for (const task of taskRows ?? []) {
-			map.set(task.id, task.resource_owner_user_id ?? null)
-		}
-		return map
-	}, [taskRows])
-
-	// Non-archived session ids per task, keyed by task id. Consumed by the archive
-	// action so it can cascade without re-querying every session in the org.
-	const sessionIdsByTaskId = useMemo(() => {
-		const map = new Map<string, string[]>()
-		for (const task of taskRows ?? []) {
-			map.set(
+			ownerByTaskId.set(task.id, task.resource_owner_user_id ?? null)
+			const activeSessions = (sessionsByTaskId.get(task.id) ?? []).filter((session) => !session.archived)
+			sessionIdsByTaskId.set(
 				task.id,
-				(sessionsByTaskId.get(task.id) ?? [])
-					.filter((session) => !session.archived)
-					.map((session) => session.id),
+				activeSessions.map((session) => session.id),
 			)
 		}
-		return map
+		return { ownerByTaskId, sessionIdsByTaskId }
 	}, [taskRows, sessionsByTaskId])
 
 	const isReady = tasksReady && sessionsReady && ownersReady

@@ -1,6 +1,7 @@
 import z from 'zod/v4'
 
 import { DeliveryBlockerAlertSchema } from './automatic-delivery'
+import { decodeJsonColumn } from './decode-json-column'
 
 const Timestamp = z.number().int().min(0).max(8_640_000_000_000_000)
 const text = (limit: number) => z.string().trim().min(1).max(limit)
@@ -45,12 +46,5 @@ export type TaskAttentionNotice = z.infer<typeof TaskAttentionNoticeSchema>
 
 /** Task sync may encode JSONB as a string. Treat absent legacy state as empty. */
 export function decodeTaskAttention(value: unknown): TaskAttention | null {
-	if (typeof value === 'string') {
-		try {
-			value = JSON.parse(value)
-		} catch {
-			return null
-		}
-	}
-	return TaskAttentionSchema.safeParse(value).data ?? null
+	return decodeJsonColumn(TaskAttentionSchema, value)
 }

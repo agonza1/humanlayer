@@ -1,5 +1,13 @@
 import { SESSION_STATUSES, type SessionStatus } from './effect/session/session-status'
-import { AutomaticDeliverySchema, type AutomaticDelivery, type DeliveryAlertReceipt } from './zod/automatic-delivery'
+import {
+	AutomaticDeliverySchema,
+	mergedAttentionObservation,
+	MERGED_PR_ATTENTION,
+	type AutomaticDelivery,
+	type DeliveryAlertReceipt,
+} from './zod/automatic-delivery'
+import { decodeJsonColumn } from './zod/decode-json-column'
+import { getHostStatus, type HostHeartbeat } from './zod/host/heartbeat'
 import { decodeImplementationReconciliation, IMPLEMENTATION_BLOCKERS } from './zod/implementation-reconciliation'
 import { decodeTaskAttention, type TaskAttention } from './zod/task-attention'
 
@@ -75,13 +83,23 @@ export interface BoardAttention {
 	lastCheckedAt?: number
 	recoveryAttempts?: number
 	followUpAt?: number
+	followUpHost?:
+		| { id: string; status: 'unknown' }
+		| { id: string; status: 'online' | 'offline' | 'stale'; lastHeartbeatAt: number }
 	acknowledgedAt?: number
 	resolvedAt?: number
 	lastNoticeAt?: number
 	alert?: Pick<BoardBlockerAlert, 'slack' | 'origin' | 'slackRoute' | 'reminder'>
 }
 
+export interface BoardHostInput extends HostHeartbeat {
+	host_id: string
+	organization_id: string
+	user_id: string
+}
+
 export interface BoardTaskInput {
+	organization_id?: string | null
 	automatic_delivery?: unknown
 	implementation_reconciliation?: unknown
 	task_attention?: unknown
@@ -92,35 +110,10 @@ export interface BoardTaskInput {
 }
 
 export function describeAuthoredAttention(authored: TaskAttention): BoardAttention {
-	const {
-		kind,
-		id,
-		revision,
-		reason,
-		responsible,
-		nextAction,
-		evidence,
-		openedAt,
-		updatedAt,
-		followUpAt,
-		acknowledgedAt,
-		resolvedAt,
-		notice,
-	} = authored
+	const { authorizedBy: _owner, notice, ...details } = authored
 	return {
-		kind,
+		...details,
 		source: 'task',
-		id,
-		revision,
-		reason,
-		responsible,
-		nextAction,
-		evidence,
-		openedAt,
-		updatedAt,
-		followUpAt,
-		acknowledgedAt,
-		resolvedAt,
 		lastNoticeAt: notice?.reservedAt,
 		alert: notice
 			? { slack: notice.slack.status, origin: notice.origin.status, slackRoute: notice.slackRoute }
@@ -129,6 +122,8 @@ export function describeAuthoredAttention(authored: TaskAttention): BoardAttenti
 }
 
 export interface BoardSessionInput {
+	host_id?: string | null
+	resource_owner_user_id?: string | null
 	id?: string
 	archived: boolean
 	labels: readonly WorkflowLabel[] | null
@@ -250,17 +245,6 @@ function describeBlockerAlert(receipts: BlockerAlert | undefined): BoardBlockerA
 	return alert
 }
 
-function parseDelivery(rawDelivery: unknown) {
-	if (typeof rawDelivery === 'string') {
-		try {
-			rawDelivery = JSON.parse(rawDelivery)
-		} catch {
-			rawDelivery = null
-		}
-	}
-	return AutomaticDeliverySchema.safeParse(rawDelivery).data
-}
-
 function describeDelivery(
 	delivery: AutomaticDelivery | undefined,
 	sessions: readonly BoardSessionInput[],
@@ -268,16 +252,15 @@ function describeDelivery(
 ): BoardDelivery | null {
 	const alert = describeBlockerAlert(delivery?.blockerAlert)
 	if (delivery?.phase === 'attention' && delivery.attention) {
-		const observed = delivery.attentionObservation
+		const observed = mergedAttentionObservation(delivery)
 		if (
-			observed?.heads.length === delivery.targets.length &&
-			observed.heads.every((head) => head.merged) &&
+			observed &&
 			(!latest || sessionActivity(latest) <= observed.checkedAt) &&
 			!sessions.some((session) => livePriority(session.status) > 0)
 		) {
 			return {
 				status: 'blocked',
-				reason: 'PR merged on GitHub. Verify remaining acceptance before completing this task.',
+				reason: MERGED_PR_ATTENTION,
 				stage: 'in-review',
 				alert,
 			}
@@ -343,8 +326,43 @@ function describeDelivery(
 	}
 }
 
+export function hasDueFollowUp(attention: TaskAttention | null, nowMs: number) {
+	if (
+		!attention ||
+		attention.followUpAt === undefined ||
+		attention.followUpAt > nowMs ||
+		attention.resolvedAt !== undefined ||
+		attention.acknowledgedAt !== undefined
+	)
+		return false
+	const { notice } = attention
+	return !notice || notice.slack.status === 'pending' || notice.origin.status === 'pending'
+}
+
+export function describeFollowUpHost(
+	task: BoardTaskInput,
+	id: string,
+	hosts: readonly BoardHostInput[],
+	nowMs: number,
+): NonNullable<BoardAttention['followUpHost']> {
+	const row = hosts.find(
+		(host) =>
+			host.host_id === id &&
+			host.user_id === task.resource_owner_user_id &&
+			host.organization_id === task.organization_id,
+	)
+	return row
+		? { id, status: getHostStatus(row, nowMs), lastHeartbeatAt: Number(row.last_seen) }
+		: { id, status: 'unknown' }
+}
+
 /** Shared by both board views and the CLI. The phase and current session state are independent. */
-export function describeBoardTask(task: BoardTaskInput, sessions: readonly BoardSessionInput[]) {
+export function describeBoardTask(
+	task: BoardTaskInput,
+	sessions: readonly BoardSessionInput[],
+	hosts: readonly BoardHostInput[] = [],
+	nowMs = Date.now(),
+) {
 	const activeSessions = sessions.filter((session) => !session.archived)
 	const latest = mostRecentStartedSession(activeSessions)
 	let status: BoardStatus = task.is_draft ? 'draft' : 'not_started'
@@ -368,7 +386,7 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 	}
 
 	const stage = assignStage(activeSessions, latest)
-	const automaticDelivery = parseDelivery(task.automatic_delivery)
+	const automaticDelivery = decodeJsonColumn(AutomaticDeliverySchema, task.automatic_delivery) ?? undefined
 	const stockDelivery = describeDelivery(automaticDelivery, activeSessions, latest)
 	const reconciliation = decodeImplementationReconciliation(task.implementation_reconciliation)
 	const decision = reconciliation?.decision
@@ -418,7 +436,17 @@ export function describeBoardTask(task: BoardTaskInput, sessions: readonly Board
 		authored.resolvedAt === undefined &&
 		(task.resource_owner_user_id === undefined || task.resource_owner_user_id === authored.authorizedBy)
 	) {
-		attention.push(describeAuthoredAttention(authored))
+		const item = describeAuthoredAttention(authored)
+		if (hasDueFollowUp(authored, nowMs)) {
+			// Match idleTaskAttentionOnHost: managed host first, then the latest started owner session.
+			const owner = task.resource_owner_user_id
+			const hostId =
+				(automaticDelivery?.authorizedBy === owner && automaticDelivery?.hostId) ||
+				mostRecentStartedSession(activeSessions.filter((s) => s.resource_owner_user_id === owner))?.host_id
+			if (owner && hostId && task.organization_id)
+				item.followUpHost = describeFollowUpHost(task, hostId, hosts, nowMs)
+		}
+		attention.push(item)
 	}
 	if (status === 'needs_approval') {
 		const approval = mostRecentStartedSession(

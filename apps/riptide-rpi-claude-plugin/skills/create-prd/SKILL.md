@@ -138,11 +138,7 @@ Update mockups as decisions evolve; the final PRD should embed the "winning" ver
 <step index="5" name="solution-review-gate">
 
 <instructions>
-When the solution is fully fleshed out, stop and hand it back for review. Because you've been building it decision by decision, the user hasn't read it as a whole yet. Say something like:
-
-> I think the solution is complete. Since we've built it up decision by decision, can you read the **Solution Details** top to bottom and confirm it hangs together before we wrap up?
-
-Wait for the user's approval and incorporate any fixes they raise.
+At sign-off, save the finished PRD first. Read its SHA-256 digest with `shasum -a 256`, then write `<same-document-stem>.solution-review.<sha256>.json` with three plain-text strings: `question` (the exact decision), `recommendation` (your preferred answer), and `nextAction` (what happens after the owner's answer). Keep the first two under 240 characters each and the action under 500. Use the artifact write tool and confirm it synced. If a request is already open or the write fails, explain the outstanding decision in the chat. Ask the owner to answer in this session and select **Resolve attention** on the task. Wait for that answer before proceeding. The saved receipt prevents duplicate requests for this revision. Acknowledging the notice leaves the decision open.
 </instructions>
 
 </step>

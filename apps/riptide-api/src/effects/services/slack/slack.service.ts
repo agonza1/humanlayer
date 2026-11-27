@@ -32,9 +32,45 @@ import {
 	requireSlackConnection,
 	setSlackIntegrationEnabled,
 } from './slack.persistence'
-import type { SlackServiceShape } from './slack.types'
+import type { SlackArtifactEvent, SlackServiceShape } from './slack.types'
 
 export class SlackService extends Context.Service<SlackService, SlackServiceShape>()('SlackService') {}
+
+type ArtifactEventSource = Pick<
+	SlackArtifactEvent,
+	'taskSlug' | 'artifactId' | 'resourceOwnerUserId' | 'created' | 'versionNumber'
+>
+
+export function notifyArtifactCreated(
+	{ taskSlug, artifactId, resourceOwnerUserId, created, versionNumber }: ArtifactEventSource,
+	event: Omit<SlackArtifactEvent, keyof ArtifactEventSource>,
+) {
+	return Effect.gen(function* () {
+		const slack = yield* SlackService
+		yield* slack.dispatchArtifactEvent({
+			...event,
+			taskSlug: taskSlug || null,
+			artifactId,
+			resourceOwnerUserId,
+			created,
+			versionNumber,
+		})
+	}).pipe(
+		Effect.catchCause((cause) =>
+			Effect.gen(function* () {
+				yield* Effect.logError('Slack artifact dispatch defect', cause)
+				Sentry.captureException(cause, {
+					tags: { error_type: 'slack_dispatch_defect' },
+					extra: {
+						organizationId: event.organizationId,
+						taskId: event.taskId,
+						artifactId,
+					},
+				})
+			}),
+		),
+	)
+}
 
 const SlackServiceImplementationLive = Layer.effect(
 	SlackService,

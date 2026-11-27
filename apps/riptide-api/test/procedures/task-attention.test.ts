@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 
+import { artifacts } from '@humanlayer/db/tables/artifacts'
 import { conversationEvents } from '@humanlayer/db/tables/conversation-events'
 import { organizationSettings } from '@humanlayer/db/tables/organization-settings'
 import { organizations } from '@humanlayer/db/tables/organizations'
@@ -18,6 +20,7 @@ import { call } from '@orpc/server'
 import { eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { Effect, Layer } from 'effect'
+import { hash } from 'ohash'
 import { uuidv7 } from 'uuidv7'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -32,6 +35,7 @@ import {
 	setTaskAttentionProcedure,
 } from '../../src/orpc/api/tasks/attention'
 import { configureDeliveryAlertsProcedure } from '../../src/orpc/api/tasks/delivery'
+import { upsertArtifactProcedure } from '../../src/orpc/daemon/artifacts/upsert'
 import { claimDeliveryProcedure } from '../../src/orpc/daemon/delivery'
 import { createMockApiAuth, createMockApiContext, createMockDaemonAuth, createMockDaemonContext } from '../mocks'
 import { createRuntimeWithTestPostgresLayer, fakeSlackLayer } from '../utils/effect-procedure-test-runtime'
@@ -185,6 +189,7 @@ describe('Authored task attention', () => {
 			origin,
 			slackAutomationId,
 			api,
+			daemon,
 			heartbeat: (host?: string) => call(claimDeliveryProcedure, { supportsObservation: true }, daemon(host)),
 			read: async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!,
 			notices: () => db.select().from(conversationEvents).where(eq(conversationEvents.task_id, taskId)),
@@ -194,6 +199,92 @@ describe('Authored task attention', () => {
 			) => call(setTaskAttentionProcedure, { taskId, attention, expected }, api()),
 		}
 	}
+
+	it.each([
+		['prd', 'solution-review'],
+		['tdd', 'system-design-review'],
+		['tdd', 'program-design-review'],
+	])('records a single owner decision at the %s %s checkpoint', async (kind, gate) => {
+		const f = await fixture('native')
+		const stem = `04-${kind}-team-calling`
+		const type = `design-${kind}`
+		const input = { taskId: f.taskId, sessionId: f.origin!.id, operationType: 'Write' as const }
+		await db
+			.update(sessions)
+			.set({ status: 'running', labels: [{ name: `rpi:${type}`, title: type }] })
+			.where(eq(sessions.id, f.origin!.id))
+		await call(
+			upsertArtifactProcedure,
+			{ ...input, fileName: `${stem}.md`, content: 'Design', frontmatter: { type } },
+			f.daemon(),
+		)
+		const decision = {
+			question: 'Approve the call admission design?',
+			recommendation: 'Use PostgreSQL.',
+			nextAction: 'Start program design after approval.',
+		}
+		const fileFor = (text: string) => `${stem}.${gate}.${createHash('sha256').update(text).digest('hex')}.json`
+		const checkpoint = { ...input, fileName: fileFor('Design'), content: JSON.stringify(decision) }
+		const write = () => call(upsertArtifactProcedure, checkpoint, f.daemon())
+		await expect(call(upsertArtifactProcedure, checkpoint, f.daemon(f.otherHost))).rejects.toMatchObject({
+			code: 'FORBIDDEN',
+		})
+		await expect(
+			call(upsertArtifactProcedure, { ...checkpoint, operationType: 'Read' }, f.daemon()),
+		).rejects.toMatchObject({ code: 'FORBIDDEN' })
+		await expect(
+			call(upsertArtifactProcedure, { ...checkpoint, content: '{"approved":true}' }, f.daemon()),
+		).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+		const revised = { ...checkpoint, fileName: fileFor('Revised') }
+		await expect(call(upsertArtifactProcedure, revised, f.daemon())).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+
+		await f.set(externalWait)
+		const wait = (await f.read()).task_attention!
+		await expect(write()).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+		expect((await f.read()).task_attention).toEqual(wait)
+		await call(clearTaskAttentionProcedure, { taskId: f.taskId, ...key(wait) }, f.api())
+		// A prior generic upload with the same name cannot forge a checkpoint receipt.
+		await db.insert(artifacts).values({
+			task_id: f.taskId,
+			organization_id: f.organizationId,
+			created_by: f.userId,
+			resource_owner_user_id: f.userId,
+			file_name: checkpoint.fileName,
+			content: checkpoint.content,
+			content_hash: hash(checkpoint.content),
+		})
+
+		const receipts = await Promise.all([write(), write()])
+		expect(receipts[0].artifactId).toBe(receipts[1].artifactId)
+		const record = (await f.read()).task_attention!
+		expect(record).toMatchObject({
+			kind: 'owner_input',
+			reason: decision.question + ' Recommendation: ' + decision.recommendation,
+			nextAction: decision.nextAction,
+			responsible: 'Task owner',
+			evidence: stem + '.md',
+			revision: 1,
+		})
+		expect((await f.notices()).length).toBe(0)
+		await db.update(sessions).set({ status: 'ready_for_input' }).where(eq(sessions.id, f.origin!.id))
+		await f.heartbeat()
+		expect((await f.read()).task_attention?.notice?.origin.status).toBe('delivered')
+		await call(clearTaskAttentionProcedure, { taskId: f.taskId, ...key(record) }, f.api())
+		const resolved = (await f.read()).task_attention!
+		await write()
+		expect((await f.read()).task_attention).toEqual(resolved)
+		await db.update(sessions).set({ status: 'running' }).where(eq(sessions.id, f.origin!.id))
+		await call(
+			upsertArtifactProcedure,
+			{ ...input, fileName: stem + '.md', content: 'Revised', frontmatter: { type } },
+			f.daemon(),
+		)
+		await call(upsertArtifactProcedure, revised, f.daemon())
+		const current = (await f.read()).task_attention!
+		expect(current.id).not.toBe(record.id)
+		await write()
+		expect((await f.read()).task_attention).toEqual(current)
+	})
 
 	it('requires the owner and current occurrence revision, retaining the acknowledged and cleared state', async () => {
 		const f = await fixture('none', false)
@@ -446,6 +537,11 @@ describe('Authored task attention', () => {
 
 			const f = await fixture('none', false)
 			const { directory, grant, route } = await standingGrant(f, bridgeRelay)
+			const githubUrl = 'https://github.com/example/project/issues/42'
+			await db
+				.update(tasks)
+				.set({ ticket_provider: 'github', ticket_url: githubUrl })
+				.where(eq(tasks.id, f.taskId))
 			try {
 				await writeFile(route.providerConfigFile, JSON.stringify({ route }), { mode: 0o600 })
 				await writeFile(grant, JSON.stringify(route), { mode: 0o600 })
@@ -476,6 +572,7 @@ describe('Authored task attention', () => {
 				})
 				expect(posted).toContain(due.responsible)
 				expect(posted).toContain(due.nextAction)
+				expect(posted).toContain(githubUrl)
 				expect(posted).toContain('Due · 2025-06-15 12:00 UTC')
 				expect(posted).toContain(`${route.appOrigin}/tasks/${f.taskId}`)
 				expect(posted).not.toContain(due.evidence)

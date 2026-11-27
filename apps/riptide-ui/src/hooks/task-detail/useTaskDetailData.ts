@@ -6,6 +6,7 @@ import { useSync, useSyncInternal } from '@/components/providers/SyncProvider'
 import type { TableSession } from '@/components/session-table/types'
 import { useTaskWorkspaceSetup } from '@/hooks/live-queries/useTaskWorkspaceSetup'
 import { useUnreadStore } from '@/hooks/stores/unreadStore'
+import { useBoardTask } from '@/hooks/useBoardHosts'
 import { useTaskPermissions } from '@/hooks/useTaskPermissions'
 import { useTaskSettings } from '@/hooks/useTaskSettings'
 import { compareSessionsByActivityMinute } from '@/lib/activitySorting'
@@ -79,6 +80,7 @@ export function useTaskDetailData(taskId: string) {
 		[sessionsCollection, taskId],
 	)
 
+	const board = useBoardTask(task, sessionData ?? [])
 	const unreadSessionIds = useUnreadStore((s) => s.unreadSessionIds)
 
 	// Keep active sessions before archived sessions, then sort each group by activity.
@@ -121,6 +123,7 @@ export function useTaskDetailData(taskId: string) {
 
 	return {
 		task,
+		board,
 		isTaskReady,
 		isTaskLoading,
 		userId: user?.id,

@@ -5,6 +5,7 @@ import { type ReactNode, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useSettingsStore } from '@/hooks/stores/settingsStore'
+import { useBoardTask } from '@/hooks/useBoardHosts'
 
 import {
 	compareHosts,
@@ -301,6 +302,57 @@ describe('minimalist command discovery', () => {
 })
 
 describe('session host lookup', () => {
+	it('subscribes to the due follow-up owner and reads the matching registration for task details', async () => {
+		const row = {
+			id: hostId,
+			host_id: hostId,
+			organization_id: 'org',
+			user_id: 'owner',
+			status: 'offline',
+			last_seen: 100n,
+		}
+		const hosts = trackedCollection([{ ...row, id: 'teammate', user_id: 'other', last_seen: 999n }, row])
+		useSync.mockReturnValue({ onlineHostsCollection: hosts.collection })
+		const task = {
+			organization_id: 'org',
+			resource_owner_user_id: 'owner',
+			task_attention: {
+				id: '019abcde-1234-7abc-8abc-123456789abc',
+				revision: 1,
+				authorizedBy: 'owner',
+				kind: 'external_wait',
+				responsible: 'Provider',
+				reason: 'Awaiting response',
+				nextAction: 'Check ticket',
+				openedAt: 1,
+				updatedAt: 1,
+			},
+		}
+		const session = {
+			id: 'session',
+			archived: false,
+			labels: null,
+			last_activity_at: 20n,
+			status: 'ready_for_input',
+			host_id: hostId,
+			resource_owner_user_id: 'owner',
+		}
+		const { result, rerender } = renderHook(
+			({ due }) =>
+				useBoardTask({ ...task, task_attention: { ...task.task_attention, followUpAt: due } }, [session]),
+			{ initialProps: { due: Date.now() + 60_000 } },
+		)
+		expect(hosts.sync).not.toHaveBeenCalled()
+		rerender({ due: 20 })
+		await waitFor(() =>
+			expect(result.current?.attention[0]?.followUpHost).toEqual({
+				id: hostId,
+				status: 'offline',
+				lastHeartbeatAt: 100,
+			}),
+		)
+	})
+
 	it('reads the exact teammate registration despite a stale own registration with the same host id', async () => {
 		const supported_models = {
 			probedAt: 1,

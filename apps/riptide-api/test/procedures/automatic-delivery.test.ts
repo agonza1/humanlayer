@@ -555,7 +555,13 @@ describe('Persisted automatic delivery', () => {
 			.update(tasks)
 			.set({
 				project_id: project!.id,
-				automatic_delivery: { ...(await f.state()), phase: 'attention', attention: 'Private diagnostic' },
+				automatic_delivery: {
+					...(await f.state()),
+					phase: 'attention',
+					attention: 'Private diagnostic',
+					heads: [head],
+					attentionDiagnosis: { reason: 'Missing evidence.', nextAction: 'Confirm the branch.' },
+				},
 			})
 			.where(eq(tasks.id, f.taskId))
 		const dir = await mkdtemp(join(tmpdir(), 'standing-managed-slack-'))
@@ -592,7 +598,11 @@ describe('Persisted automatic delivery', () => {
 				standing: { projectId: project!.id, taskLabel: 'Deliver' },
 				slots: ['slack'],
 			})
-			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual({ slots: ['slack'] })
+			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toMatchObject({
+				slots: ['slack'],
+				guidance: 'Missing evidence. Confirm the branch.',
+				githubUrl: 'https://github.com/test/delivery/pull/12',
+			})
 
 			await rm(grant)
 			expect(await f.locked((tx) => validateSlackBlockerDispatch(tx, dispatch!))).toEqual({ slots: [] })

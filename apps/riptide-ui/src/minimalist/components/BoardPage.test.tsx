@@ -13,6 +13,10 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/minimalist/components/Avatar', () => ({ WiredUserAvatar: () => null }))
 vi.mock('@/minimalist/components/SettingsControls', () => ({ Segmented: () => null }))
+const hosts = vi.hoisted(() => [
+	{ host_id: 'assigned', organization_id: 'org', user_id: 'owner', status: 'offline', last_seen: 50n },
+])
+vi.mock('@/hooks/useBoardHosts', () => ({ useBoardHosts: () => hosts }))
 vi.mock('@/hooks/useMinuteClock', () => ({ useMinuteClock: () => Date.UTC(2026, 10, 21, 20) }))
 vi.mock('@/minimalist/lib/ui-state', () => ({ useUi: () => ({ closeSidebarOnNarrow: vi.fn() }) }))
 vi.mock('@/minimalist/lib/use-unread', () => ({ useTaskUnread: () => false }))
@@ -88,45 +92,53 @@ test('shows the local update time and includes the date for cards at least a day
 	expect(oldTime?.dateTime).toBe(new Date(old).toISOString())
 })
 
-test('filters attention across phases and shows who an external wait depends on', () => {
-	useTaskTree.mockReturnValue({
-		recent: [
-			{ task: { id: 'draft', name: 'Routine draft' }, sessions: [] },
+function attentionRow(details: Partial<import('@humanlayer/schemas/zod/task-attention').TaskAttention> = {}) {
+	const owner = 'owner'
+	return {
+		task: {
+			id: 'sms',
+			name: 'Business SMS',
+			organization_id: 'org',
+			resource_owner_user_id: owner,
+			task_attention: {
+				id: '019abcde-1234-7abc-8abc-123456789abc',
+				revision: 1,
+				authorizedBy: owner,
+				kind: 'external_wait',
+				reason: 'Waiting for the carrier',
+				responsible: 'SignalWire',
+				nextAction: 'Confirm the counting window',
+				openedAt: 1,
+				updatedAt: 1,
+				followUpAt: 2,
+				...details,
+			},
+		},
+		sessions: [
 			{
-				task: {
-					id: 'sms',
-					name: 'Business SMS',
-					resource_owner_user_id: 'owner',
-					task_attention: {
-						id: '019abcde-1234-7abc-8abc-123456789abc',
-						revision: 1,
-						authorizedBy: 'owner',
-						kind: 'external_wait',
-						reason: 'Waiting for the carrier',
-						responsible: 'SignalWire',
-						nextAction: 'Confirm the counting window',
-						openedAt: 1,
-						updatedAt: 1,
-						followUpAt: 2,
-						notice: {
-							id: '00000000-0000-4000-8000-000000000003',
-							slack: { status: 'unavailable' },
-							origin: { status: 'delivered', receipt: 'notice' },
-							reservedAt: 3,
-						},
-					},
-				},
-				sessions: [
-					{
-						id: 'session',
-						archived: false,
-						status: 'ready_for_input',
-						last_activity_at: 1n,
-						labels: [{ name: 'rpi:implementation', title: 'Implementation' }],
-					},
-				],
+				id: 'session',
+				archived: false,
+				status: 'ready_for_input',
+				last_activity_at: 1n,
+				host_id: 'assigned',
+				resource_owner_user_id: owner,
+				labels: [{ name: 'rpi:implementation', title: 'Implementation' }],
 			},
 		],
+	}
+}
+
+test('filters attention across phases and shows who an external wait depends on', () => {
+	const waiting = attentionRow({
+		notice: {
+			id: '00000000-0000-4000-8000-000000000003',
+			slack: { status: 'unavailable' },
+			origin: { status: 'delivered', receipt: 'notice' },
+			reservedAt: 3,
+		},
+	})
+	useTaskTree.mockReturnValue({
+		recent: [{ task: { id: 'draft', name: 'Routine draft' }, sessions: [] }, waiting],
 		isReady: true,
 	})
 	render(<BoardPage />)
@@ -137,6 +149,30 @@ test('filters attention across phases and shows who an external wait depends on'
 	})
 	expect(within(card).getByText('Waiting on SignalWire')).toBeInTheDocument()
 	expect(within(card).getByText('Confirm the counting window')).toBeInTheDocument()
-	expect(within(card).getByText(/Follow-up due/)).toBeInTheDocument()
+	expect(within(card).getByText(/Follow-up scheduled for.*Notice attempted/)).toBeInTheDocument()
 	expect(within(card).getByText(/Slack alert unavailable/)).toBeInTheDocument()
+})
+
+test('shows the missed follow-up date and assigned host’s last heartbeat on the card', () => {
+	const format = (time: number) =>
+		new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(time)
+	const due = Date.UTC(2026, 10, 20, 12)
+	useTaskTree.mockReturnValue({ isReady: true, recent: [attentionRow({ followUpAt: due })] })
+	render(<BoardPage />)
+	expect(
+		screen.getByText(`Follow-up due · ${format(due)} · Assigned host offline · Last heartbeat ${format(50)}`),
+	).toBeInTheDocument()
+})
+
+test('shows the checkpoint question, recommendation and next action together', () => {
+	const reason = 'Which datastore owns call admission? Recommendation: PostgreSQL.'
+	const nextAction = 'Approve the design to begin Program Design.'
+	useTaskTree.mockReturnValue({
+		isReady: true,
+		recent: [attentionRow({ kind: 'owner_input', followUpAt: undefined, reason, nextAction })],
+	})
+	render(<BoardPage />)
+	const card = within(screen.getByRole('link', { name: /Needs input/ }))
+	expect(card.getByText(reason)).toBeInTheDocument()
+	expect(card.getByText(nextAction)).toBeInTheDocument()
 })
