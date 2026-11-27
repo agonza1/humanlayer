@@ -165,11 +165,32 @@ async function excludeFromGit(cwd: string): Promise<void> {
 		git(cwd, 'rev-parse', '--git-path', 'info/exclude'),
 	])
 	if (prefix === undefined || !path) return // not a git repo
-	const file = resolve(cwd, path)
-	await mkdir(dirname(file), { recursive: true })
-	const text = await readFile(file, 'utf8').catch(() => '')
+	await ensureArtifactGitExclude(resolve(cwd, path), prefix)
+}
+
+const pendingGitExcludes = new Map<string, Promise<void>>()
+
+/** Record the artifact directory in the Git-resolved exclude file, including for linked worktrees. */
+export async function ensureArtifactGitExclude(file: string, prefix = ''): Promise<void> {
+	const previous = pendingGitExcludes.get(file) ?? Promise.resolve()
+	const append = () => appendArtifactGitExclude(file, prefix)
+	const update = previous.then(append, append)
+	pendingGitExcludes.set(file, update)
+	try {
+		await update
+	} finally {
+		if (pendingGitExcludes.get(file) === update) pendingGitExcludes.delete(file)
+	}
+}
+
+async function appendArtifactGitExclude(file: string, prefix: string): Promise<void> {
+	const text = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== 'ENOENT') throw error
+		return ''
+	})
 	const line = `/${prefix.replace(/[*?[\\]/g, '\\$&')}.humanlayer/tasks/`
 	if (text.split(/\r?\n/).includes(line)) return
+	await mkdir(dirname(file), { recursive: true })
 	await appendFile(file, `${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`)
 }
 

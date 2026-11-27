@@ -29,8 +29,8 @@ async function tempDir(): Promise<string> {
 	return directory
 }
 
-async function runGit(cwd: string, ...args: string[]): Promise<void> {
-	await execFileAsync('git', args, { cwd })
+async function runGit(cwd: string, ...args: string[]): Promise<string> {
+	return (await execFileAsync('git', args, { cwd })).stdout
 }
 
 async function initRepository(): Promise<string> {
@@ -77,7 +77,7 @@ describe('isGitRepository', () => {
 	})
 })
 
-describe('setupArtifactPaths gitignore handling', () => {
+describe('setupArtifactPaths local Git exclusion', () => {
 	test('leaves a root .gitignore rule unchanged', async () => {
 		const cwd = await initRepository()
 		const gitignorePath = join(cwd, '.gitignore')
@@ -123,41 +123,52 @@ describe('setupArtifactPaths gitignore handling', () => {
 		expect(await readFile(gitignorePath, 'utf-8')).toBe(originalContents)
 	})
 
-	test('appends the Riptide rule after an effective negation', async () => {
+	test('leaves a tracked negation in control', async () => {
 		const cwd = await initRepository()
 		const gitignorePath = join(cwd, '.gitignore')
 		const originalContents = '.humanlayer/tasks/\n!.humanlayer/tasks/\n'
 		await writeFile(gitignorePath, originalContents)
+		await runGit(cwd, 'add', '.gitignore')
 
 		await setupArtifactPaths(cwd, uniqueTaskId(), 'negated-rule-task', daemonRuntime)
 
-		expect(await readFile(gitignorePath, 'utf-8')).toBe(
-			`${originalContents}\n# Riptide artifacts (cloud-synced)\n.humanlayer/tasks/\n`,
+		expect(await readFile(gitignorePath, 'utf-8')).toBe(originalContents)
+		expect(await runGit(cwd, 'status', '--porcelain', '--untracked-files=all')).toContain(
+			'?? .humanlayer/tasks/negated-rule-task',
 		)
 	})
 
-	test('appends the Riptide rule when no effective rule matches', async () => {
+	test('keeps a tracked .gitignore and Git status clean', async () => {
 		const cwd = await initRepository()
+		const gitignorePath = join(cwd, '.gitignore')
+		const originalContents = 'node_modules/\n'
+		await writeFile(gitignorePath, originalContents)
+		await runGit(cwd, 'add', '.gitignore')
+		await runGit(cwd, 'commit', '--quiet', '-m', 'initial commit')
 
-		await setupArtifactPaths(cwd, uniqueTaskId(), 'unignored-task', daemonRuntime)
+		const { symlinkPath } = await setupArtifactPaths(cwd, uniqueTaskId(), 'unignored-task', daemonRuntime)
 
-		expect(await readFile(join(cwd, '.gitignore'), 'utf-8')).toBe(
-			'\n# Riptide artifacts (cloud-synced)\n.humanlayer/tasks/\n',
-		)
+		expect(await fileExists(symlinkPath)).toBe(true)
+		expect(await readFile(gitignorePath, 'utf-8')).toBe(originalContents)
+		expect(await readFile(join(cwd, '.git', 'info', 'exclude'), 'utf-8')).toContain('/.humanlayer/tasks/\n')
+		expect(await runGit(cwd, 'status', '--porcelain', '--untracked-files=all')).toBe('')
 	})
 
-	test('does not append a second block on repeated setup', async () => {
+	test('preserves existing exclusions and writes one rule across concurrent and repeated setup', async () => {
 		const cwd = await initRepository()
-		const taskId = uniqueTaskId()
+		const excludePath = join(cwd, '.git', 'info', 'exclude')
+		await writeFile(excludePath, '# Existing exclusions\n/build/')
+		const taskIds = [uniqueTaskId(), uniqueTaskId(), uniqueTaskId()]
 
-		await setupArtifactPaths(cwd, taskId, 'repeat-task', daemonRuntime)
-		await setupArtifactPaths(cwd, taskId, 'repeat-task', daemonRuntime)
+		await Promise.all(taskIds.map((taskId) => setupArtifactPaths(cwd, taskId, taskId, daemonRuntime)))
+		await setupArtifactPaths(cwd, taskIds[0]!, taskIds[0]!, daemonRuntime)
 
-		const gitignore = await readFile(join(cwd, '.gitignore'), 'utf-8')
-		expect(gitignore.match(/# Riptide artifacts \(cloud-synced\)/g)).toHaveLength(1)
+		expect(await readFile(excludePath, 'utf-8')).toBe('# Existing exclusions\n/build/\n/.humanlayer/tasks/\n')
+		expect(await fileExists(join(cwd, '.gitignore'))).toBe(false)
+		expect(await runGit(cwd, 'status', '--porcelain', '--untracked-files=all')).toBe('')
 	})
 
-	test('uses effective ignore rules in a linked worktree', async () => {
+	test('uses the common Git exclude file in a linked worktree', async () => {
 		const root = await tempDir()
 		const repository = join(root, 'repository')
 		const worktree = join(root, 'linked-worktree')
@@ -169,13 +180,12 @@ describe('setupArtifactPaths gitignore handling', () => {
 		await runGit(repository, 'add', 'README.md')
 		await runGit(repository, 'commit', '--quiet', '-m', 'initial commit')
 		await runGit(repository, 'worktree', 'add', '--quiet', '-b', 'linked-test', worktree)
-		const gitignorePath = join(worktree, '.gitignore')
-		const originalContents = '.humanlayer/tasks/\n'
-		await writeFile(gitignorePath, originalContents)
 
 		await setupArtifactPaths(worktree, uniqueTaskId(), 'linked-worktree-task', daemonRuntime)
 
-		expect(await readFile(gitignorePath, 'utf-8')).toBe(originalContents)
+		expect(await fileExists(join(worktree, '.gitignore'))).toBe(false)
+		expect(await readFile(join(repository, '.git', 'info', 'exclude'), 'utf-8')).toContain('/.humanlayer/tasks/\n')
+		expect(await runGit(worktree, 'status', '--porcelain', '--untracked-files=all')).toBe('')
 	})
 
 	test('keeps the symlink usable and skips .gitignore after a fatal Git check', async () => {

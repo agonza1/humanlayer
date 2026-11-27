@@ -1,3 +1,6 @@
+import { resolve } from 'node:path'
+
+import { ensureArtifactGitExclude } from '@humanlayer/session-sdk-artifacts'
 import { Effect } from 'effect'
 
 import { GitCommandRunner } from './services/task-diff/git-command-runner.service'
@@ -21,4 +24,15 @@ export const checkArtifactsGitignored = Effect.fn('artifacts.check_git_ignore_st
 	)
 
 	return status
+})
+
+export const ensureArtifactsGitExcluded = Effect.fn('artifacts.ensure_git_exclude')(function* (input: {
+	readonly cwd: string
+}) {
+	if ((yield* checkArtifactsGitignored(input)) === 'ignored') return
+
+	const git = yield* GitCommandRunner
+	const { stdout } = yield* git.run(['rev-parse', '--git-path', 'info/exclude'], { cwd: input.cwd })
+	const excludePath = resolve(input.cwd, stdout.trim())
+	yield* Effect.tryPromise(() => ensureArtifactGitExclude(excludePath))
 })
