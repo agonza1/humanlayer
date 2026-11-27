@@ -1,8 +1,8 @@
-import { appendFile, lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { checkArtifactsGitignored } from '@/effects/check-artifacts-gitignored'
+import { ensureArtifactsGitExcluded } from '@/effects/check-artifacts-gitignored'
 import type { DaemonRuntime } from '@/effects/runtime'
 import { logger } from '@/logger'
 
@@ -109,26 +109,13 @@ export async function isGitRepository(cwd: string): Promise<boolean> {
 }
 
 /**
- * Append .humanlayer/tasks/ to the project's .gitignore.
- * Callers must first confirm that Git has no effective matching rule.
- */
-export async function ensureGitignore(cwd: string): Promise<void> {
-	const gitignorePath = join(cwd, '.gitignore')
-	const entry = '.humanlayer/tasks/'
-
-	await appendFile(gitignorePath, `\n# Riptide artifacts (cloud-synced)\n${entry}\n`)
-	logger.info({ cwd }, 'Added .humanlayer/tasks/ to .gitignore')
-}
-
-/**
  * Set up artifact directory structure for a task.
  * 1. Ensure symlink from {cwd}/.humanlayer/tasks/{slug}/ → UUID storage (also creates storage)
- * 2. Ensure .humanlayer/tasks/ is in .gitignore — skipped when the cwd is not a
- *    git repo (e.g. a multi-repo workspace root), so no stray .gitignore is written there.
+ * 2. Exclude that directory through Git's local info/exclude if it is not already ignored.
+ *    Skip the Git step at a multi-repo workspace root.
  *
  * The symlink (step 1) is required for artifacts to sync, so its failures
- * propagate. The .gitignore step (step 2) is best-effort convenience — a write
- * failure there is logged but not thrown, so it can't abort artifact setup.
+ * propagate. Git exclusion is best-effort and never edits tracked files.
  */
 export async function setupArtifactPaths(
 	cwd: string,
@@ -140,13 +127,12 @@ export async function setupArtifactPaths(
 
 	try {
 		if (await isGitRepository(cwd)) {
-			const ignoreStatus = await daemonRuntime.runPromise(checkArtifactsGitignored({ cwd }))
-			if (ignoreStatus === 'not-ignored') await ensureGitignore(cwd)
+			await daemonRuntime.runPromise(ensureArtifactsGitExcluded({ cwd }))
 		} else {
-			logger.debug({ cwd }, 'Skipping .gitignore setup: cwd is not a git repository (workspace root launch)')
+			logger.debug({ cwd }, 'Skipping artifact Git exclusion at a non-repository workspace root')
 		}
 	} catch (error) {
-		logger.warn({ cwd, error }, 'Failed to ensure .gitignore for artifacts; continuing without it')
+		logger.warn({ cwd, error }, 'Failed to configure local Git exclusion for artifacts')
 	}
 
 	return { storagePath, symlinkPath }
