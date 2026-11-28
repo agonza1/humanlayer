@@ -122,10 +122,7 @@ Suspend the host while its sessions wait for input. A waiting session continues 
 
 ### Task files and Git
 
-The daemon links each task's files into the repository at `.humanlayer/tasks/`. If Git does not already ignore that path, the daemon adds it to the repository's `.gitignore`. To keep `.gitignore` unchanged, ignore the path another way before the daemon starts:
-
-- Add `.humanlayer/tasks/` to `.git/info/exclude` in the repository.
-- Add `.humanlayer/tasks/` to a global ignore file, such as `~/.config/git/ignore`, in the host image.
+The daemon links each task's files into the repository at `.humanlayer/tasks/`. If Git does not already ignore that path, the daemon adds a rule to the repository's local `info/exclude`. Linked worktrees share the repository's exclusion file. A tracked `.gitignore` keeps its usual precedence.
 
 ## Process life cycle
 

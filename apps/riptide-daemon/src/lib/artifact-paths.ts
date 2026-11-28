@@ -1,16 +1,8 @@
-import { appendFile, lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
-import {
-	AutomaticDeliverySchema,
-	DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL,
-} from '@humanlayer/schemas/zod/automatic-delivery'
-import { decodeJsonColumn } from '@humanlayer/schemas/zod/decode-json-column'
-import { Effect } from 'effect'
-
-import { checkArtifactsGitignored } from '@/effects/check-artifacts-gitignored'
+import { ensureArtifactsGitExcluded } from '@/effects/check-artifacts-gitignored'
 import type { DaemonRuntime } from '@/effects/runtime'
-import { DaemonCollections } from '@/effects/services/daemon-collections/daemon-collections.service'
 import { logger } from '@/logger'
 
 import { getArtifactStoragePath, getArtifactSymlinkPath } from './artifact-location'
@@ -104,51 +96,13 @@ export async function isGitRepository(cwd: string): Promise<boolean> {
 }
 
 /**
- * Append .humanlayer/tasks/ to the project's .gitignore.
- * Callers must first confirm that Git has no effective matching rule.
- */
-export async function ensureGitignore(cwd: string): Promise<void> {
-	const gitignorePath = join(cwd, '.gitignore')
-	const entry = '.humanlayer/tasks/'
-
-	await appendFile(gitignorePath, `\n# Riptide artifacts (cloud-synced)\n${entry}\n`)
-	logger.info({ cwd }, 'Added .humanlayer/tasks/ to .gitignore')
-}
-
-const isMergedPublicationVerification = (taskId: string) =>
-	Effect.gen(function* () {
-		const { tasks, sessions } = yield* (yield* DaemonCollections).current
-		const task = tasks.toArray.find((candidate) => candidate.id === taskId)
-		const delivery = decodeJsonColumn(AutomaticDeliverySchema, task?.automatic_delivery)
-		if (
-			task &&
-			!task.archived &&
-			delivery?.mergedPublicationRecovery &&
-			['inspect', 'review', 'archive'].includes(delivery.phase)
-		)
-			return true
-		// Session and task rows sync separately. The review label keeps its
-		// checkout read-only while the matching task snapshot catches up.
-		return (sessions.toArray ?? []).some(
-			(session) =>
-				session.task_id === taskId &&
-				!session.archived &&
-				['ready_for_launch', 'waiting_for_workspace', 'launching', 'running', 'resuming'].includes(
-					session.status,
-				) &&
-				session.labels?.some((label) => label.name === DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL),
-		)
-	})
-
-/**
  * Set up artifact directory structure for a task.
  * 1. Ensure symlink from {cwd}/.humanlayer/tasks/{slug}/ → UUID storage (also creates storage)
- * 2. Ensure .humanlayer/tasks/ is in .gitignore for ordinary Git checkouts.
- *    Merged publication verification must leave the checkout unchanged.
+ * 2. Exclude that directory through Git's local info/exclude if it is not already ignored.
+ *    Skip the Git step at a multi-repo workspace root.
  *
  * The symlink (step 1) is required for artifacts to sync, so its failures
- * propagate. The .gitignore step (step 2) is best-effort convenience — a write
- * failure there is logged but not thrown, so it can't abort artifact setup.
+ * propagate. Git exclusion is best-effort and never edits tracked files.
  */
 export async function setupArtifactPaths(
 	cwd: string,
@@ -160,15 +114,12 @@ export async function setupArtifactPaths(
 
 	try {
 		if (await isGitRepository(cwd)) {
-			if (await daemonRuntime.runPromise(isMergedPublicationVerification(taskId)))
-				return { storagePath, symlinkPath }
-			const ignoreStatus = await daemonRuntime.runPromise(checkArtifactsGitignored({ cwd }))
-			if (ignoreStatus === 'not-ignored') await ensureGitignore(cwd)
+			await daemonRuntime.runPromise(ensureArtifactsGitExcluded({ cwd }))
 		} else {
-			logger.debug({ cwd }, 'Skipping .gitignore setup: cwd is not a git repository (workspace root launch)')
+			logger.debug({ cwd }, 'Skipping artifact Git exclusion at a non-repository workspace root')
 		}
 	} catch (error) {
-		logger.warn({ cwd, error }, 'Failed to ensure .gitignore for artifacts; continuing without it')
+		logger.warn({ cwd, error }, 'Failed to configure local Git exclusion for artifacts')
 	}
 
 	return { storagePath, symlinkPath }

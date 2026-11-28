@@ -23,7 +23,6 @@ import {
 	DELIVERY_CHECKOUT_BLOCKER,
 	DELIVERY_DIAGNOSIS_LABEL,
 	DELIVERY_DIAGNOSIS_MODEL,
-	DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL,
 	type DeliveryAlertReceipt,
 	type DeliveryAlertRoutesInputSchema,
 	type AutomaticDelivery,
@@ -706,10 +705,6 @@ describe('Persisted automatic delivery', () => {
 		const reviewing = await f.state()
 		expect(reviewing).toMatchObject({ phase: 'review', passes: 1, recoveryAttempts: 1 })
 		const [worker] = await db.select().from(sessions).where(eq(sessions.id, reviewing.managedSessionId!))
-		expect(worker?.labels).toContainEqual({
-			name: DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL,
-			title: 'Review externally merged publication',
-		})
 		expect(worker?.prompt).toContain('Do not amend, repair, or push the merged branch.')
 		expect(worker?.prompt).toContain('Manual merge and current acceptance criteria.')
 		expect(await f.review({ automaticMergeAllowed: false })).toBe(true)

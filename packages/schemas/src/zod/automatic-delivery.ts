@@ -129,7 +129,6 @@ export const DeliveryBlockerAlertSchema = BlockerAlertReceiptsSchema.extend({
 	reminder: BlockerAlertReceiptsSchema.extend({ reservedAt: z.number() }).optional(),
 })
 
-export const DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL = 'delivery:merged-publication-review'
 export const DELIVERY_DIAGNOSIS_LABEL = 'rpi:delivery-diagnosis'
 export const DELIVERY_DIAGNOSIS_MODEL = 'gpt-6.2-sol'
 

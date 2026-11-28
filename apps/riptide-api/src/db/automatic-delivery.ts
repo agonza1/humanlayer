@@ -10,7 +10,6 @@ import {
 	DELIVERY_CHECKOUT_BLOCKER,
 	DELIVERY_DIAGNOSIS_LABEL,
 	DELIVERY_DIAGNOSIS_MODEL,
-	DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL,
 	deliveryReviewVerdict,
 	sameDeliveryHeads,
 	type AutomaticDelivery,
@@ -266,9 +265,7 @@ async function launchDeliverySession(
 		},
 	]
 	if (useSolDiagnosis) labels.push({ name: DELIVERY_DIAGNOSIS_LABEL, title: 'Read-only blocker diagnosis' })
-	if (kind === 'review' && delivery.mergedPublicationRecovery) {
-		labels.push({ name: DELIVERY_MERGED_PUBLICATION_REVIEW_LABEL, title: 'Review externally merged publication' })
-	}
+
 	await createSessionForLaunch(tx, {
 		deliveryManaged: true,
 		id,
