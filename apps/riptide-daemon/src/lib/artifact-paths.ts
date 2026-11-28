@@ -1,26 +1,13 @@
 import { lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { ensureArtifactsGitExcluded } from '@/effects/check-artifacts-gitignored'
 import type { DaemonRuntime } from '@/effects/runtime'
 import { logger } from '@/logger'
 
-/**
- * Get the UUID-based artifact storage path.
- * ~/.humanlayer/riptide/artifacts/{taskId}/
- */
-export function getArtifactStoragePath(taskId: string): string {
-	return join(homedir(), '.humanlayer', 'riptide', 'artifacts', taskId)
-}
+import { getArtifactStoragePath, getArtifactSymlinkPath } from './artifact-location'
 
-/**
- * Get the in-repo symlink path for artifacts.
- * {cwd}/.humanlayer/tasks/{taskSlug}/
- */
-export function getArtifactSymlinkPath(cwd: string, taskSlug: string): string {
-	return join(cwd, '.humanlayer', 'tasks', taskSlug)
-}
+export { getArtifactStoragePath, getArtifactSymlinkPath } from './artifact-location'
 
 /**
  * Ensure the symlink from in-repo path to UUID storage.

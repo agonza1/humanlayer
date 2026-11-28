@@ -7,6 +7,7 @@ import { tasks } from '@humanlayer/db/tables/tasks'
 import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/delivery'
 import {
 	decodeDelivery,
+	DELIVERY_CHECKOUT_BLOCKER,
 	DELIVERY_DIAGNOSIS_LABEL,
 	DELIVERY_DIAGNOSIS_MODEL,
 	deliveryReviewVerdict,
@@ -26,6 +27,7 @@ import { uuidv7 } from 'uuidv7'
 
 import { archiveTaskRows } from './archive-idle-task'
 import { createSessionForLaunch } from './create-session-for-launch'
+import { activeTaskAttention } from './task-attention'
 
 type Tx = PgDatabase<PostgresJsQueryResultHKT>
 export type DeliveryTransaction = Tx
@@ -229,6 +231,10 @@ async function launchDeliverySession(
 		prompt = `Delivery mode: ${delivery.mode}. In pr-only mode, the later manual merge is expected; it is not itself a missing prerequisite for technical QA. automaticMergeAllowed may be false in that mode. humanCheckpointsSatisfied covers human checkpoints required before this delivery stage, not the future manual merge. Independently review the complete diff, tests and existing PR reviews/conversations for ${targets}. This is pass ${delivery.passes} of at most three. You are a fresh session, not the implementer/repairer. Use completed current-head automatic review if configured and available; otherwise perform local QA yourself. Do not edit source, commit or push. Verify findings and their PR relevance; related P0/P1/P2 require repair. Unrelated verified P2/P3 remain linked in evidence for follow-up. Unrelated P0/P1, uncertainty, unavailable verification and missing human checkpoints require attention. Read task/repository/company policy: automaticMergeAllowed describes the owning daemon's merge authority, not your own worker role. Do not infer a missing human approval from task opt-in. Use the artifact write tool to save one complete JSON document in the task artifacts directory as delivery-review-${id}.json. The existing daemon sync authenticates the report; do not use or copy an owner CLI login. Shape: ${example}. source is automatic or local-qa; verdict is clean, repair, uncertain or blocked. findings contain priority (P0/P1/P2/P3), verified, related and reproducible detail/permalink. Set both policy booleans truthfully and include actual checks/failures and unresolved material findings in evidence. Never invent a pass. ${safety}`
 	}
 	if (kind === 'review') {
+		if (delivery.mergedPublicationRecovery) {
+			prompt +=
+				' This PR already merged. Review the exact merged head against the current task acceptance criteria and record any missing approval or material finding. Do not amend, repair, or push the merged branch.'
+		}
 		prompt +=
 			' Pending/running CI and a bounded CLI watch timeout are not failed CI or technical uncertainty by themselves. Continue bounded status waits within the existing task deadline; do not finalize uncertain solely because one watch call timed out. Never waive failed, missing or unverifiable required checks; report real blockers or checks still incomplete at the deadline honestly. Immediately before the final verdict, refresh each actual PR head, conversations/comments and review state; retain new related findings and invalidate affected evidence if inputs or findings changed.'
 		const instructions = await tx
@@ -259,6 +265,7 @@ async function launchDeliverySession(
 		},
 	]
 	if (useSolDiagnosis) labels.push({ name: DELIVERY_DIAGNOSIS_LABEL, title: 'Read-only blocker diagnosis' })
+
 	await createSessionForLaunch(tx, {
 		deliveryManaged: true,
 		id,
@@ -282,6 +289,11 @@ async function launchDeliverySession(
 	delivery.deliverySessionIds.push(id)
 }
 
+function isCheckoutBlocker(message: string | null) {
+	// Existing rows may append the outcome of the bounded Main recovery.
+	return message === DELIVERY_CHECKOUT_BLOCKER || message?.startsWith(DELIVERY_CHECKOUT_BLOCKER + ' ')
+}
+
 export async function deliveryAttention(
 	tx: Tx,
 	task: Task,
@@ -297,7 +309,9 @@ export async function deliveryAttention(
 	}
 	delivery.phase = 'attention'
 	if (delivery.attention !== message) {
-		delivery.blockerAlert = undefined
+		const sameCheckoutBlocker =
+			delivery.mergedPublicationRecovery && isCheckoutBlocker(delivery.attention) && isCheckoutBlocker(message)
+		if (!sameCheckoutBlocker) delivery.blockerAlert = undefined
 		delivery.attentionDiagnosis = undefined
 	}
 	delivery.attention = message
@@ -337,9 +351,16 @@ async function reserveDeliveryAction(
 	kind: DeliveryAction['kind'],
 	revision: string,
 	heads = delivery.heads,
+	canRecoverMergedPublication = false,
 ): Promise<DeliveryAction> {
 	const now = Date.now()
-	const lease = { id: uuidv7(), kind, expiresAt: now + DELIVERY_LEASE_MS, revision }
+	const lease = {
+		id: uuidv7(),
+		kind,
+		expiresAt: now + DELIVERY_LEASE_MS,
+		revision,
+		canRecoverMergedPublication: canRecoverMergedPublication ? (true as const) : undefined,
+	}
 	// Also advances the persisted fairness timestamp when no managed session is live.
 	delivery.managedAt = now
 	delivery.lease = lease
@@ -362,11 +383,52 @@ function attentionObservationRevision(delivery: AutomaticDelivery, workRevision:
 	])
 }
 
+function mergedPublicationInvalidation(task: Task, delivery: AutomaticDelivery, history: Session[], source?: Session) {
+	if (
+		task.is_draft ||
+		delivery.mode !== 'pr-only' ||
+		source?.status !== 'ready_for_input' ||
+		source.archived ||
+		source.host_id !== delivery.hostId ||
+		source.created_by !== delivery.authorizedBy ||
+		source.resource_owner_user_id !== task.resource_owner_user_id
+	)
+		return 'The implementation source or its authorization changed after observing the merge.'
+	if (history.some((session) => session.status === 'lost' || session.status === 'interrupted'))
+		return 'The task has an interrupted session or a writer whose state is unknown.'
+	return null
+}
+
+function canRecoverMergedPublication(
+	task: Task,
+	delivery: AutomaticDelivery,
+	history: Session[],
+	source: Session,
+	heads: DeliveryHead[],
+) {
+	return (
+		delivery.attentionDuringPublication === true &&
+		isCheckoutBlocker(delivery.attention) &&
+		!delivery.mergedPublicationRecovery &&
+		delivery.passes === 0 &&
+		delivery.reviews.length === 0 &&
+		delivery.heads.length === 0 &&
+		heads.every((head) => head.merged && head.draft === false) &&
+		(!delivery.recoveredCommits ||
+			delivery.recoveredCommits.every((commit) =>
+				heads.some((head) => sameTarget(commit, head) && commit.sha === head.sha),
+			)) &&
+		!activeTaskAttention(task) &&
+		!mergedPublicationInvalidation(task, delivery, history, source)
+	)
+}
+
 /** Called only by the existing authenticated host heartbeat continuation. One atomic action reservation. */
 export async function claimTaskDelivery(
 	tx: Tx,
 	task: Task,
 	supportsObservation = false,
+	supportsMergedPublicationRecovery = false,
 ): Promise<DeliveryAction | null> {
 	const delivery = decodeDelivery(task.automatic_delivery)
 	if (
@@ -379,6 +441,14 @@ export async function claimTaskDelivery(
 		return null
 	const context = await deliveryContext(tx, task, delivery)
 	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
+	if (delivery.mergedPublicationRecovery && delivery.phase !== 'attention') {
+		if (!supportsMergedPublicationRecovery || activeTaskAttention(task)) return null
+		const invalidated = mergedPublicationInvalidation(task, delivery, context.history, source)
+		if (invalidated) {
+			if (context.allIdle) await deliveryAttention(tx, task, delivery, invalidated, context.history)
+			return null
+		}
+	}
 	if (
 		source &&
 		(source.created_by !== delivery.authorizedBy || source.resource_owner_user_id !== task.resource_owner_user_id)
@@ -451,6 +521,7 @@ export async function claimTaskDelivery(
 			'observe',
 			attentionObservationRevision(delivery, context.revision),
 			attentionObservationHeads(delivery),
+			supportsMergedPublicationRecovery,
 		)
 	}
 	if (delivery.lease) {
@@ -582,13 +653,26 @@ export async function acceptDeliveryReview(tx: Tx, task: Task, review: DeliveryR
 	if (
 		!delivery ||
 		delivery.phase !== 'review' ||
+		(delivery.mergedPublicationRecovery &&
+			(task.archived || delivery.authorizedBy !== task.resource_owner_user_id || activeTaskAttention(task))) ||
 		delivery.managedSessionId !== review.sessionId ||
 		review.sessionId === delivery.sourceSessionId ||
 		!sameDeliveryHeads(delivery.heads, review.heads)
 	)
 		return false
 	const context = await deliveryContext(tx, task, delivery)
-	if (context.revision !== delivery.workRevision) return false
+	if (
+		context.revision !== delivery.workRevision ||
+		(delivery.mergedPublicationRecovery &&
+			(context.untracked ||
+				mergedPublicationInvalidation(
+					task,
+					delivery,
+					context.history,
+					context.history.find((session) => session.id === delivery.sourceSessionId),
+				)))
+	)
+		return false
 	if (!context.history.some((session) => session.id === review.sessionId && session.status === 'running'))
 		return false
 	delivery.reviews.push(review)
@@ -660,8 +744,8 @@ export async function completeTaskDelivery(
 	)
 		return false
 	const context = await deliveryContext(tx, task, delivery)
+	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
 	if (lease.kind === 'observe') {
-		const source = context.history.find((session) => session.id === delivery.sourceSessionId)
 		if (
 			task.archived ||
 			task.is_draft ||
@@ -699,13 +783,30 @@ export async function completeTaskDelivery(
 						(old) => sameTarget(old, head) && (old.merged !== head.merged || old.draft !== head.draft),
 					),
 				))
+		const recoverPublication =
+			confirmed &&
+			lease.canRecoverMergedPublication === true &&
+			canRecoverMergedPublication(task, delivery, context.history, source, heads)
 		if (confirmed) {
 			const checkedAt = Date.now()
 			delivery.attentionObservation = { checkedAt, heads, changedAt: changed ? checkedAt : previous?.changedAt }
 		}
-		await saveDelivery(tx, task, delivery, { preserveActivity: !changed })
+		if (recoverPublication) {
+			// Reverify the GitHub observation with the ordinary strict checkout inspection first.
+			// This records a single attempt and authorizes no new merge, repair, or retry budget.
+			delivery.mergedPublicationRecovery = true
+			delivery.heads = heads
+			delivery.workRevision = context.revision
+			delivery.phase = 'inspect'
+		}
+		await saveDelivery(tx, task, delivery, { preserveActivity: !changed && !recoverPublication })
 		return true
 	}
+	if (
+		delivery.mergedPublicationRecovery &&
+		(activeTaskAttention(task) || mergedPublicationInvalidation(task, delivery, context.history, source))
+	)
+		return false
 	if (
 		error ||
 		lease.expiresAt < Date.now() ||
@@ -724,7 +825,6 @@ export async function completeTaskDelivery(
 		return true
 	}
 	delivery.lease = null
-	const source = context.history.find((session) => session.id === delivery.sourceSessionId)
 	if (!source) return false
 	if (lease.kind === 'recover') {
 		if (
@@ -786,6 +886,19 @@ export async function completeTaskDelivery(
 			task,
 			delivery,
 			'The recovered implementation PR identity changed.',
+			context.history,
+		)
+		return true
+	}
+	if (
+		delivery.mergedPublicationRecovery &&
+		(!heads.every((head) => head.merged && head.draft !== true) || !sameDeliveryHeads(delivery.heads, heads))
+	) {
+		await deliveryAttention(
+			tx,
+			task,
+			delivery,
+			'The observed merged PR changed before strict verification. Check the exact hosted PR and checkout.',
 			context.history,
 		)
 		return true

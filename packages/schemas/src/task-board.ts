@@ -59,7 +59,7 @@ type BoardBlockerAlert = {
 
 export type BoardDelivery =
 	| { status: 'queued' | 'running'; sessionId: string; deadlineAt?: number }
-	| { status: 'verifying'; deadlineAt: number }
+	| { status: 'verifying'; deadlineAt: number; stage?: 'in-review' }
 	| { status: 'review' }
 	| {
 			status: 'blocked'
@@ -253,25 +253,31 @@ function describeDelivery(
 	const alert = describeBlockerAlert(delivery?.blockerAlert)
 	if (delivery?.phase === 'attention' && delivery.attention) {
 		const observed = mergedAttentionObservation(delivery)
-		if (
-			observed &&
-			(!latest || sessionActivity(latest) <= observed.checkedAt) &&
-			!sessions.some((session) => livePriority(session.status) > 0)
-		) {
-			return {
-				status: 'blocked',
-				reason: MERGED_PR_ATTENTION,
-				stage: 'in-review',
-				alert,
-			}
-		}
+		const recovered = delivery.mergedPublicationRecovery === true
+		const inReview =
+			observed !== undefined &&
+			(recovered ||
+				((!latest || sessionActivity(latest) <= observed.checkedAt) &&
+					!sessions.some((session) => livePriority(session.status) > 0)))
 		const diagnosis = delivery.attentionDiagnosis
 		return {
 			status: 'blocked',
-			reason: diagnosis ? [diagnosis.reason, diagnosis.nextAction].join(' ') : delivery.attention,
-			publication: delivery.attentionDuringPublication,
+			reason:
+				inReview && !recovered
+					? MERGED_PR_ATTENTION
+					: diagnosis
+						? [diagnosis.reason, diagnosis.nextAction].join(' ')
+						: delivery.attention,
+			stage: inReview ? 'in-review' : undefined,
+			publication: inReview ? undefined : delivery.attentionDuringPublication,
 			alert,
 		}
+	}
+
+	if (delivery?.mergedPublicationRecovery && (delivery.phase === 'inspect' || delivery.phase === 'archive')) {
+		return delivery.lease
+			? { status: 'verifying', deadlineAt: delivery.lease.expiresAt, stage: 'in-review' }
+			: { status: 'review' }
 	}
 
 	// Automatic delivery pins the current successor. Older stock auto-advance
@@ -421,12 +427,14 @@ export function describeBoardTask(
 	) {
 		delivery = decision.status === 'review' ? decision : { status: 'verifying', deadlineAt: decision.deadlineAt }
 	}
-	if (delivery?.status === 'blocked' && delivery.stage) stage.columnId = delivery.stage
+	if ((delivery?.status === 'blocked' || delivery?.status === 'verifying') && delivery.stage)
+		stage.columnId = delivery.stage
 	else if (delivery?.status === 'review') stage.columnId = 'in-review'
 	else if (delivery && (delivery.status !== 'blocked' || delivery.publication)) stage.columnId = 'implementation'
 	if (
 		stage.columnId === 'in-review' &&
-		(delivery?.status === 'review' || (delivery?.status === 'blocked' && delivery.stage === 'in-review'))
+		(delivery?.status === 'review' ||
+			((delivery?.status === 'blocked' || delivery?.status === 'verifying') && delivery.stage === 'in-review'))
 	)
 		stage.workflowLabel = REVIEW_LABEL
 	const attention: BoardAttention[] = []

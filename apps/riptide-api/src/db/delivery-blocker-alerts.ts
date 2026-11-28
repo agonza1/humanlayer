@@ -353,7 +353,8 @@ async function isExhaustedAndIdle(tx: DeliveryTransaction, task: Task, blocker: 
 
 function reminderReason(blocker: ActiveBlocker) {
 	const diagnosis = blocker.delivery?.attentionDiagnosis
-	if (mergedAttentionObservation(blocker.delivery)) return MERGED_PR_ATTENTION
+	if (!blocker.delivery?.mergedPublicationRecovery && mergedAttentionObservation(blocker.delivery))
+		return MERGED_PR_ATTENTION
 	if (diagnosis) return [diagnosis.reason, diagnosis.nextAction].join(' ')
 	return blocker.reason
 }

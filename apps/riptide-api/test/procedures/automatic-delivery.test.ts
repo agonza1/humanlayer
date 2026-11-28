@@ -20,6 +20,7 @@ import type { DeliveryAction } from '@humanlayer/riptide-api-contract/daemon/del
 import { describeBoardTask } from '@humanlayer/schemas/task-board'
 import {
 	decodeDelivery,
+	DELIVERY_CHECKOUT_BLOCKER,
 	DELIVERY_DIAGNOSIS_LABEL,
 	DELIVERY_DIAGNOSIS_MODEL,
 	type DeliveryAlertReceipt,
@@ -428,6 +429,7 @@ describe('Persisted automatic delivery', () => {
 	}, 30_000)
 
 	const confirmed = { status: 'delivered', receipt: 'T_TEST/C_TEST/1710000000.000002' } as const
+	const mergedHead = { ...head, merged: true, draft: false }
 
 	async function alertFixture(send: () => Promise<DeliveryAlertReceipt> = async () => confirmed) {
 		const hostId = uuidv7()
@@ -496,19 +498,11 @@ describe('Persisted automatic delivery', () => {
 			)
 		const origin = { kind: 'session' as const, sessionId: f.source.id }
 		const slackAutomationId = automation!.id
-		const heartbeat = (supportsObservation = false) =>
-			call(claimDeliveryProcedure, supportsObservation ? { supportsObservation: true } : {}, { context })
-		const completeObservedMerge = (leaseId: string) =>
-			call(
-				completeDeliveryProcedure,
-				{
-					taskId: f.taskId,
-					leaseId,
-					heads: [{ ...head, merged: true, draft: false }],
-					error: null,
-				},
-				{ context },
-			)
+		const heartbeat = (supportsObservation = false, supportsMergedPublicationRecovery = false) =>
+			call(claimDeliveryProcedure, { supportsObservation, supportsMergedPublicationRecovery }, { context })
+		const completeAction = (leaseId: string, heads: DeliveryHead[], error: string | null = null) =>
+			call(completeDeliveryProcedure, { taskId: f.taskId, leaseId, heads, error }, { context })
+		const completeObservedMerge = (leaseId: string) => completeAction(leaseId, [mergedHead])
 		const block = () => db.update(sessions).set({ status: 'interrupted' }).where(eq(sessions.id, f.source.id))
 		const notices = async () =>
 			(await db.select().from(conversationEvents).where(eq(conversationEvents.session_id, f.source.id))).filter(
@@ -531,6 +525,7 @@ describe('Persisted automatic delivery', () => {
 			block,
 			heartbeat,
 			completeObservedMerge,
+			completeAction,
 			notices,
 			origin,
 			slackAutomationId,
@@ -651,6 +646,174 @@ describe('Persisted automatic delivery', () => {
 			.set({ automatic_delivery: { ...(await f.state()), managedAt: Date.now() - 61_000 } })
 			.where(eq(tasks.id, f.taskId))
 	}
+
+	async function exhaustPublicationCheckout(f: Awaited<ReturnType<typeof alertFixture>>) {
+		expect((await f.heartbeat()).action).toBeNull()
+		await f.idle()
+		const { action } = await f.heartbeat()
+		expect(action?.kind).toBe('inspect')
+		expect(await f.completeAction(action!.leaseId, [], DELIVERY_CHECKOUT_BLOCKER)).toEqual({ accepted: true })
+		await f.idle()
+		expect((await f.heartbeat()).action).toBeNull()
+		expect(await f.state()).toMatchObject({
+			phase: 'attention',
+			attentionDuringPublication: true,
+			attention: expect.stringContaining('No further automatic recovery'),
+			passes: 0,
+			recoveryAttempts: 1,
+			reviews: [],
+			heads: [],
+			managedSessionId: null,
+		})
+	}
+
+	async function observePublication(f: Awaited<ReturnType<typeof alertFixture>>, supportsRecovery = true) {
+		await makeObservationDue(f)
+		const { action } = await f.heartbeat(true, supportsRecovery)
+		expect(action?.kind).toBe('observe')
+		expect(await f.completeObservedMerge(action!.leaseId)).toEqual({ accepted: true })
+	}
+
+	it('rejoins a published and manually merged PR after exhausted checkout recovery, independently reviews and archives', async () => {
+		const f = await alertFixture()
+		await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+		await exhaustPublicationCheckout(f)
+		const before = await f.state()
+		expect(before.blockerAlert?.slack).toMatchObject(confirmed)
+		// An older host retains the observation, but cannot consume the recovery attempt.
+		await observePublication(f, false)
+		expect(await f.state()).toMatchObject({ phase: 'attention', attentionObservation: { heads: [mergedHead] } })
+		expect((await f.state()).mergedPublicationRecovery).toBeUndefined()
+		// An owner can add handoff evidence while blocked. The new independent review sees current task scope.
+		await db
+			.update(tasks)
+			.set({ ticket_description: 'Manual merge and current acceptance criteria.' })
+			.where(eq(tasks.id, f.taskId))
+		await observePublication(f)
+		expect(await f.state()).toMatchObject({
+			phase: 'inspect',
+			mergedPublicationRecovery: true,
+			recoveryAttempts: 1,
+			passes: 0,
+			heads: [mergedHead],
+			blockerAlert: before.blockerAlert,
+		})
+		expect((await f.heartbeat(true)).action).toBeNull()
+		const { action: inspect } = await f.heartbeat(true, true)
+		expect(inspect).toMatchObject({ kind: 'inspect', heads: [mergedHead] })
+		expect(await f.completeObservedMerge(inspect!.leaseId)).toEqual({ accepted: true })
+		const reviewing = await f.state()
+		expect(reviewing).toMatchObject({ phase: 'review', passes: 1, recoveryAttempts: 1 })
+		const [worker] = await db.select().from(sessions).where(eq(sessions.id, reviewing.managedSessionId!))
+		expect(worker?.prompt).toContain('Do not amend, repair, or push the merged branch.')
+		expect(worker?.prompt).toContain('Manual merge and current acceptance criteria.')
+		expect(await f.review({ automaticMergeAllowed: false })).toBe(true)
+		await f.idle()
+		const { action: recheck } = await f.heartbeat(true, true)
+		expect(recheck).toMatchObject({ kind: 'inspect', heads: [mergedHead] })
+		expect(await f.completeObservedMerge(recheck!.leaseId)).toEqual({ accepted: true })
+		const { action: archive } = await f.heartbeat(true, true)
+		expect(archive).toMatchObject({ kind: 'archive', heads: [mergedHead] })
+		expect(await f.completeObservedMerge(archive!.leaseId)).toEqual({ accepted: true })
+		expect(await f.state()).toMatchObject({
+			phase: 'archived',
+			mergedPublicationRecovery: true,
+			passes: 1,
+			recoveryAttempts: 1,
+			blockerAlert: before.blockerAlert,
+			reviews: [{ heads: [mergedHead], automaticMergeAllowed: false }],
+		})
+		const [task] = await db.select().from(tasks).where(eq(tasks.id, f.taskId))
+		expect(task?.archived).toBe(true)
+		expect(f.sends).toHaveLength(1)
+	})
+
+	it.each([
+		['a dirty checkout', [], DELIVERY_CHECKOUT_BLOCKER, DELIVERY_CHECKOUT_BLOCKER],
+		['an open PR', [head], null, 'changed before strict verification'],
+		[
+			'a different merged head',
+			[{ ...mergedHead, sha: 'b'.repeat(40) }],
+			null,
+			'changed before strict verification',
+		],
+	] as const)(
+		'retains the blocker and cannot loop if strict inspection finds %s',
+		async (_label, heads, error, reason) => {
+			const f = await alertFixture()
+			await f.configure({ slackAutomationId: f.slackAutomationId, origin: f.origin })
+			await exhaustPublicationCheckout(f)
+			const checkout = await f.state()
+			const acknowledged = { ...checkout.blockerAlert!, acknowledgedAt: Date.now() }
+			await db
+				.update(tasks)
+				.set({ automatic_delivery: { ...checkout, blockerAlert: acknowledged } })
+				.where(eq(tasks.id, f.taskId))
+			await observePublication(f)
+			const { action } = await f.heartbeat(true, true)
+			expect(action?.kind).toBe('inspect')
+			expect(await f.completeAction(action!.leaseId, [...heads], error)).toEqual({ accepted: true })
+			expect(await f.state()).toMatchObject({
+				phase: 'attention',
+				mergedPublicationRecovery: true,
+				attention: expect.stringContaining(reason),
+				recoveryAttempts: 1,
+				passes: 0,
+				heads: [mergedHead],
+			})
+			const sameCheckoutBlocker = error === DELIVERY_CHECKOUT_BLOCKER
+			expect((await f.state()).blockerAlert).toEqual(sameCheckoutBlocker ? acknowledged : undefined)
+			await observePublication(f)
+			expect((await f.state()).phase).toBe('attention')
+			expect((await f.heartbeat(true, true)).action).toBeNull()
+			expect(f.sends).toHaveLength(sameCheckoutBlocker ? 1 : 2)
+			if (!sameCheckoutBlocker) {
+				const alert = (await f.state()).blockerAlert
+				expect(alert?.id).not.toBe(acknowledged.id)
+				expect(alert?.acknowledgedAt).toBeUndefined()
+				expect(alert?.slack).toMatchObject(confirmed)
+			}
+		},
+	)
+
+	it('rejects inspection completion under a new owner hold and surfaces a lost writer after the hold clears', async () => {
+		const f = await alertFixture()
+		await exhaustPublicationCheckout(f)
+		await observePublication(f)
+		const { action } = await f.heartbeat(true, true)
+		expect(action?.kind).toBe('inspect')
+		const attention = {
+			id: uuidv7(),
+			revision: 1,
+			authorizedBy: 'owner',
+			openedAt: Date.now(),
+			updatedAt: Date.now(),
+			kind: 'owner_input' as const,
+			reason: 'Confirm remaining acceptance.',
+			responsible: 'Task owner',
+			nextAction: 'Verify the trial.',
+		}
+		await db.update(tasks).set({ task_attention: attention }).where(eq(tasks.id, f.taskId))
+		expect(await f.completeObservedMerge(action!.leaseId)).toEqual({ accepted: false })
+		expect((await f.heartbeat(true, true)).action).toBeNull()
+		expect(await f.state()).toMatchObject({ phase: 'inspect', passes: 0, reviews: [] })
+
+		await db
+			.update(tasks)
+			.set({ task_attention: { ...attention, resolvedAt: Date.now() } })
+			.where(eq(tasks.id, f.taskId))
+		await db
+			.update(sessions)
+			.set({ status: 'lost' })
+			.where(eq(sessions.id, (await f.state()).deliverySessionIds.at(-1)!))
+		expect((await f.heartbeat(true, true)).action).toBeNull()
+		expect(await f.state()).toMatchObject({
+			phase: 'attention',
+			attention: expect.stringContaining('writer whose state is unknown'),
+			passes: 0,
+			reviews: [],
+		})
+	})
 
 	async function launchAttentionRecovery(
 		effortLevels: string[],
@@ -874,7 +1037,7 @@ describe('Persisted automatic delivery', () => {
 
 		await makeObservationDue(f)
 		expect((await f.heartbeat()).action).toBeNull()
-		const { action } = await f.heartbeat(true)
+		const { action } = await f.heartbeat(true, true)
 		expect(action).toMatchObject({ kind: 'observe', targets: [target], heads: [head] })
 		expect((await f.heartbeat(true)).action).toBeNull()
 		const merged = { ...head, merged: true, draft: false }

@@ -108,6 +108,10 @@ For an enrolled task whose implementation session fails after committing, the as
 
 An existing task can enter Review after the stock host inspector verifies the task workspace, repository, branch, and exact PR heads. Independent review, merge, and archival use the existing task authorization and verification gates. Turning delivery off leaves inspection read-only. A legacy Describe PR opt-in can recover a missed handoff using the same task, workspace, and worker admission.
 
+If publication of a PR-only task stopped on a checkout blocker before review, the assigned host can use a later confirmed GitHub merge to resume delivery once. It verifies the local checkout and exact merged heads, then runs the existing independent review and archival checks. Open owner decisions, external waits, unknown writers and existing review gates still require their normal resolution. A failed verification leaves the specific reason on the card. The review budget and Main recovery count carry forward.
+
+An untracked link created by HumanLayer for the same task's artifact storage can be present in a clean delivery checkout. Artifact setup during recovery review leaves the repository's ignore file alone. Tracked edits, untracked product files and other links still block delivery.
+
 The 24-hour card tint remains a display cue.
 
 ## Credentials and completion

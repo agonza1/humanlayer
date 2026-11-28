@@ -39,6 +39,9 @@ export const DeliveryHeadSchema = DeliveryCommitSchema.extend({
 	// Older hosts do not report draft state. Read-only legacy reconciliation requires it.
 	draft: z.boolean().optional(),
 })
+export const DELIVERY_CHECKOUT_BLOCKER =
+	'Local checkout has newer/uncommitted work, a different branch, or a different repository'
+
 export const DeliveryInspectionIssueSchema = z.enum([
 	'checkout',
 	'pr-missing',
@@ -179,6 +182,8 @@ export const AutomaticDeliverySchema = z.object({
 	attention: z.string().nullable(),
 	attentionDiagnosis: DeliveryAttentionDiagnosisSchema.optional(),
 	attentionDuringPublication: z.boolean().optional(),
+	// The original review budget still applies. Keep the one-shot marker after failure or archive.
+	mergedPublicationRecovery: z.literal(true).optional(),
 	attentionObservation: z
 		.object({ checkedAt: z.number(), changedAt: z.number().optional(), heads: z.array(DeliveryHeadSchema).max(10) })
 		.optional(),
@@ -190,6 +195,7 @@ export const AutomaticDeliverySchema = z.object({
 			kind: z.enum(['inspect', 'merge', 'archive', 'recover', 'observe']),
 			expiresAt: z.number(),
 			revision: z.string(),
+			canRecoverMergedPublication: z.literal(true).optional(),
 		})
 		.nullable(),
 })
